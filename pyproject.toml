@@ -1,0 +1,25 @@
+[project]
+name = "viser4d"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.4.1",
+    "viser>=1.0.19",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
