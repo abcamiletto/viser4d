@@ -1,49 +1,279 @@
+"""Viser server with timeline recording and playback.
+
+Architecture
+------------
+::
+
+    ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+    │                                              ViserServer                                                │
+    │                      - Owns the timeline and playback state                                             │
+    │                      - Provides the public API (at, play, pause, seek)                                  │
+    └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                        │
+                ┌───────────────────┬───────────────────┼───────────────────┬───────────────────┐
+                ▼                   ▼                   ▼                   ▼                   ▼
+    ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐
+    │    ProxyScene     │ │     Timeline      │ │   SceneRenderer   │ │   Scene (live)    │ │ PlaybackControls  │
+    │                   │ │                   │ │                   │ │                   │ │                   │
+    │ - Records ops     │ │ - Ops by timestep │ │ - Apply ops to    │ │ - Real viser      │ │ - GUI widgets     │
+    │   when inside     │ │ - Temporal        │ │   the live scene  │ │   scene           │ │ - Event handlers  │
+    │   at(t) context   │ │   storage         │ │ - Track render    │ │                   │ │                   │
+    │                   │ │                   │ │   state           │ │                   │ │                   │
+    └─────────┬─────────┘ └─────────┬─────────┘ └─────────┬─────────┘ └─────────┬─────────┘ └───────────────────┘
+              │                     │                     │                     │
+              └─────────────────────┘                     └─────────────────────┘
+                    writes to                                   reads from
+
+ProxyScene records operations to the Timeline during ``at(t)`` contexts.
+SceneRenderer reads from the Timeline and applies state to the live Scene during playback.
+"""
+
+from __future__ import annotations
+
 import dataclasses
 import threading
 import time
 from bisect import bisect_right
 from contextlib import contextmanager
 from enum import Enum
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 import viser as _viser
-from viser import SceneApi
 
 from .gui import PlaybackControls
 
-
-class OpKind(Enum):
-    ADD = "add"
-    REMOVE = "remove"
-    SET = "set"
+if TYPE_CHECKING:
+    from viser import SceneApi
 
 
-@dataclasses.dataclass(frozen=True)
-class Op:
-    """Recorded scene operation for later playback."""
-
-    kind: OpKind
-    target: str
-    member: str
-    args: tuple[Any, ...] = ()
-    kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
+# =============================================================================
+# Public API
+# =============================================================================
 
 
-class _TimeSeries:
-    def __init__(self) -> None:
-        self.times: list[int] = []
-        self.values: list[Any] = []
+class ViserServer(_viser.ViserServer):
+    """Viser server with timeline recording and playback controls."""
 
-    def add(self, t: int, value: Any) -> None:
-        index = bisect_right(self.times, t)
-        self.times.insert(index, t)
-        self.values.insert(index, value)
+    _DEFAULT_FPS = 30.0
 
-    def latest_index(self, t: int) -> int | None:
-        index = bisect_right(self.times, t)
-        if index == 0:
-            return None
-        return index - 1
+    def __init__(
+        self,
+        num_steps: int,
+        host: str = "0.0.0.0",
+        port: int = 8080,
+        label: str | None = None,
+        verbose: bool = True,
+        enable_webxr: bool = False,
+        ssl_context: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        self._recording = False
+        self.num_steps = num_steps
+        self._timeline = Timeline()
+        self._proxy_scene = ProxyScene(self._timeline)
+        self._playback_thread: threading.Thread | None = None
+        self._playback_stop = threading.Event()
+        self._current_time = 0
+        self._fps = self._DEFAULT_FPS
+        super().__init__(
+            host=host,
+            port=port,
+            label=label,
+            verbose=verbose,
+            enable_webxr=enable_webxr,
+            ssl_context=ssl_context,
+            **kwargs,
+        )
+        self._renderer = SceneRenderer(self._timeline, self._live_scene)
+        self._playback_controls = PlaybackControls(self)
+
+    @property
+    def scene(self) -> ProxyScene | SceneApi:
+        return self._proxy_scene if self._recording else self._live_scene
+
+    @scene.setter
+    def scene(self, value: SceneApi) -> None:
+        self._live_scene = value
+        self._renderer = SceneRenderer(self._timeline, value)
+        self._renderer.reset()
+
+    @contextmanager
+    def at(self, t: int) -> Iterator[None]:
+        assert 0 <= t < self.num_steps
+        self._recording = True
+        self._proxy_scene.set_time(t)
+        try:
+            yield
+        finally:
+            self._recording = False
+            self._proxy_scene.set_time(None)
+
+    def play(self, fps: float, loop: bool = False) -> None:
+        self._set_fps(fps)
+        if self._playback_thread is not None and self._playback_thread.is_alive():
+            return
+
+        self._playback_controls.set_playing(True)
+        self._playback_stop = threading.Event()
+        self._playback_thread = threading.Thread(
+            target=self._playback_loop, args=(loop,), daemon=True
+        )
+        self._playback_thread.start()
+
+    def pause(self) -> None:
+        if self._playback_thread is not None and self._playback_thread.is_alive():
+            self._playback_stop.set()
+            self._playback_thread.join()
+        self._playback_controls.set_playing(False)
+
+    def seek(self, t: int) -> None:
+        assert 0 <= t < self.num_steps
+        self.pause()
+        self._current_time = t
+        self._renderer.apply(t)
+        self._playback_controls.set_time(t)
+
+    def _playback_loop(self, loop: bool) -> None:
+        """Main playback loop. Runs in a separate thread."""
+        index = self._current_time
+        frame_duration = 1.0 / self._fps
+        next_frame_time = time.monotonic()
+
+        while True:
+            if self._playback_stop.is_set():
+                return
+
+            # Handle dynamic FPS changes
+            new_duration = 1.0 / self._fps
+            if frame_duration != new_duration:
+                frame_duration = new_duration
+                next_frame_time = time.monotonic()
+
+            # Skip frames if rendering is too slow
+            now = time.monotonic()
+            if now > next_frame_time + frame_duration:
+                frames_behind = int((now - next_frame_time) / frame_duration)
+                index = min(index + frames_behind, self.num_steps - 1)
+                next_frame_time += frames_behind * frame_duration
+
+            # Render current frame
+            if not self._playback_step(index):
+                return
+
+            # Advance to next frame
+            index += 1
+            next_frame_time += frame_duration
+
+            # Handle end of timeline
+            if index >= self.num_steps:
+                if not loop:
+                    break
+                index = 0
+                next_frame_time = time.monotonic()
+                continue
+
+            # Wait for next frame
+            delay = next_frame_time - time.monotonic()
+            if delay > 0 and self._playback_stop.wait(timeout=delay):
+                return
+
+        self._playback_controls.set_playing(False)
+
+    def _playback_step(self, t: int) -> bool:
+        """Apply frame and return False if stopped."""
+        if self._playback_stop.is_set():
+            return False
+        self._renderer.apply(t)
+        self._current_time = t
+        self._playback_controls.set_time(t)
+        return True
+
+    def _set_fps(self, fps: float) -> None:
+        self._fps = fps
+        self._playback_controls.set_fps(fps)
+
+
+# =============================================================================
+# Recording proxies
+# =============================================================================
+
+
+class ProxyScene:
+    """Scene proxy that records operations to a timeline."""
+
+    def __init__(self, timeline: Timeline) -> None:
+        self._timeline = timeline
+        self._recording_time: int | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("add_"):
+
+            def _add(*args: Any, **kwargs: Any) -> ProxyHandle:
+                target = self._target_from_add(args, kwargs)
+                op = Op(
+                    kind=OpKind.ADD,
+                    target=target,
+                    member=name,
+                    args=args,
+                    kwargs=kwargs,
+                )
+                self.record(op)
+                return ProxyHandle(self, target)
+
+            return _add
+
+        if name == "remove_by_name":
+
+            def _remove(target: str) -> None:
+                self.record(Op(kind=OpKind.REMOVE, target=target, member=name))
+
+            return _remove
+
+        raise AttributeError(f"ProxyScene has no attribute '{name}'")
+
+    def set_time(self, time_step: int | None) -> None:
+        self._recording_time = time_step
+
+    def record(self, op: Op) -> None:
+        if self._recording_time is None:
+            raise RuntimeError("Cannot record operation when time is not set.")
+        t = self._recording_time
+        if op.kind is OpKind.ADD:
+            self._timeline.record_add(t, op.target, op)
+        elif op.kind is OpKind.REMOVE:
+            self._timeline.record_remove(t, op.target)
+        else:
+            self._timeline.record_set(t, op.target, op.member, op.args[0])
+
+    @staticmethod
+    def _target_from_add(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+        return kwargs.get("name", args[0])
+
+
+class ProxyHandle:
+    """Handle proxy that records attribute assignments."""
+
+    __slots__ = ("_parent_scene", "_name")
+
+    def __init__(self, parent_scene: ProxyScene, name: str) -> None:
+        self._parent_scene = parent_scene
+        self._name = name
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+            return
+        op = Op(kind=OpKind.SET, target=self._name, member=name, args=(value,))
+        self._parent_scene.record(op)
+
+    def remove(self) -> None:
+        op = Op(kind=OpKind.REMOVE, target=self._name, member="remove")
+        self._parent_scene.record(op)
+
+
+# =============================================================================
+# Timeline and rendering
+# =============================================================================
 
 
 class Timeline:
@@ -160,217 +390,40 @@ class SceneRenderer:
                     self._rendered_set[target][member] = set_index
 
 
-class ProxyHandle:
-    """Handle proxy that records attribute assignments."""
-
-    __slots__ = ("_parent_scene", "_name")
-
-    def __init__(self, parent_scene: "ProxyScene", name: str) -> None:
-        self._parent_scene = parent_scene
-        self._name = name
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name.startswith("_"):
-            object.__setattr__(self, name, value)
-            return
-        op = Op(kind=OpKind.SET, target=self._name, member=name, args=(value,))
-        self._parent_scene.record(op)
-
-    def remove(self) -> None:
-        op = Op(kind=OpKind.REMOVE, target=self._name, member="remove")
-        self._parent_scene.record(op)
+# =============================================================================
+# Internal data structures
+# =============================================================================
 
 
-class ProxyScene:
-    """Scene proxy that records operations to a timeline."""
-
-    def __init__(self, timeline: Timeline) -> None:
-        self._timeline = timeline
-        self._recording_time: int | None = None
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("add_"):
-
-            def _add(*args: Any, **kwargs: Any) -> ProxyHandle:
-                target = self._target_from_add(args, kwargs)
-                op = Op(
-                    kind=OpKind.ADD,
-                    target=target,
-                    member=name,
-                    args=args,
-                    kwargs=kwargs,
-                )
-                self.record(op)
-                return ProxyHandle(self, target)
-
-            return _add
-
-        if name == "remove_by_name":
-
-            def _remove(target: str) -> None:
-                self.record(Op(kind=OpKind.REMOVE, target=target, member=name))
-
-            return _remove
-
-        raise AttributeError(f"ProxyScene has no attribute '{name}'")
-
-    def set_time(self, time_step: int | None) -> None:
-        self._recording_time = time_step
-
-    def record(self, op: Op) -> None:
-        if self._recording_time is None:
-            raise RuntimeError("Cannot record operation when time is not set.")
-        t = self._recording_time
-        if op.kind is OpKind.ADD:
-            self._timeline.record_add(t, op.target, op)
-        elif op.kind is OpKind.REMOVE:
-            self._timeline.record_remove(t, op.target)
-        else:
-            self._timeline.record_set(t, op.target, op.member, op.args[0])
-
-    @staticmethod
-    def _target_from_add(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
-        return kwargs.get("name", args[0])
+class OpKind(Enum):
+    ADD = "add"
+    REMOVE = "remove"
+    SET = "set"
 
 
-class ViserServer(_viser.ViserServer):
-    """Viser server with timeline recording and playback controls."""
+@dataclasses.dataclass(frozen=True)
+class Op:
+    """Recorded scene operation for later playback."""
 
-    _DEFAULT_FPS = 30.0
+    kind: OpKind
+    target: str
+    member: str
+    args: tuple[Any, ...] = ()
+    kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
-    def __init__(
-        self,
-        num_steps: int,
-        host: str = "0.0.0.0",
-        port: int = 8080,
-        label: str | None = None,
-        verbose: bool = True,
-        enable_webxr: bool = False,
-        ssl_context=None,
-        **kwargs,
-    ) -> None:
-        self._recording = False
-        self.num_steps = num_steps
-        self._timeline = Timeline()
-        self._proxy_scene = ProxyScene(self._timeline)
-        self._renderer: SceneRenderer | None = None
-        self._playback_thread: threading.Thread | None = None
-        self._playback_stop = threading.Event()
-        self._current_time = 0
-        self._fps = self._DEFAULT_FPS
-        super().__init__(
-            host=host,
-            port=port,
-            label=label,
-            verbose=verbose,
-            enable_webxr=enable_webxr,
-            ssl_context=ssl_context,
-            **kwargs,
-        )
-        self._playback_controls = PlaybackControls(self)
 
-    @property
-    def scene(self) -> ProxyScene | SceneApi:
-        return self._proxy_scene if self._recording else self._live_scene
+class _TimeSeries:
+    def __init__(self) -> None:
+        self.times: list[int] = []
+        self.values: list[Any] = []
 
-    @scene.setter
-    def scene(self, value: SceneApi) -> None:
-        self._live_scene = value
-        self._renderer = SceneRenderer(self._timeline, value)
+    def add(self, t: int, value: Any) -> None:
+        index = bisect_right(self.times, t)
+        self.times.insert(index, t)
+        self.values.insert(index, value)
 
-    @contextmanager
-    def at(self, t: int) -> Iterator[None]:
-        assert 0 <= t < self.num_steps
-        self._recording = True
-        self._proxy_scene.set_time(t)
-        try:
-            yield
-        finally:
-            self._recording = False
-            self._proxy_scene.set_time(None)
-
-    def play(self, fps: float, loop: bool = False) -> None:
-        self._set_fps(fps)
-        if self._playback_thread is not None and self._playback_thread.is_alive():
-            return
-
-        self._playback_controls.set_playing(True)
-        self._playback_stop = threading.Event()
-        self._playback_thread = threading.Thread(
-            target=self._playback_loop, args=(loop,), daemon=True
-        )
-        self._playback_thread.start()
-
-    def _playback_loop(self, loop: bool) -> None:
-        """Main playback loop. Runs in a separate thread."""
-        index = self._current_time
-        frame_duration = 1.0 / self._fps
-        next_frame_time = time.monotonic()
-
-        while True:
-            if self._playback_stop.is_set():
-                return
-
-            # Handle dynamic FPS changes
-            new_duration = 1.0 / self._fps
-            if frame_duration != new_duration:
-                frame_duration = new_duration
-                next_frame_time = time.monotonic()
-
-            # Skip frames if rendering is too slow
-            now = time.monotonic()
-            if now > next_frame_time + frame_duration:
-                frames_behind = int((now - next_frame_time) / frame_duration)
-                index = min(index + frames_behind, self.num_steps - 1)
-                next_frame_time += frames_behind * frame_duration
-
-            # Render current frame
-            if not self._playback_step(index):
-                return
-
-            # Advance to next frame
-            index += 1
-            next_frame_time += frame_duration
-
-            # Handle end of timeline
-            if index >= self.num_steps:
-                if not loop:
-                    break
-                index = 0
-                next_frame_time = time.monotonic()
-                continue
-
-            # Wait for next frame
-            delay = next_frame_time - time.monotonic()
-            if delay > 0 and self._playback_stop.wait(timeout=delay):
-                return
-
-        self._playback_controls.set_playing(False)
-
-    def pause(self) -> None:
-        if self._playback_thread is not None and self._playback_thread.is_alive():
-            self._playback_stop.set()
-            self._playback_thread.join()
-        self._playback_controls.set_playing(False)
-
-    def seek(self, t: int) -> None:
-        assert 0 <= t < self.num_steps
-        self.pause()
-        self._current_time = t
-        if self._renderer is not None:
-            self._renderer.apply(t)
-        self._playback_controls.set_time(t)
-
-    def _playback_step(self, t: int) -> bool:
-        """Apply frame and return False if stopped."""
-        if self._playback_stop.is_set():
-            return False
-        if self._renderer is not None:
-            self._renderer.apply(t)
-        self._current_time = t
-        self._playback_controls.set_time(t)
-        return True
-
-    def _set_fps(self, fps: float) -> None:
-        self._fps = fps
-        self._playback_controls.set_fps(fps)
+    def latest_index(self, t: int) -> int | None:
+        index = bisect_right(self.times, t)
+        if index == 0:
+            return None
+        return index - 1
