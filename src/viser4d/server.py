@@ -11,6 +11,7 @@ from viser import SceneApi
 
 from .gui import PlaybackControls
 
+
 class OpKind(Enum):
     ADD = "add"
     REMOVE = "remove"
@@ -55,12 +56,9 @@ class ProxyHandle:
         self._name = name
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # Avoid errors when setting private attributes in __init__
         if name.startswith("_"):
             object.__setattr__(self, name, value)
             return
-
-        # Record the attribute assignment
         op = Op(kind=OpKind.SET, target=self._name, member=name, args=(value,))
         self._parent_scene.record(op)
 
@@ -72,19 +70,19 @@ class ProxyHandle:
 class ProxyScene:
     """Scene proxy that records add/attribute operations across time."""
 
-    def __init__(self, scene: SceneApi | None, num_steps: int) -> None:
+    def __init__(self, scene: SceneApi | None) -> None:
         self._recording_time: int | None = None
         self._adds: dict[str, _TimeSeries] = {}
         self._removes: dict[str, _TimeSeries] = {}
         self._sets: dict[str, dict[str, _TimeSeries]] = {}
         self._live_scene = scene
         self._handles: dict[str, Any] = {}
-        self._applied_up_to: int = -1
-        self._applied_add_index: dict[str, int] = {}
-        self._applied_set_index: dict[str, dict[str, int]] = {}
+        # Track what's currently rendered to avoid redundant updates
+        self._rendered_time: int = -1
+        self._rendered_add: dict[str, int] = {}
+        self._rendered_set: dict[str, dict[str, int]] = {}
 
     def __getattr__(self, name: str) -> Any:
-        # If it is an add_ method, record it and cache it
         if name.startswith("add_"):
 
             def _add(*args: Any, **kwargs: Any) -> ProxyHandle:
@@ -108,7 +106,6 @@ class ProxyScene:
 
             return _remove
 
-        # Otherwise, forward the call to the real scene
         def _call(*args: Any, **kwargs: Any) -> None:
             return getattr(self._live_scene, name)(*args, **kwargs)
 
@@ -136,184 +133,79 @@ class ProxyScene:
         return kwargs.get("name", args[0])
 
     def apply(self, scene: SceneApi, t: int) -> None:
-        if t <= self._applied_up_to:
+        if t < self._rendered_time:
             self._reset(scene)
         self._apply_state(scene, t)
-        self._applied_up_to = t
+        self._rendered_time = t
+
+    def _remove_handle(self, scene: SceneApi, target: str) -> None:
+        scene.remove_by_name(target)
+        self._handles.pop(target, None)
+        self._rendered_add.pop(target, None)
+        self._rendered_set.pop(target, None)
 
     def _reset(self, scene: SceneApi) -> None:
-        for target in self._handles:
-            scene.remove_by_name(target)
-        self._handles.clear()
-        self._applied_add_index.clear()
-        self._applied_set_index.clear()
-        self._applied_up_to = -1
+        for target in list(self._handles):
+            self._remove_handle(scene, target)
+        self._rendered_time = -1
+
+    def _get_add_at(self, target: str, t: int) -> tuple[int, Op, int] | None:
+        """Return (add_index, op, add_time) if target should exist at time t."""
+        series = self._adds.get(target)
+        if series is None:
+            return None
+
+        add_index = series.latest_index(t)
+        if add_index is None:
+            return None
+
+        add_time = series.times[add_index]
+
+        remove_series = self._removes.get(target)
+        if remove_series is not None:
+            remove_index = remove_series.latest_index(t)
+            if remove_index is not None:
+                if remove_series.times[remove_index] >= add_time:
+                    return None
+
+        return (add_index, series.values[add_index], add_time)
 
     def _apply_state(self, scene: SceneApi, t: int) -> None:
-        targets = set(self._adds) | set(self._handles)
-        for target in targets:
-            series = self._adds.get(target)
-            if series is None:
+        for target in set(self._adds) | set(self._handles):
+            add_info = self._get_add_at(target, t)
+
+            if add_info is None:
                 if target in self._handles:
-                    scene.remove_by_name(target)
-                    self._handles.pop(target, None)
-                    self._applied_add_index.pop(target, None)
-                    self._applied_set_index.pop(target, None)
+                    self._remove_handle(scene, target)
                 continue
 
-            add_index = series.latest_index(t)
-            if add_index is None:
-                if target in self._handles:
-                    scene.remove_by_name(target)
-                    self._handles.pop(target, None)
-                    self._applied_add_index.pop(target, None)
-                    self._applied_set_index.pop(target, None)
-                continue
+            add_index, op, add_time = add_info
 
-            remove_series = self._removes.get(target)
-            if remove_series is not None:
-                remove_index = remove_series.latest_index(t)
-                if remove_index is not None:
-                    remove_time = remove_series.times[remove_index]
-                    if remove_time >= series.times[add_index]:
-                        if target in self._handles:
-                            scene.remove_by_name(target)
-                            self._handles.pop(target, None)
-                            self._applied_add_index.pop(target, None)
-                            self._applied_set_index.pop(target, None)
-                        continue
-
-            if self._applied_add_index.get(target) != add_index:
+            if self._rendered_add.get(target) != add_index:
                 if target in self._handles:
-                    scene.remove_by_name(target)
-                op = series.values[add_index]
+                    self._remove_handle(scene, target)
                 self._handles[target] = getattr(self._live_scene, op.member)(
                     *op.args, **op.kwargs
                 )
-                self._applied_add_index[target] = add_index
-                self._applied_set_index[target] = {}
+                self._rendered_add[target] = add_index
+                self._rendered_set[target] = {}
 
-            add_time = series.times[add_index]
             handle = self._handles[target]
             for member, member_series in self._sets.get(target, {}).items():
-                member_index = member_series.latest_index(t)
-                if member_index is None:
+                set_index = member_series.latest_index(t)
+                if set_index is None:
                     continue
-                if member_series.times[member_index] < add_time:
+                if member_series.times[set_index] < add_time:
                     continue
-                applied = self._applied_set_index[target].get(member)
-                if applied != member_index:
-                    setattr(handle, member, member_series.values[member_index])
-                    self._applied_set_index[target][member] = member_index
-
-
-class PlaybackController:
-    """Controller for playing back recorded timelines."""
-
-    def __init__(self, server: "ViserServer", fps: float, enable_gui: bool) -> None:
-        self._server = server
-        self._thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
-        self._current = 0
-        self._fps = fps
-        self._controls = (
-            PlaybackControls(
-                server.gui,
-                server.num_steps,
-                fps,
-                on_seek=self.seek,
-                on_play=self.play,
-                on_pause=self.pause,
-                on_fps=self._set_fps,
-            )
-            if enable_gui
-            else None
-        )
-
-    @property
-    def current_time(self) -> int:
-        return self._current
-
-    def play(self, fps: float | None = None, loop: bool = False) -> None:
-        if fps is not None:
-            self._set_fps(fps)
-        if self._thread is not None and self._thread.is_alive():
-            return
-
-        def _run() -> None:
-            index = self._current
-            last_fps = self._fps
-            frame_duration = 1.0 / last_fps
-            next_time = time.monotonic()
-            while True:
-                while index < self._server.num_steps:
-                    if self._stop_event.is_set():
-                        return
-                    if self._fps != last_fps:
-                        last_fps = self._fps
-                        frame_duration = 1.0 / last_fps
-                        next_time = time.monotonic()
-                    now = time.monotonic()
-                    if now > next_time + frame_duration:
-                        # Skip ahead to avoid stacking frame updates when lagging.
-                        skip = int((now - next_time) // frame_duration)
-                        index = min(index + skip, self._server.num_steps - 1)
-                        next_time += skip * frame_duration
-                    if not self._step(index):
-                        return
-                    index += 1
-                    next_time += frame_duration
-                    delay = next_time - time.monotonic()
-                    if delay > 0 and self._stop_event.wait(timeout=delay):
-                        return
-                if not loop:
-                    break
-                index = 0
-                next_time = time.monotonic()
-            if self._controls is not None:
-                self._controls.set_playing(False)
-
-        if self._controls is not None:
-            self._controls.set_playing(True)
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=_run, daemon=True)
-        self._thread.start()
-
-    def pause(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            self._stop_event.set()
-            self._thread.join()
-        if self._controls is not None:
-            self._controls.set_playing(False)
-
-    def seek(self, t: int) -> None:
-        self.pause()
-        self._current = t
-        self._apply(t)
-        if self._controls is not None:
-            self._controls.set_time(t)
-
-    def _step(self, t: int) -> bool:
-        """Apply frame and return False if stopped."""
-        if self._stop_event.is_set():
-            return False
-        self._apply(t)
-        self._current = t
-        if self._controls is not None:
-            self._controls.set_time(t)
-        return True
-
-    def _apply(self, t: int) -> None:
-        self._server._scene_recording.apply(self._server._live_scene, t)
-
-    def _set_fps(self, fps: float) -> None:
-        self._fps = fps
-        if self._controls is not None:
-            self._controls.set_fps(fps)
+                if self._rendered_set[target].get(member) != set_index:
+                    setattr(handle, member, member_series.values[set_index])
+                    self._rendered_set[target][member] = set_index
 
 
 class ViserServer(_viser.ViserServer):
     """Viser server with timeline recording and playback controls."""
+
+    _DEFAULT_FPS = 30.0
 
     def __init__(
         self,
@@ -324,15 +216,15 @@ class ViserServer(_viser.ViserServer):
         verbose: bool = True,
         enable_webxr: bool = False,
         ssl_context=None,
-        *,
-        fps: float = 30.0,
-        enable_playback_gui: bool = True,
         **kwargs,
     ) -> None:
         self._recording = False
         self.num_steps = num_steps
-        self.fps = fps
-        self._scene_recording = ProxyScene(None, num_steps)
+        self._scene_recording = ProxyScene(None)
+        self._playback_thread: threading.Thread | None = None
+        self._playback_stop = threading.Event()
+        self._current_time = 0
+        self._fps = self._DEFAULT_FPS
         super().__init__(
             host=host,
             port=port,
@@ -342,7 +234,7 @@ class ViserServer(_viser.ViserServer):
             ssl_context=ssl_context,
             **kwargs,
         )
-        self.playback = PlaybackController(self, fps, enable_playback_gui)
+        self._playback_controls = PlaybackControls(self)
 
     @property
     def scene(self) -> ProxyScene | SceneApi:
@@ -353,7 +245,7 @@ class ViserServer(_viser.ViserServer):
         self._live_scene = value
         self._scene_recording._live_scene = value
         self._scene_recording._handles.clear()
-        self._scene_recording._applied_up_to = -1
+        self._scene_recording._rendered_time = -1
 
     @contextmanager
     def at(self, t: int) -> Iterator[None]:
@@ -366,12 +258,86 @@ class ViserServer(_viser.ViserServer):
             self._recording = False
             self._scene_recording.set_time(None)
 
-    def play(self, fps: float | None = None, loop: bool = False) -> None:
-        self.playback.play(fps=fps, loop=loop)
+    def play(self, fps: float, loop: bool = False) -> None:
+        self._set_fps(fps)
+        if self._playback_thread is not None and self._playback_thread.is_alive():
+            return
+
+        self._playback_controls.set_playing(True)
+        self._playback_stop = threading.Event()
+        self._playback_thread = threading.Thread(
+            target=self._playback_loop, args=(loop,), daemon=True
+        )
+        self._playback_thread.start()
+
+    def _playback_loop(self, loop: bool) -> None:
+        """Main playback loop. Runs in a separate thread."""
+        index = self._current_time
+        frame_duration = 1.0 / self._fps
+        next_frame_time = time.monotonic()
+
+        while True:
+            if self._playback_stop.is_set():
+                return
+
+            # Handle dynamic FPS changes
+            new_duration = 1.0 / self._fps
+            if frame_duration != new_duration:
+                frame_duration = new_duration
+                next_frame_time = time.monotonic()
+
+            # Skip frames if rendering is too slow
+            now = time.monotonic()
+            if now > next_frame_time + frame_duration:
+                frames_behind = int((now - next_frame_time) / frame_duration)
+                index = min(index + frames_behind, self.num_steps - 1)
+                next_frame_time += frames_behind * frame_duration
+
+            # Render current frame
+            if not self._playback_step(index):
+                return
+
+            # Advance to next frame
+            index += 1
+            next_frame_time += frame_duration
+
+            # Handle end of timeline
+            if index >= self.num_steps:
+                if not loop:
+                    break
+                index = 0
+                next_frame_time = time.monotonic()
+                continue
+
+            # Wait for next frame
+            delay = next_frame_time - time.monotonic()
+            if delay > 0 and self._playback_stop.wait(timeout=delay):
+                return
+
+        self._playback_controls.set_playing(False)
 
     def pause(self) -> None:
-        self.playback.pause()
+        if self._playback_thread is not None and self._playback_thread.is_alive():
+            self._playback_stop.set()
+            self._playback_thread.join()
+        self._playback_controls.set_playing(False)
 
     def seek(self, t: int) -> None:
         assert 0 <= t < self.num_steps
-        self.playback.seek(t)
+        self.pause()
+        self._current_time = t
+        self._scene_recording.apply(self._live_scene, t)
+        self._playback_controls.set_time(t)
+
+    def _playback_step(self, t: int) -> bool:
+        """Apply frame and return False if stopped."""
+        if self._playback_stop.is_set():
+            return False
+        self._scene_recording.apply(self._live_scene, t)
+        self._current_time = t
+        self._playback_controls.set_time(t)
+        return True
+
+    def _set_fps(self, fps: float) -> None:
+        self._fps = fps
+        self._playback_controls.set_fps(fps)
