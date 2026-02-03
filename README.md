@@ -3,6 +3,27 @@
 viser4d is a small wrapper around `viser` that adds a time dimension. It records
 scene operations across timesteps and can seek or play them back.
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      ViserServer                        │
+│  - Owns the timeline and playback state                 │
+│  - Provides the public API (at, play, pause, seek)      │
+└─────────────────────────────────────────────────────────┘
+                            │
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                 ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│    Timeline     │ │  SceneRenderer  │ │ PlaybackControls│
+│                 │ │                 │ │                 │
+│ - Operations by │ │ - Apply ops to  │ │ - GUI widgets   │
+│   timestep      │ │   live scene    │ │ - Event handlers│
+│ - Store temporal│ │ - Track render  │ │                 │
+│   data          │ │   state         │ │                 │
+└─────────────────┘ └─────────────────┘ └─────────────────┘
+```
+
 ## Quickstart
 
 ```bash

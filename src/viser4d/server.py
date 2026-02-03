@@ -46,6 +46,120 @@ class _TimeSeries:
         return index - 1
 
 
+class Timeline:
+    """Stores temporal operation data."""
+
+    def __init__(self) -> None:
+        self._adds: dict[str, _TimeSeries] = {}
+        self._removes: dict[str, _TimeSeries] = {}
+        self._sets: dict[str, dict[str, _TimeSeries]] = {}
+
+    def record_add(self, t: int, target: str, op: Op) -> None:
+        series = self._adds.setdefault(target, _TimeSeries())
+        series.add(t, op)
+
+    def record_remove(self, t: int, target: str) -> None:
+        series = self._removes.setdefault(target, _TimeSeries())
+        series.add(t, None)
+
+    def record_set(self, t: int, target: str, member: str, value: Any) -> None:
+        target_sets = self._sets.setdefault(target, {})
+        series = target_sets.setdefault(member, _TimeSeries())
+        series.add(t, value)
+
+    @property
+    def targets(self) -> set[str]:
+        return set(self._adds)
+
+    def get_sets_for(self, target: str) -> dict[str, _TimeSeries]:
+        return self._sets.get(target, {})
+
+    def get_add_at(self, target: str, t: int) -> tuple[int, Op, int] | None:
+        """Return (add_index, op, add_time) if target should exist at time t."""
+        series = self._adds.get(target)
+        if series is None:
+            return None
+
+        add_index = series.latest_index(t)
+        if add_index is None:
+            return None
+
+        add_time = series.times[add_index]
+
+        remove_series = self._removes.get(target)
+        if remove_series is not None:
+            remove_index = remove_series.latest_index(t)
+            if remove_index is not None:
+                if remove_series.times[remove_index] >= add_time:
+                    return None
+
+        return (add_index, series.values[add_index], add_time)
+
+
+class SceneRenderer:
+    """Applies timeline state to a live scene."""
+
+    def __init__(self, timeline: Timeline, scene: SceneApi) -> None:
+        self._timeline = timeline
+        self._scene = scene
+        self._handles: dict[str, Any] = {}
+        self._rendered_time: int = -1
+        self._rendered_add: dict[str, int] = {}
+        self._rendered_set: dict[str, dict[str, int]] = {}
+
+    def apply(self, t: int) -> None:
+        if t < self._rendered_time:
+            self._reset()
+        self._apply_state(t)
+        self._rendered_time = t
+
+    def reset(self) -> None:
+        """Public reset to clear all rendered state."""
+        self._reset()
+
+    def _reset(self) -> None:
+        for target in list(self._handles):
+            self._remove_handle(target)
+        self._rendered_time = -1
+
+    def _remove_handle(self, target: str) -> None:
+        self._scene.remove_by_name(target)
+        self._handles.pop(target, None)
+        self._rendered_add.pop(target, None)
+        self._rendered_set.pop(target, None)
+
+    def _apply_state(self, t: int) -> None:
+        for target in self._timeline.targets | set(self._handles):
+            add_info = self._timeline.get_add_at(target, t)
+
+            if add_info is None:
+                if target in self._handles:
+                    self._remove_handle(target)
+                continue
+
+            add_index, op, add_time = add_info
+
+            if self._rendered_add.get(target) != add_index:
+                if target in self._handles:
+                    self._remove_handle(target)
+                self._handles[target] = getattr(self._scene, op.member)(
+                    *op.args, **op.kwargs
+                )
+                self._rendered_add[target] = add_index
+                self._rendered_set[target] = {}
+
+            handle = self._handles[target]
+            for member, member_series in self._timeline.get_sets_for(target).items():
+                set_index = member_series.latest_index(t)
+                if set_index is None:
+                    continue
+                if member_series.times[set_index] < add_time:
+                    continue
+                if self._rendered_set[target].get(member) != set_index:
+                    setattr(handle, member, member_series.values[set_index])
+                    self._rendered_set[target][member] = set_index
+
+
 class ProxyHandle:
     """Handle proxy that records attribute assignments."""
 
@@ -68,19 +182,11 @@ class ProxyHandle:
 
 
 class ProxyScene:
-    """Scene proxy that records add/attribute operations across time."""
+    """Scene proxy that records operations to a timeline."""
 
-    def __init__(self, scene: SceneApi | None) -> None:
+    def __init__(self, timeline: Timeline) -> None:
+        self._timeline = timeline
         self._recording_time: int | None = None
-        self._adds: dict[str, _TimeSeries] = {}
-        self._removes: dict[str, _TimeSeries] = {}
-        self._sets: dict[str, dict[str, _TimeSeries]] = {}
-        self._live_scene = scene
-        self._handles: dict[str, Any] = {}
-        # Track what's currently rendered to avoid redundant updates
-        self._rendered_time: int = -1
-        self._rendered_add: dict[str, int] = {}
-        self._rendered_set: dict[str, dict[str, int]] = {}
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("add_"):
@@ -106,10 +212,7 @@ class ProxyScene:
 
             return _remove
 
-        def _call(*args: Any, **kwargs: Any) -> None:
-            return getattr(self._live_scene, name)(*args, **kwargs)
-
-        return _call
+        raise AttributeError(f"ProxyScene has no attribute '{name}'")
 
     def set_time(self, time_step: int | None) -> None:
         self._recording_time = time_step
@@ -117,89 +220,17 @@ class ProxyScene:
     def record(self, op: Op) -> None:
         if self._recording_time is None:
             raise RuntimeError("Cannot record operation when time is not set.")
+        t = self._recording_time
         if op.kind is OpKind.ADD:
-            series = self._adds.setdefault(op.target, _TimeSeries())
-            series.add(self._recording_time, op)
+            self._timeline.record_add(t, op.target, op)
         elif op.kind is OpKind.REMOVE:
-            series = self._removes.setdefault(op.target, _TimeSeries())
-            series.add(self._recording_time, None)
+            self._timeline.record_remove(t, op.target)
         else:
-            target_sets = self._sets.setdefault(op.target, {})
-            series = target_sets.setdefault(op.member, _TimeSeries())
-            series.add(self._recording_time, op.args[0])
+            self._timeline.record_set(t, op.target, op.member, op.args[0])
 
     @staticmethod
     def _target_from_add(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
         return kwargs.get("name", args[0])
-
-    def apply(self, scene: SceneApi, t: int) -> None:
-        if t < self._rendered_time:
-            self._reset(scene)
-        self._apply_state(scene, t)
-        self._rendered_time = t
-
-    def _remove_handle(self, scene: SceneApi, target: str) -> None:
-        scene.remove_by_name(target)
-        self._handles.pop(target, None)
-        self._rendered_add.pop(target, None)
-        self._rendered_set.pop(target, None)
-
-    def _reset(self, scene: SceneApi) -> None:
-        for target in list(self._handles):
-            self._remove_handle(scene, target)
-        self._rendered_time = -1
-
-    def _get_add_at(self, target: str, t: int) -> tuple[int, Op, int] | None:
-        """Return (add_index, op, add_time) if target should exist at time t."""
-        series = self._adds.get(target)
-        if series is None:
-            return None
-
-        add_index = series.latest_index(t)
-        if add_index is None:
-            return None
-
-        add_time = series.times[add_index]
-
-        remove_series = self._removes.get(target)
-        if remove_series is not None:
-            remove_index = remove_series.latest_index(t)
-            if remove_index is not None:
-                if remove_series.times[remove_index] >= add_time:
-                    return None
-
-        return (add_index, series.values[add_index], add_time)
-
-    def _apply_state(self, scene: SceneApi, t: int) -> None:
-        for target in set(self._adds) | set(self._handles):
-            add_info = self._get_add_at(target, t)
-
-            if add_info is None:
-                if target in self._handles:
-                    self._remove_handle(scene, target)
-                continue
-
-            add_index, op, add_time = add_info
-
-            if self._rendered_add.get(target) != add_index:
-                if target in self._handles:
-                    self._remove_handle(scene, target)
-                self._handles[target] = getattr(self._live_scene, op.member)(
-                    *op.args, **op.kwargs
-                )
-                self._rendered_add[target] = add_index
-                self._rendered_set[target] = {}
-
-            handle = self._handles[target]
-            for member, member_series in self._sets.get(target, {}).items():
-                set_index = member_series.latest_index(t)
-                if set_index is None:
-                    continue
-                if member_series.times[set_index] < add_time:
-                    continue
-                if self._rendered_set[target].get(member) != set_index:
-                    setattr(handle, member, member_series.values[set_index])
-                    self._rendered_set[target][member] = set_index
 
 
 class ViserServer(_viser.ViserServer):
@@ -220,7 +251,9 @@ class ViserServer(_viser.ViserServer):
     ) -> None:
         self._recording = False
         self.num_steps = num_steps
-        self._scene_recording = ProxyScene(None)
+        self._timeline = Timeline()
+        self._proxy_scene = ProxyScene(self._timeline)
+        self._renderer: SceneRenderer | None = None
         self._playback_thread: threading.Thread | None = None
         self._playback_stop = threading.Event()
         self._current_time = 0
@@ -238,25 +271,23 @@ class ViserServer(_viser.ViserServer):
 
     @property
     def scene(self) -> ProxyScene | SceneApi:
-        return self._scene_recording if self._recording else self._live_scene
+        return self._proxy_scene if self._recording else self._live_scene
 
     @scene.setter
     def scene(self, value: SceneApi) -> None:
         self._live_scene = value
-        self._scene_recording._live_scene = value
-        self._scene_recording._handles.clear()
-        self._scene_recording._rendered_time = -1
+        self._renderer = SceneRenderer(self._timeline, value)
 
     @contextmanager
     def at(self, t: int) -> Iterator[None]:
         assert 0 <= t < self.num_steps
         self._recording = True
-        self._scene_recording.set_time(t)
+        self._proxy_scene.set_time(t)
         try:
             yield
         finally:
             self._recording = False
-            self._scene_recording.set_time(None)
+            self._proxy_scene.set_time(None)
 
     def play(self, fps: float, loop: bool = False) -> None:
         self._set_fps(fps)
@@ -326,14 +357,16 @@ class ViserServer(_viser.ViserServer):
         assert 0 <= t < self.num_steps
         self.pause()
         self._current_time = t
-        self._scene_recording.apply(self._live_scene, t)
+        if self._renderer is not None:
+            self._renderer.apply(t)
         self._playback_controls.set_time(t)
 
     def _playback_step(self, t: int) -> bool:
         """Apply frame and return False if stopped."""
         if self._playback_stop.is_set():
             return False
-        self._scene_recording.apply(self._live_scene, t)
+        if self._renderer is not None:
+            self._renderer.apply(t)
         self._current_time = t
         self._playback_controls.set_time(t)
         return True
