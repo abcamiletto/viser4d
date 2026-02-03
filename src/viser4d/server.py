@@ -95,7 +95,6 @@ class ViserServer(_viser.ViserServer):
     def scene(self, value: SceneApi) -> None:
         self._live_scene = value
         self._renderer = SceneRenderer(self._timeline, value)
-        self._renderer.reset()
 
     @contextmanager
     def at(self, t: int) -> Iterator[None]:
@@ -339,15 +338,12 @@ class SceneRenderer:
 
     def apply(self, t: int) -> None:
         if t < self._rendered_time:
-            self._reset()
+            self.reset()
         self._apply_state(t)
         self._rendered_time = t
 
     def reset(self) -> None:
-        """Public reset to clear all rendered state."""
-        self._reset()
-
-    def _reset(self) -> None:
+        """Clear all rendered state."""
         for target in list(self._handles):
             self._remove_handle(target)
         self._rendered_time = -1
