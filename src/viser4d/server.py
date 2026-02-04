@@ -2,30 +2,28 @@
 
 Architecture
 ------------
+Context-aware proxies: ProxyScene and ProxyHandle behave differently based on
+whether you're inside an ``at(t)`` context or not.
+
 ::
 
-    ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-    │                                              Viser4dServer                                                │
-    │                      - Owns the timeline and playback state                                             │
-    │                      - Provides the public API (at, play, pause, seek)                                  │
-    └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-                                                        │
-                ┌───────────────────┬───────────────────┼───────────────────┬───────────────────┐
-                ▼                   ▼                   ▼                   ▼                   ▼
-    ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐
-    │    ProxyScene     │ │     Timeline      │ │   SceneRenderer   │ │   Scene (live)    │ │ PlaybackControls  │
-    │                   │ │                   │ │                   │ │                   │ │                   │
-    │ - Records ops     │ │ - Ops by timestep │ │ - Apply ops to    │ │ - Real viser      │ │ - GUI widgets     │
-    │   when inside     │ │ - Temporal        │ │   the live scene  │ │   scene           │ │ - Event handlers  │
-    │   at(t) context   │ │   storage         │ │ - Track render    │ │                   │ │                   │
-    │                   │ │                   │ │   state           │ │                   │ │                   │
-    └─────────┬─────────┘ └─────────┬─────────┘ └─────────┬─────────┘ └─────────┬─────────┘ └───────────────────┘
-              │                     │                     │                     │
-              └─────────────────────┘                     └─────────────────────┘
-                    writes to                                   reads from
+    Inside at(t):                          Outside at(t):
+    ─────────────                          ──────────────
+    server.scene.add_frame(...)            server.scene.add_frame(...)
+           │                                      │
+           ▼                                      ▼
+    ┌─────────────┐                        ┌─────────────┐
+    │ ProxyScene  │ ──records──▶ Timeline  │ ProxyScene  │ ──forwards──▶ Live Scene
+    └─────────────┘                        └─────────────┘
 
-ProxyScene records operations to the Timeline during ``at(t)`` contexts.
-SceneRenderer reads from the Timeline and applies state to the live Scene during playback.
+    handle.position = ...                  handle.position = ...
+           │                                      │
+           ▼                                      ▼
+    ┌─────────────┐                        ┌─────────────┐
+    │ ProxyHandle │ ──records──▶ Timeline  │ ProxyHandle │ ──forwards──▶ Live Handle
+    └─────────────┘                        └─────────────┘
+
+Playback: SceneRenderer reads from Timeline and applies state to the live scene.
 """
 
 from __future__ import annotations
@@ -93,23 +91,21 @@ class Viser4dServer(_viser.ViserServer):
         ssl_context: Any = None,
         lazy_threshold_bytes: int | None = None,
         compression: CompressionMode | None = None,
+        enable_playback_gui: bool = True,
         **kwargs: Any,
     ) -> None:
-        self._recording = False
         self.num_steps = num_steps
         self._lazy_threshold_bytes = (
             lazy_threshold_bytes or self._DEFAULT_LAZY_THRESHOLD_BYTES
         )
         self._compression = compression or self._DEFAULT_COMPRESSION
-        self._timeline = Timeline()
-        self._proxy_scene = ProxyScene(
-            self._timeline, self._lazy_threshold_bytes, self._compression
-        )
         self._playback_thread: threading.Thread | None = None
         self._playback_stop = threading.Event()
         self._current_time = 0
         self._fps = self._DEFAULT_FPS
         self._timestep_callbacks: list[Callable[[int], None]] = []
+
+        # Initialize viser server first (creates _live_scene)
         super().__init__(
             host=host,
             port=port,
@@ -119,26 +115,41 @@ class Viser4dServer(_viser.ViserServer):
             ssl_context=ssl_context,
             **kwargs,
         )
-        self._proxy_scene._set_live_scene(self._live_scene)
+
+        # Now create components that need _live_scene
+        self._timeline = Timeline()
+        self._proxy_scene = ProxyScene(
+            timeline=self._timeline,
+            live_scene=self._live_scene,
+            lazy_threshold_bytes=self._lazy_threshold_bytes,
+            compression=self._compression,
+        )
         self._renderer = SceneRenderer(self._timeline, self._live_scene)
-        self._playback_controls = PlaybackControls(self)
+        if enable_playback_gui:
+            self._playback_controls: PlaybackControls | None = PlaybackControls(self)
+        else:
+            self._playback_controls = None
 
     @property
-    def scene(self) -> ProxyScene | SceneApi:
+    def scene(self) -> ProxyScene:
         """The scene API for adding and manipulating 3D objects.
 
-        When accessed inside an ``at(t)`` context, returns a proxy that records
-        operations. Outside of recording contexts, returns the live viser scene.
+        Context-aware: inside ``at(t)`` operations are recorded to the timeline,
+        outside they are applied immediately to the live scene.
 
         Returns:
-            ProxyScene when recording, SceneApi otherwise.
+            ProxyScene (context-aware, always the same object).
         """
-        return self._proxy_scene if self._recording else self._live_scene
+        # During __init__, _proxy_scene doesn't exist yet
+        # Use __dict__ to avoid triggering __getattr__ recursion
+        if "_proxy_scene" not in self.__dict__:
+            return self._live_scene  # type: ignore[return-value]
+        return self._proxy_scene
 
     @scene.setter
     def scene(self, value: SceneApi) -> None:
+        # Called by ViserServer.__init__ to set the live scene
         self._live_scene = value
-        self._renderer = SceneRenderer(self._timeline, value)
 
     @property
     def current_time(self) -> int:
@@ -171,13 +182,11 @@ class Viser4dServer(_viser.ViserServer):
             ...     handle.position = (1.0, 2.0, 3.0)
         """
         assert 0 <= t < self.num_steps
-        self._recording = True
-        self._proxy_scene.set_time(t)
+        self._proxy_scene._set_time(t)
         try:
             yield
         finally:
-            self._recording = False
-            self._proxy_scene.set_time(None)
+            self._proxy_scene._set_time(None)
 
     def play(self, fps: float, loop: bool = False) -> None:
         """Start playback of the timeline.
@@ -267,7 +276,7 @@ class Viser4dServer(_viser.ViserServer):
             ...     if name.startswith("/skeleton/"):
             ...         server.get_handle(name).visible = False
         """
-        return list(self._timeline._adds.keys())
+        return self._timeline.handle_names
 
     def get_handle(self, name: str) -> ProxyHandle:
         """Get a handle by name for manipulation.
@@ -338,7 +347,8 @@ class Viser4dServer(_viser.ViserServer):
             if delay > 0 and self._playback_stop.wait(timeout=delay):
                 return
 
-        self._playback_controls.set_playing(False)
+        if self._playback_controls is not None:
+            self._playback_controls.set_playing(False)
 
     def _playback_step(self, t: int) -> bool:
         """Apply frame and return False if stopped."""
@@ -351,7 +361,8 @@ class Viser4dServer(_viser.ViserServer):
 
     def _set_fps(self, fps: float) -> None:
         self._fps = fps
-        self._playback_controls.set_fps(fps)
+        if self._playback_controls is not None:
+            self._playback_controls.set_fps(fps)
 
 
 # =============================================================================
@@ -360,24 +371,31 @@ class Viser4dServer(_viser.ViserServer):
 
 
 class ProxyScene:
-    """Scene proxy that records operations to a timeline."""
+    """Context-aware scene proxy.
+
+    Inside an ``at(t)`` context, operations are recorded to the timeline.
+    Outside, operations are forwarded to the live viser scene.
+    """
 
     def __init__(
         self,
         timeline: Timeline,
+        live_scene: SceneApi,
         lazy_threshold_bytes: int,
         compression: CompressionMode,
     ) -> None:
         self._timeline = timeline
+        self._live_scene = live_scene
         self._lazy_threshold_bytes = lazy_threshold_bytes
         self._compression = compression
         self._recording_time: int | None = None
-        self._live_scene: SceneApi | None = None
-
-    def _set_live_scene(self, scene: SceneApi) -> None:
-        self._live_scene = scene
 
     def __getattr__(self, name: str) -> Any:
+        # Outside recording context - forward to live scene
+        if self._recording_time is None:
+            return getattr(self._live_scene, name)
+
+        # Inside recording context - record operations
         if name.startswith("add_"):
 
             def _add(*args: Any, **kwargs: Any) -> ProxyHandle:
@@ -391,7 +409,7 @@ class ProxyScene:
                     threshold_bytes=self._lazy_threshold_bytes,
                     compression=self._compression,
                 )
-                self.record(op)
+                self._record(op)
                 return ProxyHandle(self, target)
 
             return _add
@@ -399,7 +417,7 @@ class ProxyScene:
         if name == "remove_by_name":
 
             def _remove(target: str) -> None:
-                self.record(
+                self._record(
                     Op.create(
                         kind=OpKind.REMOVE,
                         target=target,
@@ -411,12 +429,13 @@ class ProxyScene:
 
             return _remove
 
-        raise AttributeError(f"ProxyScene has no attribute '{name}'")
+        # For any other attribute, forward to the live scene even while recording.
+        return getattr(self._live_scene, name)
 
-    def set_time(self, time_step: int | None) -> None:
+    def _set_time(self, time_step: int | None) -> None:
         self._recording_time = time_step
 
-    def record(self, op: Op) -> None:
+    def _record(self, op: Op) -> None:
         if self._recording_time is None:
             raise RuntimeError("Cannot record operation when time is not set.")
         t = self._recording_time
@@ -461,7 +480,7 @@ class ProxyHandle:
                 threshold_bytes=self._parent_scene._lazy_threshold_bytes,
                 compression=self._parent_scene._compression,
             )
-            self._parent_scene.record(op)
+            self._parent_scene._record(op)
         else:
             # Outside at() context - forward to live handle
             setattr(self._get_live_handle(), name, value)
@@ -480,19 +499,14 @@ class ProxyHandle:
                 threshold_bytes=self._parent_scene._lazy_threshold_bytes,
                 compression=self._parent_scene._compression,
             )
-            self._parent_scene.record(op)
+            self._parent_scene._record(op)
         else:
             # Outside at() context - forward to live handle
             self._get_live_handle().remove()
 
     def _get_live_handle(self) -> Any:
         """Get the live viser handle, raising if not yet in live scene."""
-        if self._parent_scene._live_scene is None:
-            raise RuntimeError(
-                f"Handle '{self._name}' cannot be accessed: live scene not initialized."
-            )
-        handles = self._parent_scene._live_scene._handle_from_node_name
-        handle = handles.get(self._name)
+        handle = self._parent_scene._live_scene._handle_from_node_name.get(self._name)
         if handle is None:
             raise RuntimeError(
                 f"Handle '{self._name}' not in live scene. "
@@ -530,6 +544,11 @@ class Timeline:
     @property
     def targets(self) -> set[str]:
         return set(self._adds)
+
+    @property
+    def handle_names(self) -> list[str]:
+        """Names of all handles that have been added."""
+        return list(self._adds.keys())
 
     def get_sets_for(self, target: str) -> dict[str, _TimeSeries]:
         return self._sets.get(target, {})

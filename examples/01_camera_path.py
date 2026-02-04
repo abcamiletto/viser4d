@@ -3,7 +3,7 @@ import viser4d
 from viser import transforms as tf
 
 
-server = viser4d.ViserServer(num_steps=60)
+server = viser4d.Viser4dServer(num_steps=60)
 server.scene.add_frame("/origin", axes_length=0.25)
 
 frustum = None

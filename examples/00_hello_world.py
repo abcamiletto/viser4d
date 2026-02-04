@@ -2,7 +2,7 @@ import numpy as np
 import viser4d
 
 
-server = viser4d.ViserServer(num_steps=10)
+server = viser4d.Viser4dServer(num_steps=10)
 
 server.scene.add_frame("/origin", axes_length=0.25)
 server.scene.add_grid("/ground", width=10.0, height=10.0)

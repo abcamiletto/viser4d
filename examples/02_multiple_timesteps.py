@@ -1,7 +1,7 @@
 import numpy as np
 import viser4d
 
-server = viser4d.ViserServer(num_steps=4)
+server = viser4d.Viser4dServer(num_steps=4)
 
 for t in range(4):
     with server.at(t):

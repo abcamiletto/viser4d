@@ -60,11 +60,21 @@ callbacks.
 
 ## How it works
 
-- `server.at(t)` sets the active timestep for recording.
-- `server.scene.add_*` calls are recorded instead of executed immediately.
-- Attribute assignments on returned handles (like `handle.position = ...`) are
-  recorded as updates.
-- `server.seek(t)` rebuilds the live scene from all recorded ops up to `t`.
+Context determines behavior. `server.scene` always returns the same object, but
+it behaves differently based on whether you're inside an `at(t)` context:
+
+```
+Inside at(t):                          Outside at(t):
+─────────────                          ──────────────
+scene.add_frame(...)                   scene.add_frame(...)
+       │                                      │
+       ▼                                      ▼
+    records to Timeline                    forwards to live viser scene
+```
+
+- **Inside `at(t)`**: Operations are recorded to a timeline, not executed.
+- **Outside `at(t)`**: Operations forward directly to viser's live scene.
+- **Playback**: `seek(t)` or `play()` applies recorded state to the live scene.
 
 See `examples/` for more.
 
