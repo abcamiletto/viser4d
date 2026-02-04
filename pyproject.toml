@@ -5,7 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "cloudpickle>=3.0.0",
     "numpy>=2.4.1",
+    "objsize>=0.7.0",
     "viser>=1.0.19",
 ]
 

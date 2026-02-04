@@ -30,17 +30,16 @@ SceneRenderer reads from the Timeline and applies state to the live Scene during
 
 from __future__ import annotations
 
-import dataclasses
 import threading
 import time
 from bisect import bisect_right
 from contextlib import contextmanager
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Iterator
 
 import viser as _viser
 
 from .gui import PlaybackControls
+from .op import Op, OpKind
 
 if TYPE_CHECKING:
     from viser import SceneApi
@@ -209,7 +208,7 @@ class ProxyScene:
 
             def _add(*args: Any, **kwargs: Any) -> ProxyHandle:
                 target = self._target_from_add(args, kwargs)
-                op = Op(
+                op = Op.create(
                     kind=OpKind.ADD,
                     target=target,
                     member=name,
@@ -224,7 +223,7 @@ class ProxyScene:
         if name == "remove_by_name":
 
             def _remove(target: str) -> None:
-                self.record(Op(kind=OpKind.REMOVE, target=target, member=name))
+                self.record(Op.create(kind=OpKind.REMOVE, target=target, member=name))
 
             return _remove
 
@@ -262,11 +261,11 @@ class ProxyHandle:
         if name.startswith("_"):
             object.__setattr__(self, name, value)
             return
-        op = Op(kind=OpKind.SET, target=self._name, member=name, args=(value,))
+        op = Op.create(kind=OpKind.SET, target=self._name, member=name, args=(value,))
         self._parent_scene.record(op)
 
     def remove(self) -> None:
-        op = Op(kind=OpKind.REMOVE, target=self._name, member="remove")
+        op = Op.create(kind=OpKind.REMOVE, target=self._name, member="remove")
         self._parent_scene.record(op)
 
 
@@ -389,23 +388,6 @@ class SceneRenderer:
 # =============================================================================
 # Internal data structures
 # =============================================================================
-
-
-class OpKind(Enum):
-    ADD = "add"
-    REMOVE = "remove"
-    SET = "set"
-
-
-@dataclasses.dataclass(frozen=True)
-class Op:
-    """Recorded scene operation for later playback."""
-
-    kind: OpKind
-    target: str
-    member: str
-    args: tuple[Any, ...] = ()
-    kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 class _TimeSeries:
