@@ -951,6 +951,7 @@ dependencies = [
     { name = "numpy" },
     { name = "objsize" },
     { name = "viser" },
+    { name = "zstandard" },
 ]
 
 [package.dev-dependencies]
@@ -964,6 +965,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.4.1" },
     { name = "objsize", specifier = ">=0.7.0" },
     { name = "viser", specifier = ">=1.0.19" },
+    { name = "zstandard", specifier = ">=0.23.0" },
 ]
 
 [package.metadata.requires-dev]

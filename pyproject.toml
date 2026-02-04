@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=2.4.1",
     "objsize>=0.7.0",
     "viser>=1.0.19",
+    "zstandard>=0.23.0",
 ]
 
 [dependency-groups]

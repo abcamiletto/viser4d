@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import viser4d
-from viser4d.op import Op, OpKind, _get_cache_dir
+from viser4d.op import CompressionMode, Op, OpKind, _get_cache_dir
 
 
 @pytest.fixture
@@ -168,7 +168,7 @@ def test_mixed_types_survive_roundtrip() -> None:
 
 
 def test_lazy_payload_creates_file() -> None:
-    """Lazy payload creates a pickle file on disk."""
+    """Lazy payload creates a compressed pickle file on disk."""
     op = Op.create(
         kind=OpKind.ADD,
         target="/test",
@@ -181,8 +181,9 @@ def test_lazy_payload_creates_file() -> None:
     # Check that cache directory exists and has files
     cache_dir = _get_cache_dir()
     assert cache_dir.exists()
-    pkl_files = list(cache_dir.glob("*.pkl"))
-    assert len(pkl_files) >= 1
+    # Default compression creates .pkl.zst files
+    zst_files = list(cache_dir.glob("*.pkl.zst"))
+    assert len(zst_files) >= 1
 
 
 # =============================================================================
@@ -257,3 +258,61 @@ def test_cache_returns_same_data() -> None:
     second_access = op.args[1]
     np.testing.assert_array_equal(first_access, original)
     np.testing.assert_array_equal(second_access, original)
+
+
+# =============================================================================
+# Compression tests
+# =============================================================================
+
+
+def test_compression_none_creates_pkl() -> None:
+    """CompressionMode.NONE creates uncompressed .pkl files."""
+    op = Op.create(
+        kind=OpKind.ADD,
+        target="/test",
+        member="add_frame",
+        args=("/test",),
+        threshold_bytes=0,
+        compression=CompressionMode.NONE,
+    )
+    assert op.is_lazy()
+
+    cache_dir = _get_cache_dir()
+    pkl_files = list(cache_dir.glob("*.pkl"))
+    # Filter out .pkl.zst files
+    pkl_only = [f for f in pkl_files if not f.suffix == ".zst"]
+    assert len(pkl_only) >= 1
+
+
+def test_compression_fast_creates_zst() -> None:
+    """CompressionMode.FAST creates .pkl.zst files."""
+    op = Op.create(
+        kind=OpKind.ADD,
+        target="/test",
+        member="add_frame",
+        args=("/test",),
+        threshold_bytes=0,
+        compression=CompressionMode.FAST,
+    )
+    assert op.is_lazy()
+
+    cache_dir = _get_cache_dir()
+    zst_files = list(cache_dir.glob("*.pkl.zst"))
+    assert len(zst_files) >= 1
+
+
+def test_compression_roundtrip() -> None:
+    """Data survives compression round-trip for all modes."""
+    original = np.random.rand(100, 100)
+
+    for mode in CompressionMode:
+        op = Op.create(
+            kind=OpKind.ADD,
+            target="/test",
+            member="add_point_cloud",
+            args=("/test", original),
+            threshold_bytes=0,
+            compression=mode,
+        )
+        assert op.is_lazy()
+        np.testing.assert_array_equal(op.args[1], original)

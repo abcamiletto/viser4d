@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 import viser as _viser
 
 from .gui import PlaybackControls
-from .op import Op, OpKind
+from .op import CompressionMode, Op, OpKind
 
 if TYPE_CHECKING:
     from viser import SceneApi
@@ -55,6 +55,7 @@ class ViserServer(_viser.ViserServer):
 
     _DEFAULT_FPS = 30.0
     _DEFAULT_LAZY_THRESHOLD_BYTES = 1024 * 1024  # 1MB
+    _DEFAULT_COMPRESSION = CompressionMode.FAST
 
     def __init__(
         self,
@@ -66,6 +67,7 @@ class ViserServer(_viser.ViserServer):
         enable_webxr: bool = False,
         ssl_context: Any = None,
         lazy_threshold_bytes: int | None = None,
+        compression: CompressionMode | None = None,
         **kwargs: Any,
     ) -> None:
         self._recording = False
@@ -73,8 +75,11 @@ class ViserServer(_viser.ViserServer):
         self._lazy_threshold_bytes = (
             lazy_threshold_bytes or self._DEFAULT_LAZY_THRESHOLD_BYTES
         )
+        self._compression = compression or self._DEFAULT_COMPRESSION
         self._timeline = Timeline()
-        self._proxy_scene = ProxyScene(self._timeline, self._lazy_threshold_bytes)
+        self._proxy_scene = ProxyScene(
+            self._timeline, self._lazy_threshold_bytes, self._compression
+        )
         self._playback_thread: threading.Thread | None = None
         self._playback_stop = threading.Event()
         self._current_time = 0
@@ -204,9 +209,12 @@ class ViserServer(_viser.ViserServer):
 class ProxyScene:
     """Scene proxy that records operations to a timeline."""
 
-    def __init__(self, timeline: Timeline, lazy_threshold_bytes: int) -> None:
+    def __init__(
+        self, timeline: Timeline, lazy_threshold_bytes: int, compression: CompressionMode
+    ) -> None:
         self._timeline = timeline
         self._lazy_threshold_bytes = lazy_threshold_bytes
+        self._compression = compression
         self._recording_time: int | None = None
 
     def __getattr__(self, name: str) -> Any:
@@ -221,6 +229,7 @@ class ProxyScene:
                     args=args,
                     kwargs=kwargs,
                     threshold_bytes=self._lazy_threshold_bytes,
+                    compression=self._compression,
                 )
                 self.record(op)
                 return ProxyHandle(self, target)
@@ -236,6 +245,7 @@ class ProxyScene:
                         target=target,
                         member=name,
                         threshold_bytes=self._lazy_threshold_bytes,
+                        compression=self._compression,
                     )
                 )
 
@@ -281,6 +291,7 @@ class ProxyHandle:
             member=name,
             args=(value,),
             threshold_bytes=self._parent_scene._lazy_threshold_bytes,
+            compression=self._parent_scene._compression,
         )
         self._parent_scene.record(op)
 
@@ -290,6 +301,7 @@ class ProxyHandle:
             target=self._name,
             member="remove",
             threshold_bytes=self._parent_scene._lazy_threshold_bytes,
+            compression=self._parent_scene._compression,
         )
         self._parent_scene.record(op)
 

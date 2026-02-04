@@ -2,6 +2,7 @@
 
 This module provides the Op class for recording scene operations. Heavy payloads
 (>1MB) are automatically offloaded to disk and loaded on demand via an LRU cache.
+Disk storage uses zstd compression by default for reduced I/O.
 
 Architecture
 ------------
@@ -24,7 +25,8 @@ Architecture
     │                       │                                 │                       │
     │  - Small data (<1MB)  │                                 │  - Large data (>1MB)  │
     │  - Stored in memory   │                                 │  - Stored on disk     │
-    └───────────────────────┘                                 └───────────────────────┘
+    └───────────────────────┘                                 │  - zstd compressed    │
+                                                              └───────────────────────┘
                                                                           │
                                                                           │ loads via
                                                                           ▼
@@ -41,8 +43,14 @@ Architecture
                                                               │   Temp directory      │
                                                               │                       │
                                                               │  - Cleaned on exit    │
-                                                              │  - cloudpickle files  │
+                                                              │  - .pkl.zst files     │
                                                               └───────────────────────┘
+
+Compression Modes
+-----------------
+- NONE: No compression (.pkl files)
+- FAST: zstd level 1 - fast with good compression (default)
+- BALANCED: zstd level 3 - slower but better compression
 """
 
 from __future__ import annotations
@@ -59,13 +67,24 @@ from typing import Any
 
 import cloudpickle
 import objsize
+import zstandard as zstd
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
+
+class CompressionMode(Enum):
+    """Compression mode for lazy payloads."""
+
+    NONE = "none"
+    FAST = "fast"  # zstd level 1
+    BALANCED = "balanced"  # zstd level 3
+
+
 _THRESHOLD_BYTES = 1024 * 1024  # 1MB
 _MAX_CACHE_BYTES = 1024 * 1024 * 1024  # 1GB
+_DEFAULT_COMPRESSION = CompressionMode.FAST
 _CACHE_DIR: Path | None = None
 
 
@@ -125,18 +144,42 @@ _payload_cache = _PayloadCache()
 # =============================================================================
 
 
+def _get_zstd_level(mode: CompressionMode) -> int | None:
+    """Return zstd compression level for mode, or None for no compression."""
+    if mode is CompressionMode.NONE:
+        return None
+    if mode is CompressionMode.FAST:
+        return 1
+    return 3  # BALANCED
+
+
 @dataclass
 class _LazyPayload:
     """Disk-backed (args, kwargs) that loads on demand via LRU cache."""
 
     _path: Path
+    _compression: CompressionMode
 
     @classmethod
-    def save(cls, args: tuple[Any, ...], kwargs: dict[str, Any]) -> _LazyPayload:
-        path = _get_cache_dir() / f"{uuid.uuid4().hex}.pkl"
+    def save(
+        cls,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        compression: CompressionMode = _DEFAULT_COMPRESSION,
+    ) -> _LazyPayload:
+        level = _get_zstd_level(compression)
+        ext = ".pkl" if level is None else ".pkl.zst"
+        path = _get_cache_dir() / f"{uuid.uuid4().hex}{ext}"
+
+        data = cloudpickle.dumps((args, kwargs))
+        if level is not None:
+            cctx = zstd.ZstdCompressor(level=level)
+            data = cctx.compress(data)
+
         with open(path, "wb") as f:
-            cloudpickle.dump((args, kwargs), f)
-        return cls(path)
+            f.write(data)
+
+        return cls(path, compression)
 
     def get(self) -> tuple[tuple[Any, ...], dict[str, Any]]:
         cached = _payload_cache.get(self._path)
@@ -144,8 +187,13 @@ class _LazyPayload:
             return cached
 
         with open(self._path, "rb") as f:
-            data = cloudpickle.load(f)
+            raw = f.read()
 
+        if self._compression is not CompressionMode.NONE:
+            dctx = zstd.ZstdDecompressor()
+            raw = dctx.decompress(raw)
+
+        data = cloudpickle.loads(raw)
         _payload_cache.put(self._path, data)
         return data
 
@@ -165,10 +213,11 @@ def _create_payload(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     threshold_bytes: int = _THRESHOLD_BYTES,
+    compression: CompressionMode = _DEFAULT_COMPRESSION,
 ) -> _EagerPayload | _LazyPayload:
     """Create lazy payload if data is heavy, else eager."""
     if objsize.get_deep_size(args) + objsize.get_deep_size(kwargs) > threshold_bytes:
-        return _LazyPayload.save(args, kwargs)
+        return _LazyPayload.save(args, kwargs, compression)
     return _EagerPayload(args, kwargs)
 
 
@@ -201,10 +250,14 @@ class Op:
         args: tuple[Any, ...] = (),
         kwargs: dict[str, Any] | None = None,
         threshold_bytes: int = _THRESHOLD_BYTES,
+        compression: CompressionMode = _DEFAULT_COMPRESSION,
     ) -> Op:
         """Factory that auto-selects eager vs lazy based on payload size."""
         return cls(
-            kind, target, member, _create_payload(args, kwargs or {}, threshold_bytes)
+            kind,
+            target,
+            member,
+            _create_payload(args, kwargs or {}, threshold_bytes, compression),
         )
 
     def is_lazy(self) -> bool:

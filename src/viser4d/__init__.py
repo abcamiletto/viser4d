@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import viser as _viser
 
+from .op import CompressionMode
 from .server import ViserServer
 
-__all__ = ["ViserServer"]
+__all__ = ["CompressionMode", "ViserServer"]
 
 
 def __getattr__(name: str):
