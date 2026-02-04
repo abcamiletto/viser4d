@@ -162,3 +162,14 @@ def test_multiple_timestep_callbacks(server: viser4d.Viser4dServer) -> None:
     server.seek(1)
 
     assert results == ["a:1", "b:1"]
+
+
+def test_current_time_property(server: viser4d.Viser4dServer) -> None:
+    """current_time reflects the current timestep."""
+    assert server.current_time == 0
+
+    server.seek(2)
+    assert server.current_time == 2
+
+    server.seek(1)
+    assert server.current_time == 1

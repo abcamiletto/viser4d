@@ -34,7 +34,7 @@ import threading
 import time
 from bisect import bisect_right
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 import viser as _viser
 
@@ -51,7 +51,32 @@ if TYPE_CHECKING:
 
 
 class Viser4dServer(_viser.ViserServer):
-    """Viser server with timeline recording and playback controls."""
+    """Viser server with timeline recording and playback controls.
+
+    Wraps a standard viser server with the ability to record scene operations
+    across discrete timesteps and play them back with seeking support.
+
+    Args:
+        num_steps: Total number of timesteps in the timeline.
+        host: Host address to bind the server to.
+        port: Port number for the server. Use 0 for automatic assignment.
+        label: Optional label displayed in the viser UI.
+        verbose: Whether to print server startup information.
+        enable_webxr: Whether to enable WebXR support.
+        ssl_context: Optional SSL context for HTTPS.
+        lazy_threshold_bytes: Payloads larger than this are stored on disk.
+            Defaults to 1MB.
+        compression: Compression mode for disk-backed payloads.
+            Defaults to CompressionMode.FAST.
+        **kwargs: Additional arguments passed to the underlying ViserServer.
+
+    Example:
+        >>> server = Viser4dServer(num_steps=100)
+        >>> with server.at(0):
+        ...     handle = server.scene.add_frame("/frame")
+        ...     handle.position = (1.0, 0.0, 0.0)
+        >>> server.play(fps=30, loop=True)
+    """
 
     _DEFAULT_FPS = 30.0
     _DEFAULT_LAZY_THRESHOLD_BYTES = 1024 * 1024  # 1MB
@@ -84,7 +109,7 @@ class Viser4dServer(_viser.ViserServer):
         self._playback_stop = threading.Event()
         self._current_time = 0
         self._fps = self._DEFAULT_FPS
-        self._timestep_callbacks: list[Any] = []
+        self._timestep_callbacks: list[Callable[[int], None]] = []
         super().__init__(
             host=host,
             port=port,
@@ -99,6 +124,14 @@ class Viser4dServer(_viser.ViserServer):
 
     @property
     def scene(self) -> ProxyScene | SceneApi:
+        """The scene API for adding and manipulating 3D objects.
+
+        When accessed inside an ``at(t)`` context, returns a proxy that records
+        operations. Outside of recording contexts, returns the live viser scene.
+
+        Returns:
+            ProxyScene when recording, SceneApi otherwise.
+        """
         return self._proxy_scene if self._recording else self._live_scene
 
     @scene.setter
@@ -106,8 +139,36 @@ class Viser4dServer(_viser.ViserServer):
         self._live_scene = value
         self._renderer = SceneRenderer(self._timeline, value)
 
+    @property
+    def current_time(self) -> int:
+        """The current timestep in the timeline.
+
+        Returns:
+            The timestep index (0 to num_steps - 1).
+        """
+        return self._current_time
+
     @contextmanager
     def at(self, t: int) -> Iterator[None]:
+        """Context manager for recording operations at a specific timestep.
+
+        All scene operations performed within this context are recorded to the
+        timeline at timestep ``t`` rather than being applied immediately.
+
+        Args:
+            t: The timestep index (0 to num_steps - 1).
+
+        Yields:
+            None
+
+        Raises:
+            AssertionError: If t is out of bounds.
+
+        Example:
+            >>> with server.at(5):
+            ...     handle = server.scene.add_frame("/frame")
+            ...     handle.position = (1.0, 2.0, 3.0)
+        """
         assert 0 <= t < self.num_steps
         self._recording = True
         self._proxy_scene.set_time(t)
@@ -118,6 +179,18 @@ class Viser4dServer(_viser.ViserServer):
             self._proxy_scene.set_time(None)
 
     def play(self, fps: float, loop: bool = False) -> None:
+        """Start playback of the timeline.
+
+        Begins advancing through timesteps at the specified frame rate. If
+        playback is already running, this method does nothing.
+
+        Args:
+            fps: Frames per second for playback speed.
+            loop: Whether to loop back to the beginning after reaching the end.
+
+        Example:
+            >>> server.play(fps=30, loop=True)
+        """
         self._set_fps(fps)
         if self._playback_thread is not None and self._playback_thread.is_alive():
             return
@@ -130,12 +203,31 @@ class Viser4dServer(_viser.ViserServer):
         self._playback_thread.start()
 
     def pause(self) -> None:
+        """Pause playback.
+
+        Stops the playback thread and leaves the scene at the current timestep.
+        Safe to call even if playback is not running.
+        """
         if self._playback_thread is not None and self._playback_thread.is_alive():
             self._playback_stop.set()
             self._playback_thread.join()
         self._playback_controls.set_playing(False)
 
     def seek(self, t: int) -> None:
+        """Jump to a specific timestep.
+
+        Pauses any active playback and renders the scene state at timestep ``t``.
+        Registered timestep callbacks are invoked after the scene is updated.
+
+        Args:
+            t: The timestep index (0 to num_steps - 1).
+
+        Raises:
+            AssertionError: If t is out of bounds.
+
+        Example:
+            >>> server.seek(50)  # Jump to frame 50
+        """
         assert 0 <= t < self.num_steps
         self.pause()
         self._current_time = t
@@ -143,18 +235,22 @@ class Viser4dServer(_viser.ViserServer):
         self._playback_controls.set_time(t)
         self._fire_timestep_callbacks(t)
 
-    def on_timestep_change(self, callback: Any) -> None:
+    def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
 
-        The callback receives the new timestep as its only argument::
-
-            def my_callback(t: int) -> None:
-                update_custom_visualization(t)
-
-            server.on_timestep_change(my_callback)
-
         Callbacks are fired after viser4d applies its own recorded state,
-        allowing them to layer additional visualizations on top.
+        allowing them to layer additional visualizations on top. This is useful
+        when you want to use viser4d's timeline infrastructure but manage your
+        own visualization logic.
+
+        Args:
+            callback: A function that takes the new timestep as its only argument.
+
+        Example:
+            >>> def on_timestep(t: int) -> None:
+            ...     update_video_frames(t)
+            ...     update_body_meshes(t)
+            >>> server.on_timestep_change(on_timestep)
         """
         self._timestep_callbacks.append(callback)
 
