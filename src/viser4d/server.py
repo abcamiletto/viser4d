@@ -119,6 +119,7 @@ class Viser4dServer(_viser.ViserServer):
             ssl_context=ssl_context,
             **kwargs,
         )
+        self._proxy_scene._set_live_scene(self._live_scene)
         self._renderer = SceneRenderer(self._timeline, self._live_scene)
         self._playback_controls = PlaybackControls(self)
 
@@ -251,6 +252,43 @@ class Viser4dServer(_viser.ViserServer):
         """
         self._timestep_callbacks.append(callback)
 
+    @property
+    def handles(self) -> list[str]:
+        """Names of all recorded scene handles.
+
+        Returns a list of all handle names that have been recorded in the
+        timeline. Useful for bulk operations like toggling visibility.
+
+        Returns:
+            List of handle name strings.
+
+        Example:
+            >>> for name in server.handles:
+            ...     if name.startswith("/skeleton/"):
+            ...         server.get_handle(name).visible = False
+        """
+        return list(self._timeline._adds.keys())
+
+    def get_handle(self, name: str) -> ProxyHandle:
+        """Get a handle by name for manipulation.
+
+        Returns a handle that can be used to modify scene objects. When used
+        inside an ``at(t)`` context, changes are recorded to the timeline.
+        When used outside, changes are applied immediately to the live scene.
+
+        Args:
+            name: The name of the scene object (e.g., "/skeleton/joints").
+
+        Returns:
+            A ProxyHandle for the named object.
+
+        Example:
+            >>> # Runtime visibility toggle
+            >>> handle = server.get_handle("/skeleton/joints")
+            >>> handle.visible = False  # Immediate effect
+        """
+        return ProxyHandle(self._proxy_scene, name)
+
     def _fire_timestep_callbacks(self, t: int) -> None:
         """Invoke all registered timestep callbacks."""
         for callback in self._timestep_callbacks:
@@ -334,6 +372,10 @@ class ProxyScene:
         self._lazy_threshold_bytes = lazy_threshold_bytes
         self._compression = compression
         self._recording_time: int | None = None
+        self._live_scene: SceneApi | None = None
+
+    def _set_live_scene(self, scene: SceneApi) -> None:
+        self._live_scene = scene
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("add_"):
@@ -391,7 +433,12 @@ class ProxyScene:
 
 
 class ProxyHandle:
-    """Handle proxy that records attribute assignments."""
+    """Handle proxy that records or forwards attribute access.
+
+    When accessed inside an ``at(t)`` context, operations are recorded to the
+    timeline. When accessed outside, operations are forwarded to the live
+    viser handle.
+    """
 
     __slots__ = ("_parent_scene", "_name")
 
@@ -403,25 +450,55 @@ class ProxyHandle:
         if name.startswith("_"):
             object.__setattr__(self, name, value)
             return
-        op = Op.create(
-            kind=OpKind.SET,
-            target=self._name,
-            member=name,
-            args=(value,),
-            threshold_bytes=self._parent_scene._lazy_threshold_bytes,
-            compression=self._parent_scene._compression,
-        )
-        self._parent_scene.record(op)
+
+        if self._parent_scene._recording_time is not None:
+            # Inside at() context - record to timeline
+            op = Op.create(
+                kind=OpKind.SET,
+                target=self._name,
+                member=name,
+                args=(value,),
+                threshold_bytes=self._parent_scene._lazy_threshold_bytes,
+                compression=self._parent_scene._compression,
+            )
+            self._parent_scene.record(op)
+        else:
+            # Outside at() context - forward to live handle
+            setattr(self._get_live_handle(), name, value)
+
+    def __getattr__(self, name: str) -> Any:
+        # Forward attribute reads to live handle
+        return getattr(self._get_live_handle(), name)
 
     def remove(self) -> None:
-        op = Op.create(
-            kind=OpKind.REMOVE,
-            target=self._name,
-            member="remove",
-            threshold_bytes=self._parent_scene._lazy_threshold_bytes,
-            compression=self._parent_scene._compression,
-        )
-        self._parent_scene.record(op)
+        if self._parent_scene._recording_time is not None:
+            # Inside at() context - record to timeline
+            op = Op.create(
+                kind=OpKind.REMOVE,
+                target=self._name,
+                member="remove",
+                threshold_bytes=self._parent_scene._lazy_threshold_bytes,
+                compression=self._parent_scene._compression,
+            )
+            self._parent_scene.record(op)
+        else:
+            # Outside at() context - forward to live handle
+            self._get_live_handle().remove()
+
+    def _get_live_handle(self) -> Any:
+        """Get the live viser handle, raising if not yet in live scene."""
+        if self._parent_scene._live_scene is None:
+            raise RuntimeError(
+                f"Handle '{self._name}' cannot be accessed: live scene not initialized."
+            )
+        handles = self._parent_scene._live_scene._handle_from_node_name
+        handle = handles.get(self._name)
+        if handle is None:
+            raise RuntimeError(
+                f"Handle '{self._name}' not in live scene. "
+                "Make sure to call seek() after recording."
+            )
+        return handle
 
 
 # =============================================================================
