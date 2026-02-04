@@ -54,6 +54,7 @@ class ViserServer(_viser.ViserServer):
     """Viser server with timeline recording and playback controls."""
 
     _DEFAULT_FPS = 30.0
+    _DEFAULT_LAZY_THRESHOLD_BYTES = 1024 * 1024  # 1MB
 
     def __init__(
         self,
@@ -64,12 +65,16 @@ class ViserServer(_viser.ViserServer):
         verbose: bool = True,
         enable_webxr: bool = False,
         ssl_context: Any = None,
+        lazy_threshold_bytes: int | None = None,
         **kwargs: Any,
     ) -> None:
         self._recording = False
         self.num_steps = num_steps
+        self._lazy_threshold_bytes = (
+            lazy_threshold_bytes or self._DEFAULT_LAZY_THRESHOLD_BYTES
+        )
         self._timeline = Timeline()
-        self._proxy_scene = ProxyScene(self._timeline)
+        self._proxy_scene = ProxyScene(self._timeline, self._lazy_threshold_bytes)
         self._playback_thread: threading.Thread | None = None
         self._playback_stop = threading.Event()
         self._current_time = 0
@@ -199,8 +204,9 @@ class ViserServer(_viser.ViserServer):
 class ProxyScene:
     """Scene proxy that records operations to a timeline."""
 
-    def __init__(self, timeline: Timeline) -> None:
+    def __init__(self, timeline: Timeline, lazy_threshold_bytes: int) -> None:
         self._timeline = timeline
+        self._lazy_threshold_bytes = lazy_threshold_bytes
         self._recording_time: int | None = None
 
     def __getattr__(self, name: str) -> Any:
@@ -214,6 +220,7 @@ class ProxyScene:
                     member=name,
                     args=args,
                     kwargs=kwargs,
+                    threshold_bytes=self._lazy_threshold_bytes,
                 )
                 self.record(op)
                 return ProxyHandle(self, target)
@@ -223,7 +230,14 @@ class ProxyScene:
         if name == "remove_by_name":
 
             def _remove(target: str) -> None:
-                self.record(Op.create(kind=OpKind.REMOVE, target=target, member=name))
+                self.record(
+                    Op.create(
+                        kind=OpKind.REMOVE,
+                        target=target,
+                        member=name,
+                        threshold_bytes=self._lazy_threshold_bytes,
+                    )
+                )
 
             return _remove
 
@@ -261,11 +275,22 @@ class ProxyHandle:
         if name.startswith("_"):
             object.__setattr__(self, name, value)
             return
-        op = Op.create(kind=OpKind.SET, target=self._name, member=name, args=(value,))
+        op = Op.create(
+            kind=OpKind.SET,
+            target=self._name,
+            member=name,
+            args=(value,),
+            threshold_bytes=self._parent_scene._lazy_threshold_bytes,
+        )
         self._parent_scene.record(op)
 
     def remove(self) -> None:
-        op = Op.create(kind=OpKind.REMOVE, target=self._name, member="remove")
+        op = Op.create(
+            kind=OpKind.REMOVE,
+            target=self._name,
+            member="remove",
+            threshold_bytes=self._parent_scene._lazy_threshold_bytes,
+        )
         self._parent_scene.record(op)
 
 

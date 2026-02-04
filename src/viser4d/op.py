@@ -162,10 +162,12 @@ class _EagerPayload:
 
 
 def _create_payload(
-    args: tuple[Any, ...], kwargs: dict[str, Any]
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    threshold_bytes: int = _THRESHOLD_BYTES,
 ) -> _EagerPayload | _LazyPayload:
     """Create lazy payload if data is heavy, else eager."""
-    if objsize.get_deep_size(args) + objsize.get_deep_size(kwargs) > _THRESHOLD_BYTES:
+    if objsize.get_deep_size(args) + objsize.get_deep_size(kwargs) > threshold_bytes:
         return _LazyPayload.save(args, kwargs)
     return _EagerPayload(args, kwargs)
 
@@ -198,9 +200,16 @@ class Op:
         member: str,
         args: tuple[Any, ...] = (),
         kwargs: dict[str, Any] | None = None,
+        threshold_bytes: int = _THRESHOLD_BYTES,
     ) -> Op:
         """Factory that auto-selects eager vs lazy based on payload size."""
-        return cls(kind, target, member, _create_payload(args, kwargs or {}))
+        return cls(
+            kind, target, member, _create_payload(args, kwargs or {}, threshold_bytes)
+        )
+
+    def is_lazy(self) -> bool:
+        """Return True if this Op's payload is stored on disk."""
+        return isinstance(self._payload, _LazyPayload)
 
     @property
     def args(self) -> tuple[Any, ...]:
