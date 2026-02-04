@@ -3,14 +3,21 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .server import ViserServer
+    from .server import Viser4dServer
 
 
 class PlaybackControls:
-    def __init__(self, server: ViserServer) -> None:
+    """GUI controls for timeline playback.
+
+    Registers itself as a timestep listener and manages its own state based on
+    user interactions and timestep callbacks.
+    """
+
+    def __init__(self, server: Viser4dServer) -> None:
         self._server = server
         self._playing = False
-        self._suppress = False
+        self._suppress_slider = False
+        self._suppress_fps = False
 
         with server.gui.add_folder("Playback"):
             self._play_button = server.gui.add_button("Play", order=0)
@@ -41,32 +48,46 @@ class PlaybackControls:
         self._slider.on_update(self._on_slider)
         self._fps_slider.on_update(self._on_fps)
 
-    def set_time(self, t: int) -> None:
-        if self._slider.value == t:
-            return
-        self._suppress = True
-        self._slider.value = t
-        self._suppress = False
+        # Register as timestep listener
+        server.on_timestep_change(self._on_timestep)
+
+    def _on_timestep(self, t: int) -> None:
+        """Handle timestep changes from the server."""
+        # Update slider
+        if self._slider.value != t:
+            self._suppress_slider = True
+            self._slider.value = t
+            self._suppress_slider = False
+
+        # Detect playback ended (reached last frame while playing, non-looping)
+        if self._playing and t == self._server.num_steps - 1:
+            # Check if playback actually stopped (not looping)
+            # We'll get another callback if it loops, so defer the check
+            pass  # Handled by server calling set_playing(False)
 
     def set_fps(self, fps: float) -> None:
+        """Update the FPS slider value."""
         if self._fps_slider.value == fps:
             return
-        self._suppress = True
+        self._suppress_fps = True
         self._fps_slider.value = fps
-        self._suppress = False
+        self._suppress_fps = False
 
     def set_playing(self, playing: bool) -> None:
+        """Update the play/pause button state."""
         if self._playing == playing:
             return
         self._playing = playing
         self._play_button.label = "Pause" if playing else "Play"
 
     def _on_slider(self, event) -> None:
-        if self._suppress:
+        """Handle user dragging the timestep slider."""
+        if self._suppress_slider:
             return
         self._server.seek(event.target.value)
 
     def _on_step(self, event) -> None:
+        """Handle prev/next button clicks."""
         current = self._slider.value
         if event.target.value == "Prev":
             if current > 0:
@@ -76,12 +97,18 @@ class PlaybackControls:
                 self._server.seek(current + 1)
 
     def _on_play_button(self, _event) -> None:
+        """Handle play/pause button clicks."""
         if self._playing:
+            self._playing = False
+            self._play_button.label = "Play"
             self._server.pause()
         else:
+            self._playing = True
+            self._play_button.label = "Pause"
             self._server.play(self._fps_slider.value)
 
     def _on_fps(self, event) -> None:
-        if self._suppress:
+        """Handle FPS slider changes."""
+        if self._suppress_fps:
             return
         self._server._set_fps(event.target.value)

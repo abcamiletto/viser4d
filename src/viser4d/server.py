@@ -195,7 +195,6 @@ class Viser4dServer(_viser.ViserServer):
         if self._playback_thread is not None and self._playback_thread.is_alive():
             return
 
-        self._playback_controls.set_playing(True)
         self._playback_stop = threading.Event()
         self._playback_thread = threading.Thread(
             target=self._playback_loop, args=(loop,), daemon=True
@@ -211,7 +210,6 @@ class Viser4dServer(_viser.ViserServer):
         if self._playback_thread is not None and self._playback_thread.is_alive():
             self._playback_stop.set()
             self._playback_thread.join()
-        self._playback_controls.set_playing(False)
 
     def seek(self, t: int) -> None:
         """Jump to a specific timestep.
@@ -232,7 +230,6 @@ class Viser4dServer(_viser.ViserServer):
         self.pause()
         self._current_time = t
         self._renderer.apply(t)
-        self._playback_controls.set_time(t)
         self._fire_timestep_callbacks(t)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
@@ -311,7 +308,6 @@ class Viser4dServer(_viser.ViserServer):
             return False
         self._renderer.apply(t)
         self._current_time = t
-        self._playback_controls.set_time(t)
         self._fire_timestep_callbacks(t)
         return True
 
