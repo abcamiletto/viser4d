@@ -5,8 +5,8 @@ import viser4d
 
 
 @pytest.fixture
-def server() -> Iterator[viser4d.ViserServer]:
-    server = viser4d.ViserServer(
+def server() -> Iterator[viser4d.Viser4dServer]:
+    server = viser4d.Viser4dServer(
         num_steps=3,
         host="127.0.0.1",
         port=0,
@@ -19,7 +19,7 @@ def server() -> Iterator[viser4d.ViserServer]:
         server.stop()
 
 
-def test_seek_applies_recorded_updates(server: viser4d.ViserServer) -> None:
+def test_seek_applies_recorded_updates(server: viser4d.Viser4dServer) -> None:
     handle = None
     for t in range(3):
         with server.at(t):
@@ -36,7 +36,7 @@ def test_seek_applies_recorded_updates(server: viser4d.ViserServer) -> None:
     assert tuple(handle2.position) == (2.0, 0.0, 0.0)
 
 
-def test_seek_backwards_removes_late_adds(server: viser4d.ViserServer) -> None:
+def test_seek_backwards_removes_late_adds(server: viser4d.Viser4dServer) -> None:
     with server.at(0):
         server.scene.add_frame("/a", axes_length=0.1)
     with server.at(1):
@@ -53,7 +53,7 @@ def test_seek_backwards_removes_late_adds(server: viser4d.ViserServer) -> None:
     assert "/b" not in handles
 
 
-def test_seek_uses_latest_attribute_value(server: viser4d.ViserServer) -> None:
+def test_seek_uses_latest_attribute_value(server: viser4d.Viser4dServer) -> None:
     handle = None
     with server.at(0):
         handle = server.scene.add_frame("/frame", axes_length=0.1)
@@ -76,7 +76,7 @@ def test_seek_uses_latest_attribute_value(server: viser4d.ViserServer) -> None:
     assert tuple(handle2.wxyz) == (1.0, 0.0, 0.0, 0.0)
 
 
-def test_seek_multiple_objects(server: viser4d.ViserServer) -> None:
+def test_seek_multiple_objects(server: viser4d.Viser4dServer) -> None:
     with server.at(0):
         a = server.scene.add_frame("/a", axes_length=0.1)
         a.position = (0.0, 0.0, 0.0)
@@ -98,7 +98,7 @@ def test_seek_multiple_objects(server: viser4d.ViserServer) -> None:
     assert tuple(handles["/b"].position) == (2.0, 0.0, 0.0)
 
 
-def test_remove_by_name_is_recorded(server: viser4d.ViserServer) -> None:
+def test_remove_by_name_is_recorded(server: viser4d.Viser4dServer) -> None:
     with server.at(0):
         server.scene.add_frame("/a", axes_length=0.1)
     with server.at(1):
@@ -118,7 +118,7 @@ def test_remove_by_name_is_recorded(server: viser4d.ViserServer) -> None:
     assert tuple(handle.position) == (2.0, 0.0, 0.0)
 
 
-def test_handle_remove_is_recorded(server: viser4d.ViserServer) -> None:
+def test_handle_remove_is_recorded(server: viser4d.Viser4dServer) -> None:
     with server.at(0):
         handle = server.scene.add_frame("/a", axes_length=0.1)
     with server.at(1):
@@ -134,3 +134,31 @@ def test_handle_remove_is_recorded(server: viser4d.ViserServer) -> None:
 
     server.seek(2)
     assert "/a" in server._live_scene._handle_from_node_name
+
+
+def test_on_timestep_change_callback(server: viser4d.Viser4dServer) -> None:
+    """Timestep callbacks are invoked on seek."""
+    called_with: list[int] = []
+
+    def callback(t: int) -> None:
+        called_with.append(t)
+
+    server.on_timestep_change(callback)
+
+    server.seek(0)
+    server.seek(2)
+    server.seek(1)
+
+    assert called_with == [0, 2, 1]
+
+
+def test_multiple_timestep_callbacks(server: viser4d.Viser4dServer) -> None:
+    """Multiple callbacks are all invoked."""
+    results: list[str] = []
+
+    server.on_timestep_change(lambda t: results.append(f"a:{t}"))
+    server.on_timestep_change(lambda t: results.append(f"b:{t}"))
+
+    server.seek(1)
+
+    assert results == ["a:1", "b:1"]

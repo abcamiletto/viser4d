@@ -10,9 +10,9 @@ from viser4d.op import CompressionMode, Op, OpKind, _get_cache_dir
 
 
 @pytest.fixture
-def server() -> Iterator[viser4d.ViserServer]:
+def server() -> Iterator[viser4d.Viser4dServer]:
     """Server with a very low lazy threshold (100 bytes) to trigger lazy loading."""
-    server = viser4d.ViserServer(
+    server = viser4d.Viser4dServer(
         num_steps=3,
         host="127.0.0.1",
         port=0,
@@ -27,9 +27,9 @@ def server() -> Iterator[viser4d.ViserServer]:
 
 
 @pytest.fixture
-def server_high_threshold() -> Iterator[viser4d.ViserServer]:
+def server_high_threshold() -> Iterator[viser4d.Viser4dServer]:
     """Server with a very high lazy threshold to keep everything eager."""
-    server = viser4d.ViserServer(
+    server = viser4d.Viser4dServer(
         num_steps=3,
         host="127.0.0.1",
         port=0,
@@ -191,7 +191,7 @@ def test_lazy_payload_creates_file() -> None:
 # =============================================================================
 
 
-def test_server_uses_configured_threshold(server: viser4d.ViserServer) -> None:
+def test_server_uses_configured_threshold(server: viser4d.Viser4dServer) -> None:
     """Server passes threshold to Op creation."""
     # Server fixture has 100 byte threshold
     with server.at(0):
@@ -206,7 +206,7 @@ def test_server_uses_configured_threshold(server: viser4d.ViserServer) -> None:
 
 
 def test_server_high_threshold_uses_eager(
-    server_high_threshold: viser4d.ViserServer,
+    server_high_threshold: viser4d.Viser4dServer,
 ) -> None:
     """Server with high threshold keeps data eager."""
     with server_high_threshold.at(0):
@@ -218,7 +218,7 @@ def test_server_high_threshold_uses_eager(
     assert not op.is_lazy()
 
 
-def test_lazy_data_renders_correctly(server: viser4d.ViserServer) -> None:
+def test_lazy_data_renders_correctly(server: viser4d.Viser4dServer) -> None:
     """Lazy-loaded data renders correctly during seek."""
     with server.at(0):
         handle = server.scene.add_frame("/frame", axes_length=0.1)

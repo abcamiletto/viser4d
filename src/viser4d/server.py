@@ -5,7 +5,7 @@ Architecture
 ::
 
     ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-    │                                              ViserServer                                                │
+    │                                              Viser4dServer                                                │
     │                      - Owns the timeline and playback state                                             │
     │                      - Provides the public API (at, play, pause, seek)                                  │
     └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 # =============================================================================
 
 
-class ViserServer(_viser.ViserServer):
+class Viser4dServer(_viser.ViserServer):
     """Viser server with timeline recording and playback controls."""
 
     _DEFAULT_FPS = 30.0
@@ -84,6 +84,7 @@ class ViserServer(_viser.ViserServer):
         self._playback_stop = threading.Event()
         self._current_time = 0
         self._fps = self._DEFAULT_FPS
+        self._timestep_callbacks: list[Any] = []
         super().__init__(
             host=host,
             port=port,
@@ -140,6 +141,27 @@ class ViserServer(_viser.ViserServer):
         self._current_time = t
         self._renderer.apply(t)
         self._playback_controls.set_time(t)
+        self._fire_timestep_callbacks(t)
+
+    def on_timestep_change(self, callback: Any) -> None:
+        """Register a callback to be invoked when the timestep changes.
+
+        The callback receives the new timestep as its only argument::
+
+            def my_callback(t: int) -> None:
+                update_custom_visualization(t)
+
+            server.on_timestep_change(my_callback)
+
+        Callbacks are fired after viser4d applies its own recorded state,
+        allowing them to layer additional visualizations on top.
+        """
+        self._timestep_callbacks.append(callback)
+
+    def _fire_timestep_callbacks(self, t: int) -> None:
+        """Invoke all registered timestep callbacks."""
+        for callback in self._timestep_callbacks:
+            callback(t)
 
     def _playback_loop(self, loop: bool) -> None:
         """Main playback loop. Runs in a separate thread."""
@@ -194,6 +216,7 @@ class ViserServer(_viser.ViserServer):
         self._renderer.apply(t)
         self._current_time = t
         self._playback_controls.set_time(t)
+        self._fire_timestep_callbacks(t)
         return True
 
     def _set_fps(self, fps: float) -> None:
@@ -210,7 +233,10 @@ class ProxyScene:
     """Scene proxy that records operations to a timeline."""
 
     def __init__(
-        self, timeline: Timeline, lazy_threshold_bytes: int, compression: CompressionMode
+        self,
+        timeline: Timeline,
+        lazy_threshold_bytes: int,
+        compression: CompressionMode,
     ) -> None:
         self._timeline = timeline
         self._lazy_threshold_bytes = lazy_threshold_bytes
