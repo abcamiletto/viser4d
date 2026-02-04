@@ -60,7 +60,7 @@ callbacks.
 
 ## How it works
 
-Context determines behavior. `server.scene` always returns the same object, but
+Context determines behavior. `server.scene` always returns the same `ProxyScene` object, but
 it behaves differently based on whether you're inside an `at(t)` context:
 
 ```
