@@ -136,6 +136,20 @@ def test_handle_remove_is_recorded(server: viser4d.Viser4dServer) -> None:
     assert "/a" in server._live_scene._handle_from_node_name
 
 
+def test_play_loops_by_default(server: viser4d.Viser4dServer) -> None:
+    """play() defaults to looping playback."""
+    captured: list[bool] = []
+
+    def fake_loop(loop: bool) -> None:
+        captured.append(loop)
+
+    server._playback_loop = fake_loop  # type: ignore[method-assign]
+    server.play(fps=30)
+    server._playback_thread.join(timeout=1)
+
+    assert captured == [True]
+
+
 def test_on_timestep_change_callback(server: viser4d.Viser4dServer) -> None:
     """Timestep callbacks are invoked on seek."""
     called_with: list[int] = []

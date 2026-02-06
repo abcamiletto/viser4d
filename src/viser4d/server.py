@@ -188,7 +188,7 @@ class Viser4dServer(_viser.ViserServer):
         finally:
             self._proxy_scene._set_time(None)
 
-    def play(self, fps: float, loop: bool = False) -> None:
+    def play(self, fps: float, loop: bool = True) -> None:
         """Start playback of the timeline.
 
         Begins advancing through timesteps at the specified frame rate. If
