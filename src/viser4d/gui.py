@@ -16,7 +16,6 @@ class PlaybackControls:
     def __init__(self, server: Viser4dServer) -> None:
         self._server = server
         self._playing = False
-        self._suppress_slider = False
         self._suppress_fps = False
 
         with server.gui.add_folder("Playback"):
@@ -53,11 +52,8 @@ class PlaybackControls:
 
     def _on_timestep(self, t: int) -> None:
         """Handle timestep changes from the server."""
-        # Update slider
-        if self._slider.value != t:
-            self._suppress_slider = True
-            self._slider.value = t
-            self._suppress_slider = False
+        # Server timeline state is authoritative for slider position.
+        self._slider.value = t
 
         # Detect playback ended (reached last frame while playing, non-looping)
         if self._playing and t == self._server.num_steps - 1:
@@ -82,9 +78,10 @@ class PlaybackControls:
 
     def _on_slider(self, event) -> None:
         """Handle user dragging the timestep slider."""
-        if self._suppress_slider:
+        # Ignore server-originated updates to avoid feedback loops.
+        if event.client_id is None:
             return
-        self._server.seek(event.target.value)
+        self._server.seek(int(event.target.value))
 
     def _on_step(self, event) -> None:
         """Handle prev/next button clicks."""

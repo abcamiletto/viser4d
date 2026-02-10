@@ -1,8 +1,15 @@
+import argparse
+
 import numpy as np
 import viser4d
 
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--port", type=int, default=8080, help="Port to bind the server to."
+)
+args = parser.parse_args()
 
-server = viser4d.Viser4dServer(num_steps=10)
+server = viser4d.Viser4dServer(num_steps=10, port=args.port)
 
 server.scene.add_frame("/origin", axes_length=0.25)
 server.scene.add_grid("/ground", width=10.0, height=10.0)

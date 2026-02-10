@@ -1,9 +1,16 @@
+import argparse
+
 import numpy as np
 import viser4d
 from viser import transforms as tf
 
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--port", type=int, default=8080, help="Port to bind the server to."
+)
+args = parser.parse_args()
 
-server = viser4d.Viser4dServer(num_steps=60)
+server = viser4d.Viser4dServer(num_steps=60, port=args.port)
 server.scene.add_frame("/origin", axes_length=0.25)
 
 frustum = None
