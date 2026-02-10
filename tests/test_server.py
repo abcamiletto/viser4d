@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterator
 
 import numpy as np
@@ -343,7 +344,13 @@ def test_add_audio_rejects_invalid_dtype(server: viser4d.Viser4dServer) -> None:
             server.scene.add_audio(np.zeros(128, dtype=np.float64), sample_rate=16_000)
 
 
-def test_seek_dispatches_audio_message(server: viser4d.Viser4dServer) -> None:
+def test_add_audio_rejects_invalid_sample_rate(server: viser4d.Viser4dServer) -> None:
+    with server.at(0):
+        with pytest.raises(ValueError, match="positive integer"):
+            server.scene.add_audio(np.zeros(128, dtype=np.int16), sample_rate=0)
+
+
+def test_add_audio_dispatches_runtime_and_track(server: viser4d.Viser4dServer) -> None:
     class _FakeConnection:
         def __init__(self) -> None:
             self.messages: list[_viser_messages.RunJavascriptMessage] = []
@@ -353,10 +360,12 @@ def test_seek_dispatches_audio_message(server: viser4d.Viser4dServer) -> None:
 
     class _FakeClient:
         def __init__(self) -> None:
+            self.client_id = 7
             self._websock_connection = _FakeConnection()
+            self.flush_count = 0
 
         def flush(self) -> None:
-            return
+            self.flush_count += 1
 
     fake_client = _FakeClient()
     server.get_clients = lambda: {0: fake_client}  # type: ignore[method-assign]
@@ -364,11 +373,86 @@ def test_seek_dispatches_audio_message(server: viser4d.Viser4dServer) -> None:
     with server.at(1):
         server.scene.add_audio(np.zeros(64, dtype=np.int16), sample_rate=8_000)
 
-    server.seek(0)
-    assert fake_client._websock_connection.messages == []
+    messages = fake_client._websock_connection.messages
+    assert len(messages) == 2
+    assert "window.__viser4d_audio" in messages[0].source
+    assert '"kind":"upsert_track"' in messages[1].source
+    assert '"start_step":1' in messages[1].source
 
+
+def test_seek_dispatches_audio_sync_command(server: viser4d.Viser4dServer) -> None:
+    class _FakeConnection:
+        def __init__(self) -> None:
+            self.messages: list[_viser_messages.RunJavascriptMessage] = []
+
+        def queue_message(self, message: _viser_messages.RunJavascriptMessage) -> None:
+            self.messages.append(message)
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.client_id = 7
+            self._websock_connection = _FakeConnection()
+            self.flush_count = 0
+
+        def flush(self) -> None:
+            self.flush_count += 1
+
+    fake_client = _FakeClient()
+    server.get_clients = lambda: {0: fake_client}  # type: ignore[method-assign]
+
+    with server.at(1):
+        server.scene.add_audio(np.zeros(64, dtype=np.int16), sample_rate=8_000)
+
+    fake_client._websock_connection.messages.clear()
     server.seek(1)
+
     messages = fake_client._websock_connection.messages
     assert len(messages) == 1
     assert isinstance(messages[0], _viser_messages.RunJavascriptMessage)
-    assert "data:audio/wav;base64," in messages[0].source
+    assert '"kind":"sync"' in messages[0].source
+    assert '"playing":false' in messages[0].source
+    assert '"step":1' in messages[0].source
+    payload = json.loads(
+        messages[0].source.removeprefix("window.__viser4d_audio.dispatch(").removesuffix(");")
+    )
+    assert payload["timestamp_sec"] > 1_000_000_000
+    assert fake_client.flush_count == 1
+
+
+def test_play_and_pause_dispatch_audio_sync(server: viser4d.Viser4dServer) -> None:
+    class _FakeConnection:
+        def __init__(self) -> None:
+            self.messages: list[_viser_messages.RunJavascriptMessage] = []
+
+        def queue_message(self, message: _viser_messages.RunJavascriptMessage) -> None:
+            self.messages.append(message)
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.client_id = 7
+            self._websock_connection = _FakeConnection()
+            self.flush_count = 0
+
+        def flush(self) -> None:
+            self.flush_count += 1
+
+    fake_client = _FakeClient()
+    server.get_clients = lambda: {0: fake_client}  # type: ignore[method-assign]
+
+    with server.at(0):
+        server.scene.add_audio(np.zeros(64, dtype=np.int16), sample_rate=8_000)
+
+    fake_client._websock_connection.messages.clear()
+
+    def _fake_loop(_loop: bool) -> None:
+        server._playback_stop.wait(timeout=0.5)
+
+    server._playback_loop = _fake_loop  # type: ignore[method-assign]
+    server.play(fps=12, loop=False)
+    server.pause()
+
+    sources = [message.source for message in fake_client._websock_connection.messages]
+    assert any('"kind":"sync"' in source and '"playing":true' in source for source in sources)
+    assert any(
+        '"kind":"sync"' in source and '"playing":false' in source for source in sources
+    )
