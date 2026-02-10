@@ -1,7 +1,9 @@
 from collections.abc import Iterator
 
+import numpy as np
 import pytest
 import viser4d
+from viser import _messages as _viser_messages
 
 
 @pytest.fixture
@@ -145,9 +147,34 @@ def test_play_loops_by_default(server: viser4d.Viser4dServer) -> None:
 
     server._playback_loop = fake_loop  # type: ignore[method-assign]
     server.play(fps=30)
-    server._playback_thread.join(timeout=1)
+    thread = server._playback_thread
+    assert thread is not None
+    thread.join(timeout=1)
 
     assert captured == [True]
+
+
+def test_play_sets_gui_state_when_started_programmatically(
+    server: viser4d.Viser4dServer,
+) -> None:
+    states: list[bool] = []
+
+    class _FakeControls:
+        def set_playing(self, playing: bool) -> None:
+            states.append(playing)
+
+        def set_fps(self, fps: float) -> None:
+            return
+
+    server._playback_controls = _FakeControls()  # type: ignore[assignment]
+    server._playback_loop = lambda loop: None  # type: ignore[method-assign]
+
+    server.play(fps=30)
+    thread = server._playback_thread
+    assert thread is not None
+    thread.join(timeout=1)
+
+    assert states == [True]
 
 
 def test_on_timestep_change_callback(server: viser4d.Viser4dServer) -> None:
@@ -301,3 +328,47 @@ def test_proxy_handle_error_before_seek(server: viser4d.Viser4dServer) -> None:
 
     with pytest.raises(RuntimeError, match="not in live scene"):
         _ = handle.position
+
+
+def test_add_audio_requires_at_context(server: viser4d.Viser4dServer) -> None:
+    audio = np.zeros(128, dtype=np.float32)
+
+    with pytest.raises(RuntimeError, match="inside `with server.at\\(t\\):`"):
+        server.scene.add_audio(audio, sample_rate=16_000)
+
+
+def test_add_audio_rejects_invalid_dtype(server: viser4d.Viser4dServer) -> None:
+    with server.at(0):
+        with pytest.raises(TypeError, match="int16 or float32"):
+            server.scene.add_audio(np.zeros(128, dtype=np.float64), sample_rate=16_000)
+
+
+def test_seek_dispatches_audio_message(server: viser4d.Viser4dServer) -> None:
+    class _FakeConnection:
+        def __init__(self) -> None:
+            self.messages: list[_viser_messages.RunJavascriptMessage] = []
+
+        def queue_message(self, message: _viser_messages.RunJavascriptMessage) -> None:
+            self.messages.append(message)
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self._websock_connection = _FakeConnection()
+
+        def flush(self) -> None:
+            return
+
+    fake_client = _FakeClient()
+    server.get_clients = lambda: {0: fake_client}  # type: ignore[method-assign]
+
+    with server.at(1):
+        server.scene.add_audio(np.zeros(64, dtype=np.int16), sample_rate=8_000)
+
+    server.seek(0)
+    assert fake_client._websock_connection.messages == []
+
+    server.seek(1)
+    messages = fake_client._websock_connection.messages
+    assert len(messages) == 1
+    assert isinstance(messages[0], _viser_messages.RunJavascriptMessage)
+    assert "data:audio/wav;base64," in messages[0].source

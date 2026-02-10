@@ -28,13 +28,18 @@ Playback: SceneRenderer reads from Timeline and applies state to the live scene.
 
 from __future__ import annotations
 
+import base64
+import struct
 import threading
 import time
 from bisect import bisect_right
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
+import numpy as np
 import viser as _viser
+from viser import _messages as _viser_messages
 
 from .gui import PlaybackControls
 from .op import CompressionMode, Op, OpKind
@@ -246,6 +251,7 @@ class Viser4dServer(_viser.ViserServer):
         self.pause()
         self._current_time = t
         self._renderer.apply(t)
+        self._play_audio(t)
         self._fire_timestep_callbacks(t)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
@@ -361,9 +367,20 @@ class Viser4dServer(_viser.ViserServer):
         if self._playback_stop.is_set():
             return False
         self._renderer.apply(t)
+        self._play_audio(t)
         self._current_time = t
         self._fire_timestep_callbacks(t)
         return True
+
+    def _play_audio(self, t: int) -> None:
+        clip = self._timeline.get_audio_start_at(t)
+        if clip is None:
+            return
+
+        message = _viser_messages.RunJavascriptMessage(source=clip.to_javascript())
+        for client in self.get_clients().values():
+            client._websock_connection.queue_message(message)
+            client.flush()
 
     def _set_fps(self, fps: float) -> None:
         self._fps = fps
@@ -395,6 +412,21 @@ class ProxyScene:
         self._lazy_threshold_bytes = lazy_threshold_bytes
         self._compression = compression
         self._recording_time: int | None = None
+
+    def add_audio(self, audio: np.ndarray, sample_rate: int) -> None:
+        """Record an audio clip to start at the current timestep.
+
+        This method is intentionally only supported inside ``at(t)`` so clip
+        start times are explicit.
+        """
+        if self._recording_time is None:
+            raise RuntimeError(
+                "scene.add_audio() can only be called inside `with server.at(t):`."
+            )
+        if not isinstance(sample_rate, (int, np.integer)) or int(sample_rate) <= 0:
+            raise ValueError("sample_rate must be a positive integer.")
+        clip = _AudioClip.from_array(audio, int(sample_rate))
+        self._timeline.record_audio(self._recording_time, clip)
 
     def __getattr__(self, name: str) -> Any:
         # Outside recording context - forward to live scene
@@ -533,6 +565,7 @@ class Timeline:
         self._adds: dict[str, _TimeSeries] = {}
         self._removes: dict[str, _TimeSeries] = {}
         self._sets: dict[str, dict[str, _TimeSeries]] = {}
+        self._audio: _TimeSeries = _TimeSeries()
 
     def record_add(self, t: int, target: str, op: Op) -> None:
         series = self._adds.setdefault(target, _TimeSeries())
@@ -546,6 +579,17 @@ class Timeline:
         target_sets = self._sets.setdefault(target, {})
         series = target_sets.setdefault(member, _TimeSeries())
         series.add(t, value)
+
+    def record_audio(self, t: int, clip: _AudioClip) -> None:
+        self._audio.add(t, clip)
+
+    def get_audio_start_at(self, t: int) -> _AudioClip | None:
+        index = self._audio.latest_index(t)
+        if index is None:
+            return None
+        if self._audio.times[index] != t:
+            return None
+        return self._audio.values[index]
 
     @property
     def targets(self) -> set[str]:
@@ -647,6 +691,29 @@ class SceneRenderer:
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class _AudioClip:
+    _wav_base64: str
+
+    @classmethod
+    def from_array(cls, audio: np.ndarray, sample_rate: int) -> _AudioClip:
+        pcm16 = _coerce_audio_to_pcm16(audio)
+        wav_bytes = _encode_wav_pcm16(pcm16, sample_rate)
+        return cls(base64.b64encode(wav_bytes).decode("ascii"))
+
+    def to_javascript(self) -> str:
+        data_url = f"data:audio/wav;base64,{self._wav_base64}"
+        return (
+            "(() => {"
+            "const __viser4dPrev = window.__viser4dAudio ?? null;"
+            "if (__viser4dPrev !== null) { __viser4dPrev.pause(); }"
+            f'const __viser4dAudio = new Audio("{data_url}");'
+            "window.__viser4dAudio = __viser4dAudio;"
+            "void __viser4dAudio.play().catch(() => {});"
+            "})();"
+        )
+
+
 class _TimeSeries:
     def __init__(self) -> None:
         self.times: list[int] = []
@@ -662,3 +729,51 @@ class _TimeSeries:
         if index == 0:
             return None
         return index - 1
+
+
+def _coerce_audio_to_pcm16(audio: np.ndarray) -> np.ndarray:
+    if not isinstance(audio, np.ndarray):
+        raise TypeError("audio must be a numpy.ndarray.")
+    if audio.dtype not in (np.int16, np.float32):
+        raise TypeError("audio dtype must be int16 or float32.")
+    if audio.ndim == 1:
+        samples = audio.reshape(-1, 1)
+    elif audio.ndim == 2:
+        samples = audio
+    else:
+        raise ValueError("audio must be a 1D or 2D array.")
+    if samples.size == 0:
+        raise ValueError("audio cannot be empty.")
+
+    if samples.dtype == np.float32:
+        clipped = np.clip(samples, -1.0, 1.0)
+        pcm16 = (clipped * np.float32(32767.0)).astype("<i2")
+    else:
+        pcm16 = samples.astype("<i2", copy=False)
+    return np.ascontiguousarray(pcm16)
+
+
+def _encode_wav_pcm16(pcm16: np.ndarray, sample_rate: int) -> bytes:
+    num_frames, num_channels = pcm16.shape
+    payload = pcm16.tobytes()
+    block_align = num_channels * 2
+    byte_rate = sample_rate * block_align
+    chunk_size = 36 + len(payload)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        chunk_size,
+        b"WAVE",
+        b"fmt ",
+        16,  # PCM format chunk size
+        1,  # PCM
+        num_channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        16,  # bits per sample
+        b"data",
+        len(payload),
+    )
+    assert num_frames >= 0
+    return header + payload

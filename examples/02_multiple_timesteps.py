@@ -1,7 +1,15 @@
+import argparse
+
 import numpy as np
 import viser4d
 
-server = viser4d.Viser4dServer(num_steps=4)
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--port", type=int, default=8080, help="Port to bind the server to."
+)
+args = parser.parse_args()
+
+server = viser4d.Viser4dServer(num_steps=4, port=args.port)
 
 for t in range(4):
     with server.at(t):

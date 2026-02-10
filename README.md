@@ -78,6 +78,30 @@ scene.add_frame(...)                   scene.add_frame(...)
 
 See `examples/` for more.
 
+## Audio (experimental)
+
+You can record audio clips in the timeline with `scene.add_audio(...)`.
+For now this is intentionally only supported inside `at(t)` so clip start
+times are explicit.
+
+```python
+import numpy as np
+import viser4d
+
+server = viser4d.Viser4dServer(num_steps=30)
+
+with server.at(5):
+    audio = (0.1 * np.random.randn(16000)).astype(np.float32)
+    server.scene.add_audio(audio, sample_rate=16000)
+
+server.play(fps=10, loop=True)
+server.sleep_forever()
+```
+
+- `audio` must be a NumPy array with dtype `int16` or `float32`.
+- `audio` can be 1D (`samples`) or 2D (`samples, channels`).
+- Audio plays when its timestep is reached (`seek()` / `play()`).
+
 ## Quality checks
 
 ```bash
