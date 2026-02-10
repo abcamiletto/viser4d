@@ -6,7 +6,7 @@
     old.pause();
     for (var k in old.tracks) old.removeTrack(k);
   }
-  var needsResume = true;
+
   var mgr = {
     tracks: {},
     _playing: false,
@@ -42,9 +42,7 @@
       var t = mgr.tracks[name];
       if (!t || !mgr._playing) return;
       t.audio.currentTime = 0;
-      t.audio.play().then(function() {
-        needsResume = false;
-      }).catch(function() {});
+      t.audio.play().catch(function() {});
     },
 
     play: function(currentStep, fps) {
@@ -87,18 +85,10 @@
           continue;
         }
         t.audio.currentTime = offset;
-        t.audio.play().then(function() {
-          needsResume = false;
-        }).catch(function() {});
+        t.audio.play().catch(function() {});
       }
     }
   };
-
-  // Browsers block audio.play() until a user gesture. On the first
-  // interaction, retry playback if it was requested.
-  document.addEventListener("pointerdown", function() {
-    if (needsResume && mgr._playing) mgr._startAll();
-  });
 
   window.__viser4d_audio = mgr;
 })();
