@@ -1,4 +1,6 @@
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import pytest
 import viser4d
@@ -301,3 +303,20 @@ def test_proxy_handle_error_before_seek(server: viser4d.Viser4dServer) -> None:
 
     with pytest.raises(RuntimeError, match="not in live scene"):
         _ = handle.position
+
+
+def test_at_context_is_thread_local(server: viser4d.Viser4dServer) -> None:
+    """Each thread sees its own recording timestep inside at()."""
+    barrier = threading.Barrier(2)
+
+    def observe_time(t: int) -> int | None:
+        with server.at(t):
+            barrier.wait(timeout=1.0)
+            return server.scene._recording_time
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(observe_time, 0)
+        future_b = pool.submit(observe_time, 2)
+
+    seen = {future_a.result(), future_b.result()}
+    assert seen == {0, 2}
