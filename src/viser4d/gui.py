@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -18,8 +17,6 @@ class PlaybackControls:
         self._server = server
         self._playing = False
         self._suppress_fps = False
-        self._pending_seek_step: int | None = None
-        self._seek_worker_running = False
 
         with server.gui.add_folder("Playback"):
             self._play_button = server.gui.add_button("Play", order=0)
@@ -110,25 +107,7 @@ class PlaybackControls:
     def _request_seek(self, step: int) -> None:
         """Dispatch seek without blocking the GUI callback thread."""
         loop = self._server.get_event_loop()
-        loop.call_soon_threadsafe(self._enqueue_seek_request, step)
-
-    def _enqueue_seek_request(self, step: int) -> None:
-        """Queue the latest seek request on the server event loop."""
-        self._pending_seek_step = step
-        if self._seek_worker_running:
-            return
-        self._seek_worker_running = True
-        asyncio.create_task(self._drain_seek_requests())
-
-    async def _drain_seek_requests(self) -> None:
-        """Apply queued seek requests without blocking the event loop."""
-        try:
-            while self._pending_seek_step is not None:
-                step = self._pending_seek_step
-                self._pending_seek_step = None
-                await asyncio.to_thread(self._server.seek, step)
-        finally:
-            self._seek_worker_running = False
+        loop.call_soon_threadsafe(self._server.seek, step)
 
     def _on_fps(self, event) -> None:
         """Handle FPS slider changes."""
