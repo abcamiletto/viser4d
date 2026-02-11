@@ -34,8 +34,10 @@ from bisect import bisect_right
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
+import numpy as np
 import viser as _viser
 
+from .audio import AudioApi, AudioHandle
 from .gui import PlaybackControls
 from .op import CompressionMode, Op, OpKind
 
@@ -49,34 +51,39 @@ if TYPE_CHECKING:
 
 
 class Viser4dServer(_viser.ViserServer):
-    """Viser server with timeline recording and playback controls.
+    """Timeline-aware wrapper around :class:`viser.ViserServer`.
 
-    Wraps a standard viser server with the ability to record scene operations
-    across discrete timesteps and play them back with seeking support.
+    ``Viser4dServer`` records scene operations at integer timesteps and can
+    seek or play that recorded timeline onto the live viser scene.
+
+    Design:
+        - Inside ``at(t)``, operations are recorded to the timeline.
+        - Outside ``at(t)``, operations are forwarded directly to live scene state.
+        - During playback/seek, recorded state is rendered for the selected timestep.
+        - Audio transport uses the server FPS as its baseline time mapping.
 
     Args:
         num_steps: Total number of timesteps in the timeline.
-        host: Host address to bind the server to.
-        port: Port number for the server. Use 0 for automatic assignment.
-        label: Optional label displayed in the viser UI.
+        host: Host address to bind the underlying viser server to.
+        port: Port for the underlying viser server. Use ``0`` for auto selection.
+        label: Optional label displayed in the GUI panel.
         verbose: Whether to print server startup information.
-        enable_webxr: Whether to enable WebXR support.
-        ssl_context: Optional SSL context for HTTPS.
-        lazy_threshold_bytes: Payloads larger than this are stored on disk.
+        fps: Initial playback FPS and fixed audio baseline FPS.
+        lazy_threshold_bytes: Payloads larger than this are disk-backed.
             Defaults to 1MB.
         compression: Compression mode for disk-backed payloads.
-            Defaults to CompressionMode.FAST.
-        **kwargs: Additional arguments passed to the underlying ViserServer.
+            Defaults to :attr:`CompressionMode.FAST`.
+        enable_playback_gui: Whether to add built-in playback controls.
+        **kwargs: Additional keyword arguments forwarded to ``viser.ViserServer``.
 
     Example:
-        >>> server = Viser4dServer(num_steps=100)
+        >>> server = Viser4dServer(num_steps=100, fps=30)
         >>> with server.at(0):
         ...     handle = server.scene.add_frame("/frame")
         ...     handle.position = (1.0, 0.0, 0.0)
         >>> server.play(fps=30, loop=True)
     """
 
-    _DEFAULT_FPS = 30.0
     _DEFAULT_LAZY_THRESHOLD_BYTES = 1024 * 1024  # 1MB
     _DEFAULT_COMPRESSION = CompressionMode.FAST
 
@@ -87,8 +94,7 @@ class Viser4dServer(_viser.ViserServer):
         port: int = 8080,
         label: str | None = None,
         verbose: bool = True,
-        enable_webxr: bool = False,
-        ssl_context: Any = None,
+        fps: float = 30.0,
         lazy_threshold_bytes: int | None = None,
         compression: CompressionMode | None = None,
         enable_playback_gui: bool = True,
@@ -102,7 +108,8 @@ class Viser4dServer(_viser.ViserServer):
         self._playback_thread: threading.Thread | None = None
         self._playback_stop = threading.Event()
         self._current_time = 0
-        self._fps = self._DEFAULT_FPS
+        self._fps = fps if fps > 0 else 1.0
+        self._audio_timeline_fps = self._fps
         self._timestep_callbacks: list[Callable[[int], None]] = []
 
         # Initialize viser server first (creates _live_scene)
@@ -111,14 +118,14 @@ class Viser4dServer(_viser.ViserServer):
             port=port,
             label=label,
             verbose=verbose,
-            enable_webxr=enable_webxr,
-            ssl_context=ssl_context,
             **kwargs,
         )
 
         # Now create components that need _live_scene
+        self._audio_api = AudioApi(self)
         self._timeline = Timeline()
         self._proxy_scene = ProxyScene(
+            server=self,
             timeline=self._timeline,
             live_scene=self._live_scene,
             lazy_threshold_bytes=self._lazy_threshold_bytes,
@@ -212,8 +219,7 @@ class Viser4dServer(_viser.ViserServer):
             target=self._playback_loop, args=(loop,), daemon=True
         )
         self._playback_thread.start()
-        if self._playback_controls is not None:
-            self._playback_controls.set_playing(True)
+        self._on_playback_start(self._current_time, self._fps)
 
     def pause(self) -> None:
         """Pause playback.
@@ -221,11 +227,13 @@ class Viser4dServer(_viser.ViserServer):
         Stops the playback thread and leaves the scene at the current timestep.
         Safe to call even if playback is not running.
         """
-        if self._playback_thread is not None and self._playback_thread.is_alive():
+        was_playing = (
+            self._playback_thread is not None and self._playback_thread.is_alive()
+        )
+        if was_playing:
             self._playback_stop.set()
             self._playback_thread.join()
-        if self._playback_controls is not None:
-            self._playback_controls.set_playing(False)
+        self._on_playback_stop()
 
     def seek(self, t: int) -> None:
         """Jump to a specific timestep.
@@ -246,6 +254,7 @@ class Viser4dServer(_viser.ViserServer):
         self.pause()
         self._current_time = t
         self._renderer.apply(t)
+        self._audio_api.on_seek(t, self._fps)
         self._fire_timestep_callbacks(t)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
@@ -346,6 +355,7 @@ class Viser4dServer(_viser.ViserServer):
                     break
                 index = 0
                 next_frame_time = time.monotonic()
+                self._on_playback_start(0, self._fps)
                 continue
 
             # Wait for next frame
@@ -353,8 +363,7 @@ class Viser4dServer(_viser.ViserServer):
             if delay > 0 and self._playback_stop.wait(timeout=delay):
                 return
 
-        if self._playback_controls is not None:
-            self._playback_controls.set_playing(False)
+        self._on_playback_stop()
 
     def _playback_step(self, t: int) -> bool:
         """Apply frame and return False if stopped."""
@@ -366,9 +375,23 @@ class Viser4dServer(_viser.ViserServer):
         return True
 
     def _set_fps(self, fps: float) -> None:
-        self._fps = fps
+        self._fps = fps if fps > 0 else 1.0
         if self._playback_controls is not None:
-            self._playback_controls.set_fps(fps)
+            self._playback_controls.set_fps(self._fps)
+        if self._playback_thread is not None and self._playback_thread.is_alive():
+            self._audio_api.on_fps_change(self._fps)
+
+    def _on_playback_start(self, step: int, fps: float) -> None:
+        """Notify all playback components that playback has started."""
+        self._audio_api.on_play(step, fps)
+        if self._playback_controls is not None:
+            self._playback_controls.set_playing(True)
+
+    def _on_playback_stop(self) -> None:
+        """Notify all playback components that playback has stopped."""
+        self._audio_api.on_pause()
+        if self._playback_controls is not None:
+            self._playback_controls.set_playing(False)
 
 
 # =============================================================================
@@ -385,16 +408,50 @@ class ProxyScene:
 
     def __init__(
         self,
+        server: Viser4dServer,
         timeline: Timeline,
         live_scene: SceneApi,
         lazy_threshold_bytes: int,
         compression: CompressionMode,
     ) -> None:
+        self._server = server
         self._timeline = timeline
         self._live_scene = live_scene
         self._lazy_threshold_bytes = lazy_threshold_bytes
         self._compression = compression
         self._recording_time: int | None = None
+
+    def add_audio(
+        self, name: str, *, data: np.ndarray, sample_rate: int
+    ) -> AudioHandle:
+        """Add an audio track starting at the current recording timestep.
+
+        Must be called inside an ``at(t)`` context. The audio will begin
+        playing at timestep *t* during playback.
+
+        Returns an :class:`AudioHandle` whose properties (e.g. ``volume``)
+        sync to the client, matching viser's handle pattern.
+
+        Args:
+            name: Identifier for this audio track (e.g. ``"/narration"``).
+            data: Audio samples (``int16`` or ``float32``). 1-D mono or
+                2-D ``(N, channels)`` stereo.
+            sample_rate: Sample rate in Hz (e.g. 44100).
+
+        Returns:
+            An AudioHandle for the new track.
+
+        Raises:
+            RuntimeError: If called outside an ``at(t)`` context.
+        """
+        if self._recording_time is None:
+            raise RuntimeError("add_audio() must be called inside an at(t) context.")
+        return self._server._audio_api.add_track(
+            name,
+            data,
+            sample_rate,
+            start_step=self._recording_time,
+        )
 
     def __getattr__(self, name: str) -> Any:
         # Outside recording context - forward to live scene
