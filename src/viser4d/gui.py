@@ -81,17 +81,17 @@ class PlaybackControls:
         # Ignore server-originated updates to avoid feedback loops.
         if event.client_id is None:
             return
-        self._server.seek(int(event.target.value))
+        self._request_seek(int(event.target.value))
 
     def _on_step(self, event) -> None:
         """Handle prev/next button clicks."""
         current = self._slider.value
         if event.target.value == "Prev":
             if current > 0:
-                self._server.seek(current - 1)
+                self._request_seek(current - 1)
         else:
             if current < self._server.num_steps - 1:
-                self._server.seek(current + 1)
+                self._request_seek(current + 1)
 
     def _on_play_button(self, _event) -> None:
         """Handle play/pause button clicks."""
@@ -105,6 +105,11 @@ class PlaybackControls:
             loop.call_soon_threadsafe(self._server.play, self._fps_slider.value)
         else:
             loop.call_soon_threadsafe(self._server.pause)
+
+    def _request_seek(self, step: int) -> None:
+        """Dispatch seek without blocking the GUI callback thread."""
+        loop = self._server.get_event_loop()
+        loop.call_soon_threadsafe(self._server.seek, step)
 
     def _on_fps(self, event) -> None:
         """Handle FPS slider changes."""
