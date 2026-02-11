@@ -99,7 +99,9 @@ for step in range(num_steps):
 print(f"Open: http://localhost:{args.port}")
 print("Suggested A/B:")
 print("  1) --jitter-ms 0")
-print(f"  2) --jitter-ms {args.jitter_ms} --jitter-every-steps {args.jitter_every_steps}")
+print(
+    f"  2) --jitter-ms {args.jitter_ms} --jitter-every-steps {args.jitter_every_steps}"
+)
 
 server.play(fps=args.fps, loop=True)
 server.sleep_forever()

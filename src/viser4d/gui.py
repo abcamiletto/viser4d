@@ -114,7 +114,9 @@ class PlaybackControls:
         loop = self._server.get_event_loop()
         loop.call_soon_threadsafe(
             lambda: loop.create_task(
-                self._apply_play_request(request_id, next_playing, self._fps_slider.value)
+                self._apply_play_request(
+                    request_id, next_playing, self._fps_slider.value
+                )
             )
         )
 
