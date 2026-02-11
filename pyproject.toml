@@ -41,5 +41,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.package-data]
+viser4d = ["py.typed"]
+"viser4d.audio" = ["runtime.js"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
