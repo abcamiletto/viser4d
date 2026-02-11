@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,10 +18,10 @@ class PlaybackControls:
         self._server = server
         self._playing = False
         self._suppress_fps = False
-        self._play_request_lock = threading.Lock()
-        self._play_request_id = 0
-        self._seek_request_lock = threading.Lock()
-        self._seek_request_id = 0
+        self._pending_play_request: tuple[bool, float] | None = None
+        self._play_worker_running = False
+        self._pending_seek_step: int | None = None
+        self._seek_worker_running = False
 
         with server.gui.add_folder("Playback"):
             self._play_button = server.gui.add_button("Play", order=0)
@@ -109,49 +108,54 @@ class PlaybackControls:
         self._playing = next_playing
         self._play_button.label = "Pause" if next_playing else "Play"
 
-        with self._play_request_lock:
-            self._play_request_id += 1
-            request_id = self._play_request_id
-
         loop = self._server.get_event_loop()
         loop.call_soon_threadsafe(
-            lambda: loop.create_task(
-                self._apply_play_request(
-                    request_id, next_playing, self._fps_slider.value
-                )
-            )
+            self._enqueue_play_request, next_playing, self._fps_slider.value
         )
 
-    async def _apply_play_request(
-        self, request_id: int, next_playing: bool, fps: float
-    ) -> None:
-        """Apply a play-state change without blocking the GUI event loop."""
-        with self._play_request_lock:
-            if request_id != self._play_request_id:
-                return
+    def _enqueue_play_request(self, next_playing: bool, fps: float) -> None:
+        """Queue the latest play-state request on the server event loop."""
+        self._pending_play_request = (next_playing, fps)
+        if self._play_worker_running:
+            return
+        self._play_worker_running = True
+        asyncio.create_task(self._drain_play_requests())
 
-        if next_playing:
-            await asyncio.to_thread(self._server.play, fps)
-        else:
-            await asyncio.to_thread(self._server.pause)
+    async def _drain_play_requests(self) -> None:
+        """Apply queued play-state requests without blocking the event loop."""
+        try:
+            while self._pending_play_request is not None:
+                next_playing, fps = self._pending_play_request
+                self._pending_play_request = None
+                if next_playing:
+                    await asyncio.to_thread(self._server.play, fps)
+                else:
+                    await asyncio.to_thread(self._server.pause)
+        finally:
+            self._play_worker_running = False
 
     def _request_seek(self, step: int) -> None:
         """Dispatch seek without blocking the GUI callback thread."""
-        with self._seek_request_lock:
-            self._seek_request_id += 1
-            request_id = self._seek_request_id
-
         loop = self._server.get_event_loop()
-        loop.call_soon_threadsafe(
-            lambda: loop.create_task(self._apply_seek_request(request_id, step))
-        )
+        loop.call_soon_threadsafe(self._enqueue_seek_request, step)
 
-    async def _apply_seek_request(self, request_id: int, step: int) -> None:
-        """Apply a seek request with latest-request-wins semantics."""
-        with self._seek_request_lock:
-            if request_id != self._seek_request_id:
-                return
-        await asyncio.to_thread(self._server.seek, step)
+    def _enqueue_seek_request(self, step: int) -> None:
+        """Queue the latest seek request on the server event loop."""
+        self._pending_seek_step = step
+        if self._seek_worker_running:
+            return
+        self._seek_worker_running = True
+        asyncio.create_task(self._drain_seek_requests())
+
+    async def _drain_seek_requests(self) -> None:
+        """Apply queued seek requests without blocking the event loop."""
+        try:
+            while self._pending_seek_step is not None:
+                step = self._pending_seek_step
+                self._pending_seek_step = None
+                await asyncio.to_thread(self._server.seek, step)
+        finally:
+            self._seek_worker_running = False
 
     def _on_fps(self, event) -> None:
         """Handle FPS slider changes."""
