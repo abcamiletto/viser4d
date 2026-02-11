@@ -21,6 +21,8 @@ class PlaybackControls:
         self._suppress_fps = False
         self._play_request_lock = threading.Lock()
         self._play_request_id = 0
+        self._seek_request_lock = threading.Lock()
+        self._seek_request_id = 0
 
         with server.gui.add_folder("Playback"):
             self._play_button = server.gui.add_button("Play", order=0)
@@ -85,17 +87,17 @@ class PlaybackControls:
         # Ignore server-originated updates to avoid feedback loops.
         if event.client_id is None:
             return
-        self._server.seek(int(event.target.value))
+        self._request_seek(int(event.target.value))
 
     def _on_step(self, event) -> None:
         """Handle prev/next button clicks."""
         current = self._slider.value
         if event.target.value == "Prev":
             if current > 0:
-                self._server.seek(current - 1)
+                self._request_seek(current - 1)
         else:
             if current < self._server.num_steps - 1:
-                self._server.seek(current + 1)
+                self._request_seek(current + 1)
 
     def _on_play_button(self, _event) -> None:
         """Handle play/pause button clicks."""
@@ -130,6 +132,24 @@ class PlaybackControls:
             await asyncio.to_thread(self._server.play, fps)
         else:
             await asyncio.to_thread(self._server.pause)
+
+    def _request_seek(self, step: int) -> None:
+        """Dispatch seek without blocking the GUI callback thread."""
+        with self._seek_request_lock:
+            self._seek_request_id += 1
+            request_id = self._seek_request_id
+
+        loop = self._server.get_event_loop()
+        loop.call_soon_threadsafe(
+            lambda: loop.create_task(self._apply_seek_request(request_id, step))
+        )
+
+    async def _apply_seek_request(self, request_id: int, step: int) -> None:
+        """Apply a seek request with latest-request-wins semantics."""
+        with self._seek_request_lock:
+            if request_id != self._seek_request_id:
+                return
+        await asyncio.to_thread(self._server.seek, step)
 
     def _on_fps(self, event) -> None:
         """Handle FPS slider changes."""
