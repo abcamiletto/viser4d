@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,8 +17,6 @@ class PlaybackControls:
         self._server = server
         self._playing = False
         self._suppress_fps = False
-        self._play_request_lock = threading.Lock()
-        self._play_request_id = 0
 
         with server.gui.add_folder("Playback"):
             self._play_button = server.gui.add_button("Play", order=0)
@@ -100,38 +96,13 @@ class PlaybackControls:
     def _on_play_button(self, _event) -> None:
         """Handle play/pause button clicks."""
         if self._playing:
-            next_playing = False
+            self._playing = False
+            self._play_button.label = "Play"
+            self._server.pause()
         else:
-            next_playing = True
-
-        self._playing = next_playing
-        self._play_button.label = "Pause" if next_playing else "Play"
-
-        with self._play_request_lock:
-            self._play_request_id += 1
-            request_id = self._play_request_id
-
-        loop = self._server.get_event_loop()
-        loop.call_soon_threadsafe(
-            lambda: loop.create_task(
-                self._apply_play_request(
-                    request_id, next_playing, self._fps_slider.value
-                )
-            )
-        )
-
-    async def _apply_play_request(
-        self, request_id: int, next_playing: bool, fps: float
-    ) -> None:
-        """Apply a play-state change without blocking the GUI event loop."""
-        with self._play_request_lock:
-            if request_id != self._play_request_id:
-                return
-
-        if next_playing:
-            await asyncio.to_thread(self._server.play, fps)
-        else:
-            await asyncio.to_thread(self._server.pause)
+            self._playing = True
+            self._play_button.label = "Pause"
+            self._server.play(self._fps_slider.value)
 
     def _on_fps(self, event) -> None:
         """Handle FPS slider changes."""
