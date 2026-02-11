@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -18,8 +17,6 @@ class PlaybackControls:
         self._server = server
         self._playing = False
         self._suppress_fps = False
-        self._pending_play_request: tuple[bool, float] | None = None
-        self._play_worker_running = False
 
         with server.gui.add_folder("Playback"):
             self._play_button = server.gui.add_button("Play", order=0)
@@ -98,39 +95,16 @@ class PlaybackControls:
 
     def _on_play_button(self, _event) -> None:
         """Handle play/pause button clicks."""
-        if self._playing:
-            next_playing = False
-        else:
-            next_playing = True
+        next_playing = not self._playing
 
         self._playing = next_playing
         self._play_button.label = "Pause" if next_playing else "Play"
 
         loop = self._server.get_event_loop()
-        loop.call_soon_threadsafe(
-            self._enqueue_play_request, next_playing, self._fps_slider.value
-        )
-
-    def _enqueue_play_request(self, next_playing: bool, fps: float) -> None:
-        """Queue the latest play-state request on the server event loop."""
-        self._pending_play_request = (next_playing, fps)
-        if self._play_worker_running:
-            return
-        self._play_worker_running = True
-        asyncio.create_task(self._drain_play_requests())
-
-    async def _drain_play_requests(self) -> None:
-        """Apply queued play-state requests without blocking the event loop."""
-        try:
-            while self._pending_play_request is not None:
-                next_playing, fps = self._pending_play_request
-                self._pending_play_request = None
-                if next_playing:
-                    await asyncio.to_thread(self._server.play, fps)
-                else:
-                    await asyncio.to_thread(self._server.pause)
-        finally:
-            self._play_worker_running = False
+        if next_playing:
+            loop.call_soon_threadsafe(self._server.play, self._fps_slider.value)
+        else:
+            loop.call_soon_threadsafe(self._server.pause)
 
     def _on_fps(self, event) -> None:
         """Handle FPS slider changes."""
