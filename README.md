@@ -6,7 +6,7 @@ scene operations across timesteps and can seek or play them back.
 ## Quickstart
 
 ```bash
-pip install -e .
+pip install viser4d
 ```
 
 ```python
