@@ -15,13 +15,10 @@
   var SOURCE_MIN_RATE = 1e-4;
   var SOURCE_MAX_RATE = 16.0;
   var SYNC_INTERVAL_MS = 20;
-  var MAX_TRANSPORT_EXTRAPOLATION_SEC = 0.09;
-  var TRANSPORT_HARD_SYNC_THRESHOLD_SEC = 0.45;
-  var SOURCE_HARD_SYNC_THRESHOLD_SEC = 0.45;
+  var HARD_SYNC_THRESHOLD_SEC = 0.09;
   var SOFT_SYNC_GAIN = 0.35;
-  var DRIFT_PD_KP = 0.7;
-  var DRIFT_PD_KD = 0.12;
-  var MAX_RATE_CORRECTION = 0.10;
+  var DRIFT_RATE_GAIN = 0.5;
+  var MAX_RATE_CORRECTION = 0.04;
   var MIN_RESYNC_INTERVAL_SEC = 0.25;
 
   var old = window.__viser4d_audio;
@@ -84,8 +81,6 @@
         sourceStartCtxTime: 0.0,
         sourceStartOffset: 0.0,
         sourceRate: 1.0,
-        prevDrift: 0.0,
-        prevDriftCtxTime: 0.0,
         lastHardSyncCtxTime: -Infinity
       };
       mgr.tracks[name] = track;
@@ -137,7 +132,7 @@
       var phaseError = desiredMediaTime - predictedMediaTime;
 
       if (mgr._playing !== nextPlaying) hardSync = true;
-      if (!hardSync && Math.abs(phaseError) > TRANSPORT_HARD_SYNC_THRESHOLD_SEC) {
+      if (!hardSync && Math.abs(phaseError) > HARD_SYNC_THRESHOLD_SEC) {
         hardSync = true;
       }
 
@@ -173,7 +168,7 @@
     _maxPredictionWindow: function() {
       var rate = mgr._transportRate();
       if (rate <= 0) return Infinity;
-      return MAX_TRANSPORT_EXTRAPOLATION_SEC / rate;
+      return HARD_SYNC_THRESHOLD_SEC / rate;
     },
 
     _isTransportStale: function(ctxTime) {
@@ -232,14 +227,11 @@
 
       source.connect(track.gain);
 
-      var nowCtx = audioCtx.currentTime;
       var startOffset = clamp(offset, 0, Math.max(0, track.buffer.duration - 1e-6));
       track.source = source;
-      track.sourceStartCtxTime = nowCtx;
+      track.sourceStartCtxTime = audioCtx.currentTime;
       track.sourceStartOffset = startOffset;
       track.sourceRate = appliedRate;
-      track.prevDrift = 0.0;
-      track.prevDriftCtxTime = nowCtx;
 
       source.onended = function() {
         if (track.source === source) {
@@ -285,7 +277,7 @@
       var actualOffset = mgr._getSourceOffset(track, nowCtx);
       var sourceDrift = expectedOffset - actualOffset;
       var shouldHardSync = forceHard || (
-        Math.abs(sourceDrift) > SOURCE_HARD_SYNC_THRESHOLD_SEC &&
+        Math.abs(sourceDrift) > HARD_SYNC_THRESHOLD_SEC &&
         nowCtx - track.lastHardSyncCtxTime > MIN_RESYNC_INTERVAL_SEC
       );
       if (shouldHardSync) {
@@ -296,19 +288,7 @@
         return;
       }
 
-      var driftDerivative = 0.0;
-      var driftDt = nowCtx - track.prevDriftCtxTime;
-      if (driftDt > 1e-3) {
-        driftDerivative = (sourceDrift - track.prevDrift) / driftDt;
-      }
-      track.prevDrift = sourceDrift;
-      track.prevDriftCtxTime = nowCtx;
-
-      var correction = clamp(
-        sourceDrift * DRIFT_PD_KP + driftDerivative * DRIFT_PD_KD,
-        -MAX_RATE_CORRECTION,
-        MAX_RATE_CORRECTION
-      );
+      var correction = clamp(sourceDrift * DRIFT_RATE_GAIN, -MAX_RATE_CORRECTION, MAX_RATE_CORRECTION);
       var targetRate = clamp(baseRate * (1 + correction), SOURCE_MIN_RATE, SOURCE_MAX_RATE);
       if (Math.abs(track.sourceRate - targetRate) > 1e-4) {
         track.sourceStartOffset = actualOffset;
