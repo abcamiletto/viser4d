@@ -318,16 +318,17 @@ class Viser4dServer(_viser.ViserServer):
         for callback in self._timestep_callbacks:
             callback(t)
 
+    def _is_on_server_loop_thread(self, loop: asyncio.AbstractEventLoop) -> bool:
+        loop_thread_id = getattr(loop, "_thread_id", None)
+        return loop_thread_id is not None and threading.get_ident() == loop_thread_id
+
     def _render_timestep(self, t: int, *, allow_cancel: bool = False) -> bool:
         loop = self.get_event_loop()
-        try:
-            if asyncio.get_running_loop() is loop:
-                self._renderer.apply(t)
-                self._current_time = t
-                self._fire_timestep_callbacks(t)
-                return True
-        except RuntimeError:
-            pass
+        if self._is_on_server_loop_thread(loop):
+            self._renderer.apply(t)
+            self._current_time = t
+            self._fire_timestep_callbacks(t)
+            return True
 
         future = asyncio.run_coroutine_threadsafe(self._render_timestep_async(t), loop)
         if not allow_cancel:
