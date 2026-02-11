@@ -95,14 +95,16 @@ class PlaybackControls:
 
     def _on_play_button(self, _event) -> None:
         """Handle play/pause button clicks."""
-        if self._playing:
-            self._playing = False
-            self._play_button.label = "Play"
-            self._server.pause()
+        next_playing = not self._playing
+
+        self._playing = next_playing
+        self._play_button.label = "Pause" if next_playing else "Play"
+
+        loop = self._server.get_event_loop()
+        if next_playing:
+            loop.call_soon_threadsafe(self._server.play, self._fps_slider.value)
         else:
-            self._playing = True
-            self._play_button.label = "Pause"
-            self._server.play(self._fps_slider.value)
+            loop.call_soon_threadsafe(self._server.pause)
 
     def _on_fps(self, event) -> None:
         """Handle FPS slider changes."""
