@@ -1,7 +1,8 @@
 # viser4d
 
 viser4d is a small wrapper around `viser` that adds a time dimension. It records
-scene operations across timesteps and can seek or play them back.
+scene operations across timesteps, supports timeline-synced audio playback, and
+can seek or play them back.
 
 ## Quickstart
 
@@ -75,6 +76,7 @@ scene.add_frame(...)                   scene.add_frame(...)
 - **Inside `at(t)`**: Operations are recorded to a timeline, not executed.
 - **Outside `at(t)`**: Operations forward directly to viser's live scene.
 - **Playback**: `seek(t)` or `play()` applies recorded state to the live scene.
+- **Audio**: Add timeline-synced tracks with `server.scene.add_audio(...)`.
 
 See `examples/` for more.
 
