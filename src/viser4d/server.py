@@ -28,9 +28,11 @@ Playback: SceneRenderer reads from Timeline and applies state to the live scene.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from bisect import bisect_right
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
@@ -252,10 +254,8 @@ class Viser4dServer(_viser.ViserServer):
         """
         assert 0 <= t < self.num_steps
         self.pause()
-        self._current_time = t
-        self._renderer.apply(t)
+        self._render_timestep(t)
         self._audio_api.on_seek(t, self._fps)
-        self._fire_timestep_callbacks(t)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
@@ -318,6 +318,36 @@ class Viser4dServer(_viser.ViserServer):
         for callback in self._timestep_callbacks:
             callback(t)
 
+    def _render_timestep(self, t: int, *, allow_cancel: bool = False) -> bool:
+        loop = self.get_event_loop()
+        try:
+            if asyncio.get_running_loop() is loop:
+                self._renderer.apply(t)
+                self._current_time = t
+                self._fire_timestep_callbacks(t)
+                return True
+        except RuntimeError:
+            pass
+
+        future = asyncio.run_coroutine_threadsafe(self._render_timestep_async(t), loop)
+        if not allow_cancel:
+            future.result()
+            return True
+
+        while True:
+            try:
+                future.result(timeout=0.05)
+                return True
+            except FutureTimeoutError:
+                if self._playback_stop.is_set():
+                    future.cancel()
+                    return False
+
+    async def _render_timestep_async(self, t: int) -> None:
+        self._renderer.apply(t)
+        self._current_time = t
+        self._fire_timestep_callbacks(t)
+
     def _playback_loop(self, loop: bool) -> None:
         """Main playback loop. Runs in a separate thread."""
         index = self._current_time
@@ -369,10 +399,7 @@ class Viser4dServer(_viser.ViserServer):
         """Apply frame and return False if stopped."""
         if self._playback_stop.is_set():
             return False
-        self._renderer.apply(t)
-        self._current_time = t
-        self._fire_timestep_callbacks(t)
-        return True
+        return self._render_timestep(t, allow_cancel=True)
 
     def _set_fps(self, fps: float) -> None:
         self._fps = fps if fps > 0 else 1.0
