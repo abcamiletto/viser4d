@@ -113,6 +113,8 @@ class Viser4dServer(_viser.ViserServer):
         self._fps = fps if fps > 0 else 1.0
         self._audio_timeline_fps = self._fps
         self._timestep_callbacks: list[Callable[[int], None]] = []
+        self._pending_seek: int | None = None
+        self._seek_dispatch_pending = False
 
         # Initialize viser server first (creates _live_scene)
         super().__init__(
@@ -256,6 +258,30 @@ class Viser4dServer(_viser.ViserServer):
         self.pause()
         self._render_timestep(t)
         self._audio_api.on_seek(t, self._fps)
+
+    def request_seek(self, t: int) -> None:
+        """Queue a seek request and coalesce to the most recent timestep."""
+        assert 0 <= t < self.num_steps
+        loop = self.get_event_loop()
+        if self._is_on_server_loop_thread(loop):
+            self._queue_seek(t)
+            return
+        loop.call_soon_threadsafe(self._queue_seek, t)
+
+    def _queue_seek(self, t: int) -> None:
+        self._pending_seek = t
+        if self._seek_dispatch_pending:
+            return
+        self._seek_dispatch_pending = True
+        self.get_event_loop().call_soon(self._drain_pending_seek)
+
+    def _drain_pending_seek(self) -> None:
+        self._seek_dispatch_pending = False
+        t = self._pending_seek
+        self._pending_seek = None
+        if t is None:
+            return
+        self.seek(t)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
