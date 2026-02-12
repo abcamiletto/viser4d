@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -142,12 +143,14 @@ def test_play_loops_by_default(server: viser4d.Viser4dServer) -> None:
     """play() defaults to looping playback."""
     captured: list[bool] = []
 
-    def fake_loop(loop: bool) -> None:
+    def fake_start(loop: bool) -> None:
         captured.append(loop)
 
-    server._playback_loop = fake_loop  # type: ignore[method-assign]
+    server._start_playback = fake_start  # type: ignore[method-assign]
     server.play(fps=30)
-    server._playback_thread.join(timeout=1)
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), server.get_event_loop()).result(
+        timeout=1
+    )
 
     assert captured == [True]
 

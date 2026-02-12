@@ -32,7 +32,6 @@ import asyncio
 import threading
 import time
 from bisect import bisect_right
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
@@ -107,8 +106,7 @@ class Viser4dServer(_viser.ViserServer):
             lazy_threshold_bytes or self._DEFAULT_LAZY_THRESHOLD_BYTES
         )
         self._compression = compression or self._DEFAULT_COMPRESSION
-        self._playback_thread: threading.Thread | None = None
-        self._playback_stop = threading.Event()
+        self._playback_task: asyncio.Task[None] | None = None
         self._current_time = 0
         self._fps = fps if fps > 0 else 1.0
         self._audio_timeline_fps = self._fps
@@ -211,31 +209,26 @@ class Viser4dServer(_viser.ViserServer):
             >>> server.play(fps=30, loop=True)
         """
         self._set_fps(fps)
-        if self._playback_thread is not None and self._playback_thread.is_alive():
-            if self._playback_controls is not None:
-                self._playback_controls.set_playing(True)
+        event_loop = self.get_event_loop()
+        if self._is_on_server_loop_thread(event_loop):
+            self._start_playback(loop)
             return
-
-        self._playback_stop = threading.Event()
-        self._playback_thread = threading.Thread(
-            target=self._playback_loop, args=(loop,), daemon=True
-        )
-        self._playback_thread.start()
-        self._on_playback_start(self._current_time, self._fps)
+        event_loop.call_soon_threadsafe(self._start_playback, loop)
 
     def pause(self) -> None:
         """Pause playback.
 
-        Stops the playback thread and leaves the scene at the current timestep.
+        Stops playback and leaves the scene at the current timestep.
         Safe to call even if playback is not running.
         """
-        was_playing = (
-            self._playback_thread is not None and self._playback_thread.is_alive()
+        event_loop = self.get_event_loop()
+        if self._is_on_server_loop_thread(event_loop):
+            self._pause_playback_on_loop()
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            self._pause_playback_async(), event_loop
         )
-        if was_playing:
-            self._playback_stop.set()
-            self._playback_thread.join()
-        self._on_playback_stop()
+        future.result()
 
     def seek(self, t: int) -> None:
         """Jump to a specific timestep.
@@ -318,47 +311,61 @@ class Viser4dServer(_viser.ViserServer):
         for callback in self._timestep_callbacks:
             callback(t)
 
+    def _is_playing(self) -> bool:
+        return self._playback_task is not None and not self._playback_task.done()
+
+    def _start_playback(self, loop: bool) -> None:
+        if self._is_playing():
+            if self._playback_controls is not None:
+                self._playback_controls.set_playing(True)
+            return
+        self._playback_task = asyncio.create_task(self._playback_loop(loop))
+        self._on_playback_start(self._current_time, self._fps)
+
+    def _pause_playback_on_loop(self) -> None:
+        if self._playback_task is not None and not self._playback_task.done():
+            self._playback_task.cancel()
+        self._playback_task = None
+        self._on_playback_stop()
+
+    async def _pause_playback_async(self) -> None:
+        task = self._playback_task
+        if task is None or task.done():
+            self._playback_task = None
+            self._on_playback_stop()
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self._playback_task = None
+        self._on_playback_stop()
+
     def _is_on_server_loop_thread(self, loop: asyncio.AbstractEventLoop) -> bool:
         loop_thread_id = getattr(loop, "_thread_id", None)
         return loop_thread_id is not None and threading.get_ident() == loop_thread_id
 
-    def _render_timestep(self, t: int, *, allow_cancel: bool = False) -> bool:
+    def _render_timestep(self, t: int) -> None:
         loop = self.get_event_loop()
         if self._is_on_server_loop_thread(loop):
             self._renderer.apply(t)
             self._current_time = t
             self._fire_timestep_callbacks(t)
-            return True
+            return
 
         future = asyncio.run_coroutine_threadsafe(self._render_timestep_async(t), loop)
-        if not allow_cancel:
-            future.result()
-            return True
-
-        while True:
-            try:
-                future.result(timeout=0.05)
-                return True
-            except FutureTimeoutError:
-                if self._playback_stop.is_set():
-                    future.cancel()
-                    return False
+        future.result()
 
     async def _render_timestep_async(self, t: int) -> None:
         self._renderer.apply(t)
         self._current_time = t
         self._fire_timestep_callbacks(t)
 
-    def _playback_loop(self, loop: bool) -> None:
-        """Main playback loop. Runs in a separate thread."""
+    async def _playback_loop(self, loop: bool) -> None:
+        """Main playback loop. Runs on the server event loop."""
         index = self._current_time
         frame_duration = 1.0 / self._fps
         next_frame_time = time.monotonic()
 
         while True:
-            if self._playback_stop.is_set():
-                return
-
             # Handle dynamic FPS changes
             new_duration = 1.0 / self._fps
             if frame_duration != new_duration:
@@ -373,8 +380,7 @@ class Viser4dServer(_viser.ViserServer):
                 next_frame_time += frames_behind * frame_duration
 
             # Render current frame
-            if not self._playback_step(index):
-                return
+            self._playback_step(index)
 
             # Advance to next frame
             index += 1
@@ -391,22 +397,21 @@ class Viser4dServer(_viser.ViserServer):
 
             # Wait for next frame
             delay = next_frame_time - time.monotonic()
-            if delay > 0 and self._playback_stop.wait(timeout=delay):
-                return
+            await asyncio.sleep(delay if delay > 0 else 0)
 
         self._on_playback_stop()
+        if self._playback_task is asyncio.current_task():
+            self._playback_task = None
 
-    def _playback_step(self, t: int) -> bool:
-        """Apply frame and return False if stopped."""
-        if self._playback_stop.is_set():
-            return False
-        return self._render_timestep(t, allow_cancel=True)
+    def _playback_step(self, t: int) -> None:
+        """Apply one playback frame."""
+        self._render_timestep(t)
 
     def _set_fps(self, fps: float) -> None:
         self._fps = fps if fps > 0 else 1.0
         if self._playback_controls is not None:
             self._playback_controls.set_fps(self._fps)
-        if self._playback_thread is not None and self._playback_thread.is_alive():
+        if self._is_playing():
             self._audio_api.on_fps_change(self._fps)
 
     def _on_playback_start(self, step: int, fps: float) -> None:
