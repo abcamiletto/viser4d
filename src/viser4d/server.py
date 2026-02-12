@@ -71,10 +71,8 @@ class Viser4dServer(_viser.ViserServer):
         label: Optional label displayed in the GUI panel.
         verbose: Whether to print server startup information.
         fps: Initial playback FPS and fixed audio baseline FPS.
-        enable_disk_cache: Whether to enable lazy disk-backed payload caching.
-            Defaults to ``False``.
         lazy_threshold_bytes: Payload size threshold for lazy disk-backed payloads.
-            Used only when disk caching is enabled. Defaults to 1MB.
+            ``None`` disables disk caching. Defaults to ``None``.
         compression: Compression mode for disk-backed payloads.
             Defaults to :attr:`CompressionMode.FAST`.
         enable_playback_gui: Whether to add built-in playback controls.
@@ -88,7 +86,6 @@ class Viser4dServer(_viser.ViserServer):
         >>> server.play(fps=30, loop=True)
     """
 
-    _DEFAULT_LAZY_THRESHOLD_BYTES = 1024 * 1024  # 1MB
     _DEFAULT_COMPRESSION = CompressionMode.FAST
 
     def __init__(
@@ -99,23 +96,13 @@ class Viser4dServer(_viser.ViserServer):
         label: str | None = None,
         verbose: bool = True,
         fps: float = 30.0,
-        enable_disk_cache: bool = False,
         lazy_threshold_bytes: int | None = None,
         compression: CompressionMode | None = None,
         enable_playback_gui: bool = True,
         **kwargs: Any,
     ) -> None:
         self.num_steps = num_steps
-        if lazy_threshold_bytes is not None:
-            enable_disk_cache = True
-        if enable_disk_cache:
-            self._lazy_threshold_bytes: int | None = (
-                self._DEFAULT_LAZY_THRESHOLD_BYTES
-                if lazy_threshold_bytes is None
-                else lazy_threshold_bytes
-            )
-        else:
-            self._lazy_threshold_bytes = None
+        self._lazy_threshold_bytes: int | None = lazy_threshold_bytes
         self._compression = compression or self._DEFAULT_COMPRESSION
         self._playback_thread: threading.Thread | None = None
         self._playback_stop = threading.Event()
