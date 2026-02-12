@@ -191,6 +191,27 @@ def test_lazy_payload_creates_file() -> None:
 # =============================================================================
 
 
+def test_server_default_disables_disk_cache() -> None:
+    """Server defaults to eager payloads unless disk caching is enabled."""
+    server = viser4d.Viser4dServer(
+        num_steps=3,
+        host="127.0.0.1",
+        port=0,
+        verbose=False,
+        enable_playback_gui=False,
+    )
+    try:
+        with server.at(0):
+            server.scene.add_frame("/frame", axes_length=0.1)
+
+        series = server._timeline._adds.get("/frame")
+        assert series is not None
+        op = series.values[0]
+        assert not op.is_lazy()
+    finally:
+        server.stop()
+
+
 def test_server_uses_configured_threshold(server: viser4d.Viser4dServer) -> None:
     """Server passes threshold to Op creation."""
     # Server fixture has 100 byte threshold
