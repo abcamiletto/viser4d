@@ -219,16 +219,14 @@ class Viser4dServer(_viser.ViserServer):
         """Pause playback.
 
         Stops playback and leaves the scene at the current timestep.
-        Safe to call even if playback is not running.
+        Safe to call even if playback is not running. This is non-blocking when
+        called from outside the server event loop.
         """
         event_loop = self.get_event_loop()
         if self._is_on_server_loop_thread(event_loop):
             self._pause_playback_on_loop()
             return
-        future = asyncio.run_coroutine_threadsafe(
-            self._pause_playback_async(), event_loop
-        )
-        future.result()
+        event_loop.call_soon_threadsafe(self._pause_playback_on_loop)
 
     def seek(self, t: int) -> None:
         """Jump to a specific timestep.
@@ -325,17 +323,6 @@ class Viser4dServer(_viser.ViserServer):
     def _pause_playback_on_loop(self) -> None:
         if self._playback_task is not None and not self._playback_task.done():
             self._playback_task.cancel()
-        self._playback_task = None
-        self._on_playback_stop()
-
-    async def _pause_playback_async(self) -> None:
-        task = self._playback_task
-        if task is None or task.done():
-            self._playback_task = None
-            self._on_playback_stop()
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
         self._playback_task = None
         self._on_playback_stop()
 
