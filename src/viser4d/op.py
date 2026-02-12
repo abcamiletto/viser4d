@@ -212,10 +212,12 @@ class _EagerPayload:
 def _create_payload(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
-    threshold_bytes: int = _THRESHOLD_BYTES,
+    threshold_bytes: int | None = _THRESHOLD_BYTES,
     compression: CompressionMode = _DEFAULT_COMPRESSION,
 ) -> _EagerPayload | _LazyPayload:
     """Create lazy payload if data is heavy, else eager."""
+    if threshold_bytes is None:
+        return _EagerPayload(args, kwargs)
     if objsize.get_deep_size(args) + objsize.get_deep_size(kwargs) > threshold_bytes:
         return _LazyPayload.save(args, kwargs, compression)
     return _EagerPayload(args, kwargs)
@@ -249,7 +251,7 @@ class Op:
         member: str,
         args: tuple[Any, ...] = (),
         kwargs: dict[str, Any] | None = None,
-        threshold_bytes: int = _THRESHOLD_BYTES,
+        threshold_bytes: int | None = _THRESHOLD_BYTES,
         compression: CompressionMode = _DEFAULT_COMPRESSION,
     ) -> Op:
         """Factory that auto-selects eager vs lazy based on payload size."""

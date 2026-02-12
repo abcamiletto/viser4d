@@ -108,8 +108,7 @@ class PlaybackControls:
 
     def _request_seek(self, step: int) -> None:
         """Dispatch seek without blocking the GUI callback thread."""
-        loop = self._server.get_event_loop()
-        loop.call_soon_threadsafe(self._server.seek, step)
+        self._server.request_seek(step)
 
     def _on_fps(self, event) -> None:
         """Handle FPS slider changes."""

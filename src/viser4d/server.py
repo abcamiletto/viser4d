@@ -71,8 +71,10 @@ class Viser4dServer(_viser.ViserServer):
         label: Optional label displayed in the GUI panel.
         verbose: Whether to print server startup information.
         fps: Initial playback FPS and fixed audio baseline FPS.
-        lazy_threshold_bytes: Payloads larger than this are disk-backed.
-            Defaults to 1MB.
+        enable_disk_cache: Whether to enable lazy disk-backed payload caching.
+            Defaults to ``False``.
+        lazy_threshold_bytes: Payload size threshold for lazy disk-backed payloads.
+            Used only when disk caching is enabled. Defaults to 1MB.
         compression: Compression mode for disk-backed payloads.
             Defaults to :attr:`CompressionMode.FAST`.
         enable_playback_gui: Whether to add built-in playback controls.
@@ -97,15 +99,23 @@ class Viser4dServer(_viser.ViserServer):
         label: str | None = None,
         verbose: bool = True,
         fps: float = 30.0,
+        enable_disk_cache: bool = False,
         lazy_threshold_bytes: int | None = None,
         compression: CompressionMode | None = None,
         enable_playback_gui: bool = True,
         **kwargs: Any,
     ) -> None:
         self.num_steps = num_steps
-        self._lazy_threshold_bytes = (
-            lazy_threshold_bytes or self._DEFAULT_LAZY_THRESHOLD_BYTES
-        )
+        if lazy_threshold_bytes is not None:
+            enable_disk_cache = True
+        if enable_disk_cache:
+            self._lazy_threshold_bytes: int | None = (
+                self._DEFAULT_LAZY_THRESHOLD_BYTES
+                if lazy_threshold_bytes is None
+                else lazy_threshold_bytes
+            )
+        else:
+            self._lazy_threshold_bytes = None
         self._compression = compression or self._DEFAULT_COMPRESSION
         self._playback_thread: threading.Thread | None = None
         self._playback_stop = threading.Event()
@@ -113,6 +123,9 @@ class Viser4dServer(_viser.ViserServer):
         self._fps = fps if fps > 0 else 1.0
         self._audio_timeline_fps = self._fps
         self._timestep_callbacks: list[Callable[[int], None]] = []
+        self._seek_lock = threading.Lock()
+        self._pending_seek: int | None = None
+        self._seek_scheduled = False
 
         # Initialize viser server first (creates _live_scene)
         super().__init__(
@@ -257,6 +270,16 @@ class Viser4dServer(_viser.ViserServer):
         self._render_timestep(t)
         self._audio_api.on_seek(t, self._fps)
 
+    def request_seek(self, t: int) -> None:
+        """Schedule a seek on the server loop, coalescing rapid updates."""
+        assert 0 <= t < self.num_steps
+        with self._seek_lock:
+            self._pending_seek = t
+            if self._seek_scheduled:
+                return
+            self._seek_scheduled = True
+        self.get_event_loop().call_soon_threadsafe(self._drain_pending_seek)
+
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
 
@@ -318,16 +341,34 @@ class Viser4dServer(_viser.ViserServer):
         for callback in self._timestep_callbacks:
             callback(t)
 
+    def _drain_pending_seek(self) -> None:
+        with self._seek_lock:
+            target = self._pending_seek
+            self._pending_seek = None
+
+        if target is not None:
+            self.seek(target)
+
+        with self._seek_lock:
+            if self._pending_seek is None:
+                self._seek_scheduled = False
+                return
+        self.get_event_loop().call_soon(self._drain_pending_seek)
+
     def _is_on_server_loop_thread(self, loop: asyncio.AbstractEventLoop) -> bool:
         loop_thread_id = getattr(loop, "_thread_id", None)
         return loop_thread_id is not None and threading.get_ident() == loop_thread_id
 
+    def _apply_timestep(self, t: int) -> None:
+        with self.atomic():
+            self._renderer.apply(t)
+        self._current_time = t
+        self._fire_timestep_callbacks(t)
+
     def _render_timestep(self, t: int, *, allow_cancel: bool = False) -> bool:
         loop = self.get_event_loop()
         if self._is_on_server_loop_thread(loop):
-            self._renderer.apply(t)
-            self._current_time = t
-            self._fire_timestep_callbacks(t)
+            self._apply_timestep(t)
             return True
 
         future = asyncio.run_coroutine_threadsafe(self._render_timestep_async(t), loop)
@@ -345,9 +386,7 @@ class Viser4dServer(_viser.ViserServer):
                     return False
 
     async def _render_timestep_async(self, t: int) -> None:
-        self._renderer.apply(t)
-        self._current_time = t
-        self._fire_timestep_callbacks(t)
+        self._apply_timestep(t)
 
     def _playback_loop(self, loop: bool) -> None:
         """Main playback loop. Runs in a separate thread."""
@@ -439,7 +478,7 @@ class ProxyScene:
         server: Viser4dServer,
         timeline: Timeline,
         live_scene: SceneApi,
-        lazy_threshold_bytes: int,
+        lazy_threshold_bytes: int | None,
         compression: CompressionMode,
     ) -> None:
         self._server = server
