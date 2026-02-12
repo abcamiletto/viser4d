@@ -72,7 +72,7 @@ class Viser4dServer(_viser.ViserServer):
         verbose: Whether to print server startup information.
         fps: Initial playback FPS and fixed audio baseline FPS.
         lazy_threshold_bytes: Payloads larger than this are disk-backed.
-            Defaults to 1MB.
+            ``None`` disables disk-backed payloads (default).
         compression: Compression mode for disk-backed payloads.
             Defaults to :attr:`CompressionMode.FAST`.
         enable_playback_gui: Whether to add built-in playback controls.
@@ -86,7 +86,6 @@ class Viser4dServer(_viser.ViserServer):
         >>> server.play(fps=30, loop=True)
     """
 
-    _DEFAULT_LAZY_THRESHOLD_BYTES = 1024 * 1024  # 1MB
     _DEFAULT_COMPRESSION = CompressionMode.FAST
 
     def __init__(
@@ -103,9 +102,7 @@ class Viser4dServer(_viser.ViserServer):
         **kwargs: Any,
     ) -> None:
         self.num_steps = num_steps
-        self._lazy_threshold_bytes = (
-            lazy_threshold_bytes or self._DEFAULT_LAZY_THRESHOLD_BYTES
-        )
+        self._lazy_threshold_bytes = lazy_threshold_bytes
         self._compression = compression or self._DEFAULT_COMPRESSION
         self._playback_thread: threading.Thread | None = None
         self._playback_stop = threading.Event()
@@ -439,7 +436,7 @@ class ProxyScene:
         server: Viser4dServer,
         timeline: Timeline,
         live_scene: SceneApi,
-        lazy_threshold_bytes: int,
+        lazy_threshold_bytes: int | None,
         compression: CompressionMode,
     ) -> None:
         self._server = server
