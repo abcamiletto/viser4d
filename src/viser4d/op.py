@@ -1,8 +1,8 @@
 """Operation recording with optional lazy disk-backed storage.
 
-This module provides the Op class for recording scene operations. Heavy payloads
-(>1MB) are automatically offloaded to disk and loaded on demand via an LRU cache.
-Disk storage uses zstd compression by default for reduced I/O.
+This module provides the Op class for recording scene operations. When a lazy
+threshold is set, heavy payloads are offloaded to disk and loaded on demand via
+an LRU cache. Disk storage uses zstd compression by default for reduced I/O.
 
 Architecture
 ------------
@@ -23,7 +23,7 @@ Architecture
     ┌───────────────────────┐                                 ┌───────────────────────┐
     │    _EagerPayload      │                                 │    _LazyPayload       │
     │                       │                                 │                       │
-    │  - Small data (<1MB)  │                                 │  - Large data (>1MB)  │
+    │  - In-memory data      │                                 │  - Disk-backed data    │
     │  - Stored in memory   │                                 │  - Stored on disk     │
     └───────────────────────┘                                 │  - zstd compressed    │
                                                               └───────────────────────┘
@@ -82,7 +82,6 @@ class CompressionMode(Enum):
     BALANCED = "balanced"  # zstd level 3
 
 
-_THRESHOLD_BYTES = 1024 * 1024  # 1MB
 _MAX_CACHE_BYTES = 1024 * 1024 * 1024  # 1GB
 _DEFAULT_COMPRESSION = CompressionMode.FAST
 _CACHE_DIR: Path | None = None
@@ -212,10 +211,12 @@ class _EagerPayload:
 def _create_payload(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
-    threshold_bytes: int = _THRESHOLD_BYTES,
+    threshold_bytes: int | None = None,
     compression: CompressionMode = _DEFAULT_COMPRESSION,
 ) -> _EagerPayload | _LazyPayload:
     """Create lazy payload if data is heavy, else eager."""
+    if threshold_bytes is None:
+        return _EagerPayload(args, kwargs)
     if objsize.get_deep_size(args) + objsize.get_deep_size(kwargs) > threshold_bytes:
         return _LazyPayload.save(args, kwargs, compression)
     return _EagerPayload(args, kwargs)
@@ -249,7 +250,7 @@ class Op:
         member: str,
         args: tuple[Any, ...] = (),
         kwargs: dict[str, Any] | None = None,
-        threshold_bytes: int = _THRESHOLD_BYTES,
+        threshold_bytes: int | None = None,
         compression: CompressionMode = _DEFAULT_COMPRESSION,
     ) -> Op:
         """Factory that auto-selects eager vs lazy based on payload size."""
