@@ -208,11 +208,7 @@ class Viser4dServer(_viser.ViserServer):
             >>> server.play(fps=30, loop=True)
         """
         self._set_fps(fps)
-        event_loop = self.get_event_loop()
-        if self._is_on_server_loop_thread(event_loop):
-            self._start_playback(loop)
-            return
-        event_loop.call_soon_threadsafe(self._start_playback, loop)
+        self._dispatch_on_loop(self._start_playback, loop)
 
     def pause(self) -> None:
         """Pause playback.
@@ -221,11 +217,7 @@ class Viser4dServer(_viser.ViserServer):
         Safe to call even if playback is not running. This is non-blocking when
         called from outside the server event loop.
         """
-        event_loop = self.get_event_loop()
-        if self._is_on_server_loop_thread(event_loop):
-            self._pause_playback_on_loop()
-            return
-        event_loop.call_soon_threadsafe(self._pause_playback_on_loop)
+        self._dispatch_on_loop(self._pause_playback_on_loop)
 
     def seek(self, t: int) -> None:
         """Jump to a specific timestep.
@@ -243,18 +235,12 @@ class Viser4dServer(_viser.ViserServer):
             >>> server.seek(50)  # Jump to frame 50
         """
         assert 0 <= t < self.num_steps
-        self.pause()
-        self._render_timestep(t)
-        self._audio_api.on_seek(t, self._fps)
+        self._dispatch_on_loop(self._seek_on_loop, t, wait=True)
 
     def request_seek(self, t: int) -> None:
         """Queue a seek request and coalesce to the most recent timestep."""
         assert 0 <= t < self.num_steps
-        loop = self.get_event_loop()
-        if self._is_on_server_loop_thread(loop):
-            self._queue_seek(t)
-            return
-        loop.call_soon_threadsafe(self._queue_seek, t)
+        self._dispatch_on_loop(self._queue_seek, t)
 
     def _queue_seek(self, t: int) -> None:
         self._pending_seek = t
@@ -269,7 +255,7 @@ class Viser4dServer(_viser.ViserServer):
         self._pending_seek = None
         if t is None:
             return
-        self.seek(t)
+        self._seek_on_loop(t)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
@@ -332,6 +318,22 @@ class Viser4dServer(_viser.ViserServer):
         for callback in self._timestep_callbacks:
             callback(t)
 
+    def _dispatch_on_loop(
+        self, fn: Callable[..., None], *args: Any, wait: bool = False
+    ) -> None:
+        loop = self.get_event_loop()
+        if self._is_on_server_loop_thread(loop):
+            fn(*args)
+            return
+        if not wait:
+            loop.call_soon_threadsafe(fn, *args)
+            return
+
+        async def _call() -> None:
+            fn(*args)
+
+        asyncio.run_coroutine_threadsafe(_call(), loop).result()
+
     def _is_playing(self) -> bool:
         return self._playback_task is not None and not self._playback_task.done()
 
@@ -349,22 +351,19 @@ class Viser4dServer(_viser.ViserServer):
         self._playback_task = None
         self._on_playback_stop()
 
+    def _seek_on_loop(self, t: int) -> None:
+        self._pause_playback_on_loop()
+        self._render_timestep(t)
+        self._audio_api.on_seek(t, self._fps)
+
     def _is_on_server_loop_thread(self, loop: asyncio.AbstractEventLoop) -> bool:
         loop_thread_id = getattr(loop, "_thread_id", None)
         return loop_thread_id is not None and threading.get_ident() == loop_thread_id
 
     def _render_timestep(self, t: int) -> None:
-        loop = self.get_event_loop()
-        if self._is_on_server_loop_thread(loop):
-            self._renderer.apply(t)
-            self._current_time = t
-            self._fire_timestep_callbacks(t)
-            return
+        self._dispatch_on_loop(self._render_timestep_on_loop, t, wait=True)
 
-        future = asyncio.run_coroutine_threadsafe(self._render_timestep_async(t), loop)
-        future.result()
-
-    async def _render_timestep_async(self, t: int) -> None:
+    def _render_timestep_on_loop(self, t: int) -> None:
         self._renderer.apply(t)
         self._current_time = t
         self._fire_timestep_callbacks(t)
@@ -390,7 +389,7 @@ class Viser4dServer(_viser.ViserServer):
                 next_frame_time += frames_behind * frame_duration
 
             # Render current frame
-            self._playback_step(index)
+            self._render_timestep(index)
 
             # Advance to next frame
             index += 1
@@ -412,10 +411,6 @@ class Viser4dServer(_viser.ViserServer):
         self._on_playback_stop()
         if self._playback_task is asyncio.current_task():
             self._playback_task = None
-
-    def _playback_step(self, t: int) -> None:
-        """Apply one playback frame."""
-        self._render_timestep(t)
 
     def _set_fps(self, fps: float) -> None:
         self._fps = fps if fps > 0 else 1.0
