@@ -205,7 +205,9 @@ def test_current_time_property(server: viser4d.Viser4dServer) -> None:
     assert server.current_time == 1
 
 
-def test_proxy_handle_can_read_and_write_live_state(server: viser4d.Viser4dServer) -> None:
+def test_proxy_handle_can_read_and_write_live_state(
+    server: viser4d.Viser4dServer,
+) -> None:
     with server.at(0):
         handle = server.scene.add_frame("/frame", axes_length=0.1)
         handle.position = (1.0, 2.0, 3.0)

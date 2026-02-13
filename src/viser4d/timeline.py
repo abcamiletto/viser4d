@@ -57,7 +57,10 @@ class Timeline:
         remove_series = self._removes.get(target)
         if remove_series is not None:
             remove_index = remove_series.latest_index(t)
-            if remove_index is not None and remove_series.times[remove_index] >= add_time:
+            if (
+                remove_index is not None
+                and remove_series.times[remove_index] >= add_time
+            ):
                 return None
 
         return (add_index, series.values[add_index], add_time)
