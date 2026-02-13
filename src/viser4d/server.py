@@ -29,21 +29,24 @@ Playback: SceneRenderer reads from Timeline and applies state to the live scene.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
-from bisect import bisect_right
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
-import numpy as np
 import viser as _viser
 
-from .audio import AudioApi, AudioHandle
+from .audio import AudioApi
 from .gui import PlaybackControls
-from .op import CompressionMode, Op, OpKind
+from .op import CompressionMode
+from .proxy import ProxyScene
+from .timeline import SceneRenderer, Timeline
 
 if TYPE_CHECKING:
     from viser import SceneApi
+
+_LOG = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -181,6 +184,7 @@ class Viser4dServer(_viser.ViserServer):
 
         Raises:
             AssertionError: If t is out of bounds.
+            RuntimeError: If called while already inside ``at()`` on this thread.
 
         Example:
             >>> with server.at(5):
@@ -188,6 +192,8 @@ class Viser4dServer(_viser.ViserServer):
             ...     handle.position = (1.0, 2.0, 3.0)
         """
         assert 0 <= t < self.num_steps
+        if self._proxy_scene._recording_time is not None:
+            raise RuntimeError("Nested at() contexts are not supported.")
         self._proxy_scene._set_time(t)
         try:
             yield
@@ -276,47 +282,13 @@ class Viser4dServer(_viser.ViserServer):
         """
         self._timestep_callbacks.append(callback)
 
-    @property
-    def handles(self) -> list[str]:
-        """Names of all recorded scene handles.
-
-        Returns a list of all handle names that have been recorded in the
-        timeline. Useful for bulk operations like toggling visibility.
-
-        Returns:
-            List of handle name strings.
-
-        Example:
-            >>> for name in server.handles:
-            ...     if name.startswith("/skeleton/"):
-            ...         server.get_handle(name).visible = False
-        """
-        return self._timeline.handle_names
-
-    def get_handle(self, name: str) -> ProxyHandle:
-        """Get a handle by name for manipulation.
-
-        Returns a handle that can be used to modify scene objects. When used
-        inside an ``at(t)`` context, changes are recorded to the timeline.
-        When used outside, changes are applied immediately to the live scene.
-
-        Args:
-            name: The name of the scene object (e.g., "/skeleton/joints").
-
-        Returns:
-            A ProxyHandle for the named object.
-
-        Example:
-            >>> # Runtime visibility toggle
-            >>> handle = server.get_handle("/skeleton/joints")
-            >>> handle.visible = False  # Immediate effect
-        """
-        return ProxyHandle(self._proxy_scene, name)
-
     def _fire_timestep_callbacks(self, t: int) -> None:
         """Invoke all registered timestep callbacks."""
         for callback in self._timestep_callbacks:
-            callback(t)
+            try:
+                callback(t)
+            except Exception:
+                _LOG.exception("Timestep callback failed at step %s", t)
 
     def _dispatch_on_loop(
         self, fn: Callable[..., None], *args: Any, wait: bool = False
@@ -345,14 +317,17 @@ class Viser4dServer(_viser.ViserServer):
         self._playback_task = asyncio.create_task(self._playback_loop(loop))
         self._on_playback_start(self._current_time, self._fps)
 
-    def _pause_playback_on_loop(self) -> None:
+    def _pause_playback_on_loop(self, notify_audio: bool = True) -> None:
         if self._playback_task is not None and not self._playback_task.done():
             self._playback_task.cancel()
         self._playback_task = None
-        self._on_playback_stop()
+        if notify_audio:
+            self._audio_api.on_pause()
+        if self._playback_controls is not None:
+            self._playback_controls.set_playing(False)
 
     def _seek_on_loop(self, t: int) -> None:
-        self._pause_playback_on_loop()
+        self._pause_playback_on_loop(notify_audio=False)
         self._render_timestep(t)
         self._audio_api.on_seek(t, self._fps)
 
@@ -430,338 +405,3 @@ class Viser4dServer(_viser.ViserServer):
         self._audio_api.on_pause()
         if self._playback_controls is not None:
             self._playback_controls.set_playing(False)
-
-
-# =============================================================================
-# Recording proxies
-# =============================================================================
-
-
-class ProxyScene:
-    """Context-aware scene proxy.
-
-    Inside an ``at(t)`` context, operations are recorded to the timeline.
-    Outside, operations are forwarded to the live viser scene.
-    """
-
-    def __init__(
-        self,
-        server: Viser4dServer,
-        timeline: Timeline,
-        live_scene: SceneApi,
-        lazy_threshold_bytes: int | None,
-        compression: CompressionMode,
-    ) -> None:
-        self._server = server
-        self._timeline = timeline
-        self._live_scene = live_scene
-        self._lazy_threshold_bytes = lazy_threshold_bytes
-        self._compression = compression
-        self._recording_context = threading.local()
-
-    def add_audio(
-        self, name: str, *, data: np.ndarray, sample_rate: int
-    ) -> AudioHandle:
-        """Add an audio track starting at the current recording timestep.
-
-        Must be called inside an ``at(t)`` context. The audio will begin
-        playing at timestep *t* during playback.
-
-        Returns an :class:`AudioHandle` whose properties (e.g. ``volume``)
-        sync to the client, matching viser's handle pattern.
-
-        Args:
-            name: Identifier for this audio track (e.g. ``"/narration"``).
-            data: Audio samples (``int16`` or ``float32``). 1-D mono or
-                2-D ``(N, channels)`` stereo.
-            sample_rate: Sample rate in Hz (e.g. 44100).
-
-        Returns:
-            An AudioHandle for the new track.
-
-        Raises:
-            RuntimeError: If called outside an ``at(t)`` context.
-        """
-        if self._recording_time is None:
-            raise RuntimeError("add_audio() must be called inside an at(t) context.")
-        return self._server._audio_api.add_track(
-            name,
-            data,
-            sample_rate,
-            start_step=self._recording_time,
-        )
-
-    def __getattr__(self, name: str) -> Any:
-        # Outside recording context - forward to live scene
-        if self._recording_time is None:
-            return getattr(self._live_scene, name)
-
-        # Inside recording context - record operations
-        if name.startswith("add_"):
-
-            def _add(*args: Any, **kwargs: Any) -> ProxyHandle:
-                target = self._target_from_add(args, kwargs)
-                op = Op.create(
-                    kind=OpKind.ADD,
-                    target=target,
-                    member=name,
-                    args=args,
-                    kwargs=kwargs,
-                    threshold_bytes=self._lazy_threshold_bytes,
-                    compression=self._compression,
-                )
-                self._record(op)
-                return ProxyHandle(self, target)
-
-            return _add
-
-        if name == "remove_by_name":
-
-            def _remove(target: str) -> None:
-                self._record(
-                    Op.create(
-                        kind=OpKind.REMOVE,
-                        target=target,
-                        member=name,
-                        threshold_bytes=self._lazy_threshold_bytes,
-                        compression=self._compression,
-                    )
-                )
-
-            return _remove
-
-        # For any other attribute, forward to the live scene even while recording.
-        return getattr(self._live_scene, name)
-
-    def _set_time(self, time_step: int | None) -> None:
-        self._recording_time = time_step
-
-    @property
-    def _recording_time(self) -> int | None:
-        return getattr(self._recording_context, "time_step", None)
-
-    @_recording_time.setter
-    def _recording_time(self, value: int | None) -> None:
-        self._recording_context.time_step = value
-
-    def _record(self, op: Op) -> None:
-        if self._recording_time is None:
-            raise RuntimeError("Cannot record operation when time is not set.")
-        t = self._recording_time
-        if op.kind is OpKind.ADD:
-            self._timeline.record_add(t, op.target, op)
-        elif op.kind is OpKind.REMOVE:
-            self._timeline.record_remove(t, op.target)
-        else:
-            self._timeline.record_set(t, op.target, op.member, op.args[0])
-
-    @staticmethod
-    def _target_from_add(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
-        return kwargs.get("name", args[0])
-
-
-class ProxyHandle:
-    """Handle proxy that records or forwards attribute access.
-
-    When accessed inside an ``at(t)`` context, operations are recorded to the
-    timeline. When accessed outside, operations are forwarded to the live
-    viser handle.
-    """
-
-    __slots__ = ("_parent_scene", "_name")
-
-    def __init__(self, parent_scene: ProxyScene, name: str) -> None:
-        self._parent_scene = parent_scene
-        self._name = name
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name.startswith("_"):
-            object.__setattr__(self, name, value)
-            return
-
-        if self._parent_scene._recording_time is not None:
-            # Inside at() context - record to timeline
-            op = Op.create(
-                kind=OpKind.SET,
-                target=self._name,
-                member=name,
-                args=(value,),
-                threshold_bytes=self._parent_scene._lazy_threshold_bytes,
-                compression=self._parent_scene._compression,
-            )
-            self._parent_scene._record(op)
-        else:
-            # Outside at() context - forward to live handle
-            setattr(self._get_live_handle(), name, value)
-
-    def __getattr__(self, name: str) -> Any:
-        # Forward attribute reads to live handle
-        return getattr(self._get_live_handle(), name)
-
-    def remove(self) -> None:
-        if self._parent_scene._recording_time is not None:
-            # Inside at() context - record to timeline
-            op = Op.create(
-                kind=OpKind.REMOVE,
-                target=self._name,
-                member="remove",
-                threshold_bytes=self._parent_scene._lazy_threshold_bytes,
-                compression=self._parent_scene._compression,
-            )
-            self._parent_scene._record(op)
-        else:
-            # Outside at() context - forward to live handle
-            self._get_live_handle().remove()
-
-    def _get_live_handle(self) -> Any:
-        """Get the live viser handle, raising if not yet in live scene."""
-        handle = self._parent_scene._live_scene._handle_from_node_name.get(self._name)
-        if handle is None:
-            raise RuntimeError(
-                f"Handle '{self._name}' not in live scene. "
-                "Make sure to call seek() after recording."
-            )
-        return handle
-
-
-# =============================================================================
-# Timeline and rendering
-# =============================================================================
-
-
-class Timeline:
-    """Stores temporal operation data."""
-
-    def __init__(self) -> None:
-        self._adds: dict[str, _TimeSeries] = {}
-        self._removes: dict[str, _TimeSeries] = {}
-        self._sets: dict[str, dict[str, _TimeSeries]] = {}
-
-    def record_add(self, t: int, target: str, op: Op) -> None:
-        series = self._adds.setdefault(target, _TimeSeries())
-        series.add(t, op)
-
-    def record_remove(self, t: int, target: str) -> None:
-        series = self._removes.setdefault(target, _TimeSeries())
-        series.add(t, None)
-
-    def record_set(self, t: int, target: str, member: str, value: Any) -> None:
-        target_sets = self._sets.setdefault(target, {})
-        series = target_sets.setdefault(member, _TimeSeries())
-        series.add(t, value)
-
-    @property
-    def targets(self) -> set[str]:
-        return set(self._adds)
-
-    @property
-    def handle_names(self) -> list[str]:
-        """Names of all handles that have been added."""
-        return list(self._adds.keys())
-
-    def get_sets_for(self, target: str) -> dict[str, _TimeSeries]:
-        return self._sets.get(target, {})
-
-    def get_add_at(self, target: str, t: int) -> tuple[int, Op, int] | None:
-        """Return (add_index, op, add_time) if target should exist at time t."""
-        series = self._adds.get(target)
-        if series is None:
-            return None
-
-        add_index = series.latest_index(t)
-        if add_index is None:
-            return None
-
-        add_time = series.times[add_index]
-
-        remove_series = self._removes.get(target)
-        if remove_series is not None:
-            remove_index = remove_series.latest_index(t)
-            if remove_index is not None:
-                if remove_series.times[remove_index] >= add_time:
-                    return None
-
-        return (add_index, series.values[add_index], add_time)
-
-
-class SceneRenderer:
-    """Applies timeline state to a live scene."""
-
-    def __init__(self, timeline: Timeline, scene: SceneApi) -> None:
-        self._timeline = timeline
-        self._scene = scene
-        self._handles: dict[str, Any] = {}
-        self._rendered_time: int = -1
-        self._rendered_add: dict[str, int] = {}
-        self._rendered_set: dict[str, dict[str, int]] = {}
-
-    def apply(self, t: int) -> None:
-        if t < self._rendered_time:
-            self.reset()
-        self._apply_state(t)
-        self._rendered_time = t
-
-    def reset(self) -> None:
-        """Clear all rendered state."""
-        for target in list(self._handles):
-            self._remove_handle(target)
-        self._rendered_time = -1
-
-    def _remove_handle(self, target: str) -> None:
-        self._scene.remove_by_name(target)
-        self._handles.pop(target, None)
-        self._rendered_add.pop(target, None)
-        self._rendered_set.pop(target, None)
-
-    def _apply_state(self, t: int) -> None:
-        for target in self._timeline.targets | set(self._handles):
-            add_info = self._timeline.get_add_at(target, t)
-
-            if add_info is None:
-                if target in self._handles:
-                    self._remove_handle(target)
-                continue
-
-            add_index, op, add_time = add_info
-
-            if self._rendered_add.get(target) != add_index:
-                if target in self._handles:
-                    self._remove_handle(target)
-                self._handles[target] = getattr(self._scene, op.member)(
-                    *op.args, **op.kwargs
-                )
-                self._rendered_add[target] = add_index
-                self._rendered_set[target] = {}
-
-            handle = self._handles[target]
-            for member, member_series in self._timeline.get_sets_for(target).items():
-                set_index = member_series.latest_index(t)
-                if set_index is None:
-                    continue
-                if member_series.times[set_index] < add_time:
-                    continue
-                if self._rendered_set[target].get(member) != set_index:
-                    setattr(handle, member, member_series.values[set_index])
-                    self._rendered_set[target][member] = set_index
-
-
-# =============================================================================
-# Internal data structures
-# =============================================================================
-
-
-class _TimeSeries:
-    def __init__(self) -> None:
-        self.times: list[int] = []
-        self.values: list[Any] = []
-
-    def add(self, t: int, value: Any) -> None:
-        index = bisect_right(self.times, t)
-        self.times.insert(index, t)
-        self.values.insert(index, value)
-
-    def latest_index(self, t: int) -> int | None:
-        index = bisect_right(self.times, t)
-        if index == 0:
-            return None
-        return index - 1

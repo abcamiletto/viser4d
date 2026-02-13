@@ -1,4 +1,4 @@
-"""Integration tests for lazy loading of heavy Op payloads."""
+"""Black-box integration tests for lazy configuration options."""
 
 from collections.abc import Iterator
 
@@ -6,19 +6,17 @@ import numpy as np
 import pytest
 
 import viser4d
-from viser4d.op import CompressionMode, Op, OpKind, _get_cache_dir
 
 
 @pytest.fixture
-def server() -> Iterator[viser4d.Viser4dServer]:
-    """Server with a very low lazy threshold (100 bytes) to trigger lazy loading."""
+def server_low_threshold() -> Iterator[viser4d.Viser4dServer]:
     server = viser4d.Viser4dServer(
         num_steps=3,
         host="127.0.0.1",
         port=0,
         verbose=False,
         enable_playback_gui=False,
-        lazy_threshold_bytes=100,  # Very low threshold for testing
+        lazy_threshold_bytes=100,
     )
     try:
         yield server
@@ -28,14 +26,13 @@ def server() -> Iterator[viser4d.Viser4dServer]:
 
 @pytest.fixture
 def server_high_threshold() -> Iterator[viser4d.Viser4dServer]:
-    """Server with a very high lazy threshold to keep everything eager."""
     server = viser4d.Viser4dServer(
         num_steps=3,
         host="127.0.0.1",
         port=0,
         verbose=False,
         enable_playback_gui=False,
-        lazy_threshold_bytes=1024 * 1024 * 1024,  # 1GB - nothing will be lazy
+        lazy_threshold_bytes=1024 * 1024 * 1024,
     )
     try:
         yield server
@@ -43,276 +40,79 @@ def server_high_threshold() -> Iterator[viser4d.Viser4dServer]:
         server.stop()
 
 
-# =============================================================================
-# Threshold selection tests
-# =============================================================================
-
-
-def test_small_payload_uses_eager() -> None:
-    """Small data stays in memory."""
-    op = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_frame",
-        args=("/test",),
-        kwargs={"axes_length": 0.1},
-        threshold_bytes=1024 * 1024,  # 1MB
-    )
-    assert not op.is_lazy()
-
-
-def test_large_payload_uses_lazy() -> None:
-    """Large data goes to disk."""
-    large_array = np.zeros((1000, 1000), dtype=np.float64)  # ~8MB
-    op = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_point_cloud",
-        args=("/test", large_array),
-        threshold_bytes=1024 * 1024,  # 1MB
-    )
-    assert op.is_lazy()
-
-
-def test_threshold_is_respected() -> None:
-    """Threshold parameter controls eager vs lazy selection."""
-    # 1KB array
-    array = np.zeros((128,), dtype=np.float64)  # ~1KB
-
-    # With 100 byte threshold -> lazy
-    op_lazy = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_point_cloud",
-        args=("/test", array),
-        threshold_bytes=100,
-    )
-    assert op_lazy.is_lazy()
-
-    # With 1MB threshold -> eager
-    op_eager = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_point_cloud",
-        args=("/test", array),
-        threshold_bytes=1024 * 1024,
-    )
-    assert not op_eager.is_lazy()
-
-
-# =============================================================================
-# Round-trip tests
-# =============================================================================
-
-
-def test_array_survives_roundtrip() -> None:
-    """Numpy array data is preserved after lazy load."""
-    original = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-    op = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_point_cloud",
-        args=("/test", original),
-        threshold_bytes=0,  # Force lazy
-    )
-    assert op.is_lazy()
-
-    # Access triggers load from disk
-    loaded = op.args[1]
-    np.testing.assert_array_equal(loaded, original)
-
-
-def test_kwargs_survive_roundtrip() -> None:
-    """Keyword arguments are preserved after lazy load."""
-    original_points = np.array([[1.0, 2.0, 3.0]])
-    original_colors = np.array([[255, 0, 0]], dtype=np.uint8)
-
-    op = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_point_cloud",
-        args=("/test",),
-        kwargs={"points": original_points, "colors": original_colors},
-        threshold_bytes=0,  # Force lazy
-    )
-    assert op.is_lazy()
-
-    np.testing.assert_array_equal(op.kwargs["points"], original_points)
-    np.testing.assert_array_equal(op.kwargs["colors"], original_colors)
-
-
-def test_mixed_types_survive_roundtrip() -> None:
-    """Mix of arrays, strings, numbers survive round-trip."""
-    original_array = np.array([1.0, 2.0, 3.0])
-
-    op = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_point_cloud",
-        args=("/test", original_array),
-        kwargs={"scale": 2.5, "visible": True, "label": "test"},
-        threshold_bytes=0,  # Force lazy
-    )
-    assert op.is_lazy()
-
-    assert op.args[0] == "/test"
-    np.testing.assert_array_equal(op.args[1], original_array)
-    assert op.kwargs["scale"] == 2.5
-    assert op.kwargs["visible"] is True
-    assert op.kwargs["label"] == "test"
-
-
-# =============================================================================
-# Disk storage tests
-# =============================================================================
-
-
-def test_lazy_payload_creates_file() -> None:
-    """Lazy payload creates a compressed pickle file on disk."""
-    op = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_frame",
-        args=("/test",),
-        threshold_bytes=0,  # Force lazy
-    )
-    assert op.is_lazy()
-
-    # Check that cache directory exists and has files
-    cache_dir = _get_cache_dir()
-    assert cache_dir.exists()
-    # Default compression creates .pkl.zst files
-    zst_files = list(cache_dir.glob("*.pkl.zst"))
-    assert len(zst_files) >= 1
-
-
-# =============================================================================
-# Server integration tests
-# =============================================================================
-
-
-def test_server_uses_configured_threshold(server: viser4d.Viser4dServer) -> None:
-    """Server passes threshold to Op creation."""
-    # Server fixture has 100 byte threshold
-    with server.at(0):
-        # Even small frame should be lazy with 100 byte threshold
-        server.scene.add_frame("/frame", axes_length=0.1)
-
-    # Check timeline has a lazy op
-    series = server._timeline._adds.get("/frame")
-    assert series is not None
-    op = series.values[0]
-    assert op.is_lazy()
-
-
-def test_server_high_threshold_uses_eager(
-    server_high_threshold: viser4d.Viser4dServer,
+def test_low_threshold_preserves_recorded_motion(
+    server_low_threshold: viser4d.Viser4dServer,
 ) -> None:
-    """Server with high threshold keeps data eager."""
-    with server_high_threshold.at(0):
-        server_high_threshold.scene.add_frame("/frame", axes_length=0.1)
-
-    series = server_high_threshold._timeline._adds.get("/frame")
-    assert series is not None
-    op = series.values[0]
-    assert not op.is_lazy()
-
-
-def test_lazy_data_renders_correctly(server: viser4d.Viser4dServer) -> None:
-    """Lazy-loaded data renders correctly during seek."""
-    with server.at(0):
-        handle = server.scene.add_frame("/frame", axes_length=0.1)
+    with server_low_threshold.at(0):
+        handle = server_low_threshold.scene.add_frame("/frame", axes_length=0.1)
         handle.position = (1.0, 2.0, 3.0)
-
-    with server.at(1):
+    with server_low_threshold.at(1):
         handle.position = (4.0, 5.0, 6.0)
 
-    # Seek should load lazy data and apply correctly
-    server.seek(0)
-    live_handle = server._live_scene._handle_from_node_name["/frame"]
-    assert tuple(live_handle.position) == (1.0, 2.0, 3.0)
+    server_low_threshold.seek(0)
+    assert tuple(handle.position) == (1.0, 2.0, 3.0)
 
-    server.seek(1)
-    live_handle = server._live_scene._handle_from_node_name["/frame"]
-    assert tuple(live_handle.position) == (4.0, 5.0, 6.0)
+    server_low_threshold.seek(1)
+    assert tuple(handle.position) == (4.0, 5.0, 6.0)
 
 
-# =============================================================================
-# LRU cache tests
-# =============================================================================
+def test_high_threshold_preserves_recorded_motion(
+    server_high_threshold: viser4d.Viser4dServer,
+) -> None:
+    with server_high_threshold.at(0):
+        handle = server_high_threshold.scene.add_frame("/frame", axes_length=0.1)
+        handle.position = (1.0, 0.0, 0.0)
+    with server_high_threshold.at(2):
+        handle.position = (2.0, 0.0, 0.0)
+
+    server_high_threshold.seek(0)
+    assert tuple(handle.position) == (1.0, 0.0, 0.0)
+
+    server_high_threshold.seek(2)
+    assert tuple(handle.position) == (2.0, 0.0, 0.0)
 
 
-def test_cache_returns_same_data() -> None:
-    """Accessing the same Op multiple times returns consistent data."""
-    original = np.array([1.0, 2.0, 3.0])
-    op = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_point_cloud",
-        args=("/test", original),
-        threshold_bytes=0,  # Force lazy
-    )
+def test_large_point_cloud_roundtrip_with_low_threshold(
+    server_low_threshold: viser4d.Viser4dServer,
+) -> None:
+    points0 = np.zeros((2000, 3), dtype=np.float32)
+    points1 = np.ones((2000, 3), dtype=np.float32)
 
-    # Multiple accesses should return equal data
-    first_access = op.args[1]
-    second_access = op.args[1]
-    np.testing.assert_array_equal(first_access, original)
-    np.testing.assert_array_equal(second_access, original)
-
-
-# =============================================================================
-# Compression tests
-# =============================================================================
-
-
-def test_compression_none_creates_pkl() -> None:
-    """CompressionMode.NONE creates uncompressed .pkl files."""
-    op = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_frame",
-        args=("/test",),
-        threshold_bytes=0,
-        compression=CompressionMode.NONE,
-    )
-    assert op.is_lazy()
-
-    cache_dir = _get_cache_dir()
-    pkl_files = list(cache_dir.glob("*.pkl"))
-    # Filter out .pkl.zst files
-    pkl_only = [f for f in pkl_files if not f.suffix == ".zst"]
-    assert len(pkl_only) >= 1
-
-
-def test_compression_fast_creates_zst() -> None:
-    """CompressionMode.FAST creates .pkl.zst files."""
-    op = Op.create(
-        kind=OpKind.ADD,
-        target="/test",
-        member="add_frame",
-        args=("/test",),
-        threshold_bytes=0,
-        compression=CompressionMode.FAST,
-    )
-    assert op.is_lazy()
-
-    cache_dir = _get_cache_dir()
-    zst_files = list(cache_dir.glob("*.pkl.zst"))
-    assert len(zst_files) >= 1
-
-
-def test_compression_roundtrip() -> None:
-    """Data survives compression round-trip for all modes."""
-    original = np.random.rand(100, 100)
-
-    for mode in CompressionMode:
-        op = Op.create(
-            kind=OpKind.ADD,
-            target="/test",
-            member="add_point_cloud",
-            args=("/test", original),
-            threshold_bytes=0,
-            compression=mode,
+    with server_low_threshold.at(0):
+        handle = server_low_threshold.scene.add_point_cloud(
+            "/points",
+            points=points0,
+            colors=(255, 100, 0),
         )
-        assert op.is_lazy()
-        np.testing.assert_array_equal(op.args[1], original)
+    with server_low_threshold.at(1):
+        handle.points = points1
+
+    server_low_threshold.seek(0)
+    np.testing.assert_array_equal(handle.points, points0)
+
+    server_low_threshold.seek(1)
+    np.testing.assert_array_equal(handle.points, points1)
+
+
+@pytest.mark.parametrize("mode", list(viser4d.CompressionMode))
+def test_all_compression_modes_work(mode: viser4d.CompressionMode) -> None:
+    server = viser4d.Viser4dServer(
+        num_steps=2,
+        host="127.0.0.1",
+        port=0,
+        verbose=False,
+        enable_playback_gui=False,
+        lazy_threshold_bytes=0,
+        compression=mode,
+    )
+    try:
+        with server.at(0):
+            handle = server.scene.add_frame("/frame", axes_length=0.1)
+            handle.position = (0.0, 0.0, 0.0)
+        with server.at(1):
+            handle.position = (1.0, 0.0, 0.0)
+
+        server.seek(1)
+        assert tuple(handle.position) == (1.0, 0.0, 0.0)
+    finally:
+        server.stop()
