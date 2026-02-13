@@ -40,7 +40,7 @@ import viser as _viser
 from .audio import AudioApi
 from .gui import PlaybackControls
 from .op import CompressionMode
-from .proxy import ProxyHandle, ProxyScene
+from .proxy import ProxyScene
 from .timeline import SceneRenderer, Timeline
 
 if TYPE_CHECKING:
@@ -281,43 +281,6 @@ class Viser4dServer(_viser.ViserServer):
             >>> server.on_timestep_change(on_timestep)
         """
         self._timestep_callbacks.append(callback)
-
-    @property
-    def handles(self) -> list[str]:
-        """Names of all recorded scene handles.
-
-        Returns a list of all handle names that have been recorded in the
-        timeline. Useful for bulk operations like toggling visibility.
-
-        Returns:
-            List of handle name strings.
-
-        Example:
-            >>> for name in server.handles:
-            ...     if name.startswith("/skeleton/"):
-            ...         server.get_handle(name).visible = False
-        """
-        return self._timeline.handle_names
-
-    def get_handle(self, name: str) -> ProxyHandle:
-        """Get a handle by name for manipulation.
-
-        Returns a handle that can be used to modify scene objects. When used
-        inside an ``at(t)`` context, changes are recorded to the timeline.
-        When used outside, changes are applied immediately to the live scene.
-
-        Args:
-            name: The name of the scene object (e.g., "/skeleton/joints").
-
-        Returns:
-            A ProxyHandle for the named object.
-
-        Example:
-            >>> # Runtime visibility toggle
-            >>> handle = server.get_handle("/skeleton/joints")
-            >>> handle.visible = False  # Immediate effect
-        """
-        return ProxyHandle(self._proxy_scene, name)
 
     def _fire_timestep_callbacks(self, t: int) -> None:
         """Invoke all registered timestep callbacks."""
