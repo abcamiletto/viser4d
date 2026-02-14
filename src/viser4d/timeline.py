@@ -180,7 +180,7 @@ class SceneRenderer:
     def apply(self, t: int) -> None:
         if t < self._rendered_time:
             self.reset()
-        self._apply_diff(
+        self.apply_diff(
             self._timeline.diff_between(
                 None if self._rendered_time < 0 else self._rendered_time,
                 t,
@@ -195,41 +195,40 @@ class SceneRenderer:
         self._nodes.clear()
         self._rendered_time = -1
 
-    def _apply_diff(self, diff: _TimelineDiff) -> None:
-        self._remove_nodes(diff.nodes_to_remove)
-        self._create_or_replace_nodes(diff.nodes_to_create_or_replace)
-        self._update_existing_nodes(diff.member_updates)
+    def apply_diff(self, diff: _TimelineDiff) -> None:
+        """Apply a timeline diff to the current rendered scene state."""
+        for target in diff.nodes_to_remove:
+            self.remove_node(target)
+        for target, state in diff.nodes_to_create_or_replace.items():
+            self.create_or_replace_node(target, state)
+        for target, updates in diff.member_updates.items():
+            self.update_node_members(target, updates)
 
-    def _remove_nodes(self, targets: set[str]) -> None:
-        for target in targets:
+    def remove_node(self, target: str) -> None:
+        self._scene.remove_by_name(target)
+        self._nodes.pop(target, None)
+
+    def create_or_replace_node(self, target: str, state: _TimelineNodeState) -> None:
+        if target in self._nodes:
             self._scene.remove_by_name(target)
-            self._nodes.pop(target, None)
+        node = _RenderedNode(
+            handle=getattr(self._scene, state.add_op.member)(
+                *state.add_op.args, **state.add_op.kwargs
+            ),
+            add_index=state.add_index,
+        )
+        self._nodes[target] = node
+        self._apply_set_values(node, state.set_values)
 
-    def _create_or_replace_nodes(
-        self, nodes_to_create_or_replace: dict[str, _TimelineNodeState]
+    def update_node_members(
+        self, target: str, updates: dict[str, _TimelineValueState]
     ) -> None:
-        for target, state in nodes_to_create_or_replace.items():
-            if target in self._nodes:
-                self._scene.remove_by_name(target)
-            node = _RenderedNode(
-                handle=getattr(self._scene, state.add_op.member)(
-                    *state.add_op.args, **state.add_op.kwargs
-                ),
-                add_index=state.add_index,
+        node = self._nodes.get(target)
+        if node is None:
+            raise RuntimeError(
+                f"Rendered state missing node {target!r} while applying timeline diff."
             )
-            self._nodes[target] = node
-            self._apply_set_values(node, state.set_values)
-
-    def _update_existing_nodes(
-        self, member_updates: dict[str, dict[str, _TimelineValueState]]
-    ) -> None:
-        for target, updates in member_updates.items():
-            node = self._nodes.get(target)
-            if node is None:
-                raise RuntimeError(
-                    f"Rendered state missing node {target!r} while applying timeline diff."
-                )
-            self._apply_set_values(node, updates)
+        self._apply_set_values(node, updates)
 
     @staticmethod
     def _apply_set_values(

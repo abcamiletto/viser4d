@@ -29,6 +29,7 @@ Playback: SceneRenderer reads from Timeline and applies state to the live scene.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 import time
 import traceback
@@ -108,10 +109,19 @@ class Viser4dServer(_viser.ViserServer):
         self._timestep_callbacks: list[Callable[[int], None]] = []
         self._queued_seek: int | None = None
         self._seek_flush_scheduled = False
+        self._applied_time: int | None = None
+        self._pending_render_time: int | None = None
+        self._render_in_flight = False
+        self._render_plan: tuple[int, deque[tuple[str, str, Any]]] | None = None
         # Run user callbacks off the event loop to keep timeline updates responsive.
         self._callback_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="viser4d-callbacks",
+        )
+        # Build render diffs off the event loop.
+        self._render_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="viser4d-render",
         )
 
         # Initialize viser server first (creates the live SceneApi on self.scene).
@@ -297,10 +307,11 @@ class Viser4dServer(_viser.ViserServer):
             traceback.print_exception(exc)
 
     def stop(self) -> None:
-        """Stop the server and release callback worker threads."""
+        """Stop the server and release worker threads."""
         try:
             super().stop()
         finally:
+            self._render_executor.shutdown(wait=False, cancel_futures=True)
             self._callback_executor.shutdown(wait=False, cancel_futures=True)
 
     def _is_playing(self) -> bool:
@@ -326,9 +337,71 @@ class Viser4dServer(_viser.ViserServer):
             self._playback_controls.set_playing(False)
 
     def _set_timestep_on_loop(self, t: int) -> None:
-        self._renderer.apply(t)
-        self._current_time = t
-        self._fire_timestep_callbacks(t)
+        self._pending_render_time = t
+        self._drive_render_on_loop()
+
+    def _drive_render_on_loop(self) -> None:
+        plan = self._render_plan
+        if plan is not None:
+            target_time, ops = plan
+            if ops:
+                kind, target, payload = ops.popleft()
+                if kind == "remove":
+                    self._renderer.remove_node(target)
+                elif kind == "create_or_replace":
+                    self._renderer.create_or_replace_node(target, payload)
+                else:
+                    self._renderer.update_node_members(target, payload)
+                self.get_event_loop().call_soon(self._drive_render_on_loop)
+                return
+
+            self._render_plan = None
+            self._applied_time = target_time
+            self._current_time = target_time
+            self._fire_timestep_callbacks(target_time)
+
+        if self._render_in_flight:
+            return
+
+        target_time = self._pending_render_time
+        if target_time is None:
+            return
+
+        self._pending_render_time = None
+        self._render_in_flight = True
+        future = self._render_executor.submit(
+            self._timeline.diff_between,
+            self._applied_time,
+            target_time,
+        )
+
+        loop = self.get_event_loop()
+
+        def _done_callback(fut: Future[Any], target_time: int = target_time) -> None:
+            loop.call_soon_threadsafe(
+                self._on_render_diff_ready_on_loop,
+                target_time,
+                fut,
+            )
+
+        future.add_done_callback(_done_callback)
+
+    def _on_render_diff_ready_on_loop(
+        self, target_time: int, future: Future[Any]
+    ) -> None:
+        self._render_in_flight = False
+        diff = future.result()
+
+        ops: deque[tuple[str, str, Any]] = deque()
+        for target in diff.nodes_to_remove:
+            ops.append(("remove", target, None))
+        for target, state in diff.nodes_to_create_or_replace.items():
+            ops.append(("create_or_replace", target, state))
+        for target, updates in diff.member_updates.items():
+            ops.append(("update", target, updates))
+
+        self._render_plan = (target_time, ops)
+        self._drive_render_on_loop()
 
     async def _playback_loop(self, loop: bool) -> None:
         """Main playback loop. Runs on the server event loop."""
