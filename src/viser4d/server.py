@@ -29,6 +29,7 @@ Playback: SceneRenderer reads from Timeline and applies state to the live scene.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
@@ -103,7 +104,9 @@ class Viser4dServer(_viser.ViserServer):
         self._current_time = 0
         self._fps = fps if fps > 0 else 1.0
         self._timestep_callbacks: list[Callable[[int], None]] = []
-        self._pending_seek_handle: asyncio.Handle | None = None
+        self._queued_seek: int | None = None
+        self._seek_flush_scheduled = False
+        self._seek_lock = threading.Lock()
 
         # Initialize viser server first (creates the live SceneApi on self.scene).
         super().__init__(
@@ -201,8 +204,8 @@ class Viser4dServer(_viser.ViserServer):
     def seek(self, t: int) -> None:
         """Jump to a specific timestep.
 
-        Non-blocking: schedules a seek on the server loop and coalesces rapid
-        repeated calls down to the most recent timestep.
+        Non-blocking: stores the latest requested timestep and schedules a
+        single loop flush. Rapid repeated calls are coalesced to the latest.
 
         The actual seek pauses any active playback, renders the scene state at
         timestep ``t``, and then invokes registered timestep callbacks.
@@ -217,14 +220,26 @@ class Viser4dServer(_viser.ViserServer):
             >>> server.seek(50)  # Jump to frame 50
         """
         assert 0 <= t < self.num_steps
-        self.get_event_loop().call_soon_threadsafe(self._queue_seek_on_loop, t)
+        should_schedule_flush = False
+        with self._seek_lock:
+            self._queued_seek = t
+            if not self._seek_flush_scheduled:
+                self._seek_flush_scheduled = True
+                should_schedule_flush = True
+        if should_schedule_flush:
+            self.get_event_loop().call_soon_threadsafe(self._flush_seek_on_loop)
 
-    def _queue_seek_on_loop(self, t: int) -> None:
-        if self._pending_seek_handle is not None:
-            self._pending_seek_handle.cancel()
-        self._pending_seek_handle = self.get_event_loop().call_soon(
-            self._set_timestep_on_loop, t, True
-        )
+    def _flush_seek_on_loop(self) -> None:
+        while True:
+            with self._seek_lock:
+                if self._queued_seek is None:
+                    self._seek_flush_scheduled = False
+                    return
+                t = self._queued_seek
+                self._queued_seek = None
+            self._pause_playback_on_loop(notify_audio=False)
+            self._set_timestep_on_loop(t)
+            self._audio_api.on_seek(t, self._fps)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
@@ -272,15 +287,10 @@ class Viser4dServer(_viser.ViserServer):
         if self._playback_controls is not None:
             self._playback_controls.set_playing(False)
 
-    def _set_timestep_on_loop(self, t: int, from_seek: bool = False) -> None:
-        if from_seek:
-            self._pending_seek_handle = None
-            self._pause_playback_on_loop(notify_audio=False)
+    def _set_timestep_on_loop(self, t: int) -> None:
         self._renderer.apply(t)
         self._current_time = t
         self._fire_timestep_callbacks(t)
-        if from_seek:
-            self._audio_api.on_seek(t, self._fps)
 
     async def _playback_loop(self, loop: bool) -> None:
         """Main playback loop. Runs on the server event loop."""
