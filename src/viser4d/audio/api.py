@@ -122,23 +122,20 @@ class AudioHandle:
 class AudioApi:
     """Audio API for viser4d — manages tracks and syncs playback to clients.
 
-    Created once by ``Viser4dServer`` and wired into playback notifications
-    via ``_on_playback_start`` / ``_on_playback_stop``.
+    Created once by ``Viser4dServer`` and wired into playback notifications.
 
     Tracks per-client state: each connecting client receives the JS runtime
     and all registered tracks. Disconnecting clients are cleaned up.
     """
 
-    def __init__(self, server: Viser4dServer) -> None:
+    def __init__(self, server: Viser4dServer, timeline_fps: float) -> None:
         self._server = server
         self._tracks: dict[str, AudioHandle] = {}
         self._initialized_clients: set[int] = set()
         self._state_lock = threading.Lock()
         self._transport_seq = 0
         self._playing = False
-        self._timeline_fps = _sanitize_fps(
-            float(getattr(server, "_audio_timeline_fps", 30.0)), default=30.0
-        )
+        self._timeline_fps = _sanitize_fps(timeline_fps, default=30.0)
         self._playback_fps = self._timeline_fps
 
         server.on_client_connect(self._on_client_connect)

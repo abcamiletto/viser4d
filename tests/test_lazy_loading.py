@@ -1,6 +1,7 @@
 """Black-box integration tests for lazy configuration options."""
 
 from collections.abc import Iterator
+import threading
 
 import numpy as np
 import pytest
@@ -49,10 +50,22 @@ def test_low_threshold_preserves_recorded_motion(
     with server_low_threshold.at(1):
         handle.position = (4.0, 5.0, 6.0)
 
+    done = threading.Event()
+
+    server_low_threshold.on_timestep_change(lambda step: step == 0 and done.set())
+
     server_low_threshold.seek(0)
+
+    assert done.wait(timeout=1.0)
     assert tuple(handle.position) == (1.0, 2.0, 3.0)
 
+    done = threading.Event()
+
+    server_low_threshold.on_timestep_change(lambda step: step == 1 and done.set())
+
     server_low_threshold.seek(1)
+
+    assert done.wait(timeout=1.0)
     assert tuple(handle.position) == (4.0, 5.0, 6.0)
 
 
@@ -65,10 +78,22 @@ def test_high_threshold_preserves_recorded_motion(
     with server_high_threshold.at(2):
         handle.position = (2.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server_high_threshold.on_timestep_change(lambda step: step == 0 and done.set())
+
     server_high_threshold.seek(0)
+
+    assert done.wait(timeout=1.0)
     assert tuple(handle.position) == (1.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server_high_threshold.on_timestep_change(lambda step: step == 2 and done.set())
+
     server_high_threshold.seek(2)
+
+    assert done.wait(timeout=1.0)
     assert tuple(handle.position) == (2.0, 0.0, 0.0)
 
 
@@ -87,10 +112,22 @@ def test_large_point_cloud_roundtrip_with_low_threshold(
     with server_low_threshold.at(1):
         handle.points = points1
 
+    done = threading.Event()
+
+    server_low_threshold.on_timestep_change(lambda step: step == 0 and done.set())
+
     server_low_threshold.seek(0)
+
+    assert done.wait(timeout=1.0)
     np.testing.assert_array_equal(handle.points, points0)
 
+    done = threading.Event()
+
+    server_low_threshold.on_timestep_change(lambda step: step == 1 and done.set())
+
     server_low_threshold.seek(1)
+
+    assert done.wait(timeout=1.0)
     np.testing.assert_array_equal(handle.points, points1)
 
 
@@ -112,7 +149,13 @@ def test_all_compression_modes_work(mode: viser4d.CompressionMode) -> None:
         with server.at(1):
             handle.position = (1.0, 0.0, 0.0)
 
+        done = threading.Event()
+
+        server.on_timestep_change(lambda step: step == 1 and done.set())
+
         server.seek(1)
+
+        assert done.wait(timeout=1.0)
         assert tuple(handle.position) == (1.0, 0.0, 0.0)
     finally:
         server.stop()

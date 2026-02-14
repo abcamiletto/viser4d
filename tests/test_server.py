@@ -52,10 +52,22 @@ def test_seek_applies_recorded_updates(server: viser4d.Viser4dServer) -> None:
 
     assert handle is not None
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 0 and done.set())
+
     server.seek(0)
+
+    assert done.wait(timeout=1.0)
     assert _position(handle) == (0.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 2 and done.set())
+
     server.seek(2)
+
+    assert done.wait(timeout=1.0)
     assert _position(handle) == (2.0, 0.0, 0.0)
 
 
@@ -65,11 +77,23 @@ def test_seek_backwards_removes_late_adds(server: viser4d.Viser4dServer) -> None
     with server.at(1):
         handle_b = server.scene.add_frame("/b", axes_length=0.1)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 1 and done.set())
+
     server.seek(1)
+
+    assert done.wait(timeout=1.0)
     _ = _position(handle_a)
     _ = _position(handle_b)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 0 and done.set())
+
     server.seek(0)
+
+    assert done.wait(timeout=1.0)
     _ = _position(handle_a)
     _assert_missing_handle(handle_b)
 
@@ -88,11 +112,23 @@ def test_seek_uses_latest_attribute_value(server: viser4d.Viser4dServer) -> None
 
     assert handle is not None
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 1 and done.set())
+
     server.seek(1)
+
+    assert done.wait(timeout=1.0)
     assert tuple(handle.position) == (0.0, 0.0, 0.0)
     assert tuple(handle.wxyz) == (1.0, 0.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 2 and done.set())
+
     server.seek(2)
+
+    assert done.wait(timeout=1.0)
     assert tuple(handle.position) == (2.0, 0.0, 0.0)
     assert tuple(handle.wxyz) == (1.0, 0.0, 0.0, 0.0)
 
@@ -108,11 +144,23 @@ def test_seek_multiple_objects(server: viser4d.Viser4dServer) -> None:
         a.position = (2.0, 0.0, 0.0)
         b.position = (2.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 1 and done.set())
+
     server.seek(1)
+
+    assert done.wait(timeout=1.0)
     assert _position(a) == (0.0, 0.0, 0.0)
     assert _position(b) == (1.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 2 and done.set())
+
     server.seek(2)
+
+    assert done.wait(timeout=1.0)
     assert _position(a) == (2.0, 0.0, 0.0)
     assert _position(b) == (2.0, 0.0, 0.0)
 
@@ -126,13 +174,31 @@ def test_remove_by_name_is_recorded(server: viser4d.Viser4dServer) -> None:
         same_name_handle = server.scene.add_frame("/a", axes_length=0.1)
         same_name_handle.position = (2.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 0 and done.set())
+
     server.seek(0)
+
+    assert done.wait(timeout=1.0)
     assert _position(handle) == (0.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 1 and done.set())
+
     server.seek(1)
+
+    assert done.wait(timeout=1.0)
     _assert_missing_handle(handle)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 2 and done.set())
+
     server.seek(2)
+
+    assert done.wait(timeout=1.0)
     assert _position(handle) == (2.0, 0.0, 0.0)
 
 
@@ -145,13 +211,31 @@ def test_handle_remove_is_recorded(server: viser4d.Viser4dServer) -> None:
         same_name_handle = server.scene.add_frame("/a", axes_length=0.1)
         same_name_handle.position = (2.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 0 and done.set())
+
     server.seek(0)
+
+    assert done.wait(timeout=1.0)
     assert _position(handle) == (0.0, 0.0, 0.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 1 and done.set())
+
     server.seek(1)
+
+    assert done.wait(timeout=1.0)
     _assert_missing_handle(handle)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 2 and done.set())
+
     server.seek(2)
+
+    assert done.wait(timeout=1.0)
     assert _position(handle) == (2.0, 0.0, 0.0)
 
 
@@ -159,7 +243,13 @@ def test_play_loops_by_default(server: viser4d.Viser4dServer) -> None:
     seen_steps: list[int] = []
     server.on_timestep_change(lambda t: seen_steps.append(t))
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 2 and done.set())
+
     server.seek(2)
+
+    assert done.wait(timeout=1.0)
     seen_steps.clear()
     server.play(fps=120)
 
@@ -177,10 +267,21 @@ def test_on_timestep_change_callback(server: viser4d.Viser4dServer) -> None:
 
     server.on_timestep_change(callback)
 
-    server.seek(0)
-    server.seek(2)
-    server.seek(1)
+    done = threading.Event()
 
+    server.on_timestep_change(lambda step: step == 0 and done.set())
+
+    server.seek(0)
+
+    assert done.wait(timeout=1.0)
+    done = threading.Event()
+    server.on_timestep_change(lambda step: step == 2 and done.set())
+    server.seek(2)
+    assert done.wait(timeout=1.0)
+    done = threading.Event()
+    server.on_timestep_change(lambda step: step == 1 and done.set())
+    server.seek(1)
+    assert done.wait(timeout=1.0)
     assert called_with == [0, 2, 1]
 
 
@@ -190,18 +291,35 @@ def test_multiple_timestep_callbacks(server: viser4d.Viser4dServer) -> None:
     server.on_timestep_change(lambda t: results.append(f"a:{t}"))
     server.on_timestep_change(lambda t: results.append(f"b:{t}"))
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 1 and done.set())
+
     server.seek(1)
 
+    assert done.wait(timeout=1.0)
     assert results == ["a:1", "b:1"]
 
 
 def test_current_time_property(server: viser4d.Viser4dServer) -> None:
     assert server.current_time == 0
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 2 and done.set())
+
     server.seek(2)
+
+    assert done.wait(timeout=1.0)
     assert server.current_time == 2
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 1 and done.set())
+
     server.seek(1)
+
+    assert done.wait(timeout=1.0)
     assert server.current_time == 1
 
 
@@ -212,7 +330,13 @@ def test_proxy_handle_can_read_and_write_live_state(
         handle = server.scene.add_frame("/frame", axes_length=0.1)
         handle.position = (1.0, 2.0, 3.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 0 and done.set())
+
     server.seek(0)
+
+    assert done.wait(timeout=1.0)
     assert tuple(handle.position) == (1.0, 2.0, 3.0)
 
     handle.position = (5.0, 5.0, 5.0)
@@ -226,10 +350,22 @@ def test_proxy_handle_live_write_persists_across_seek(
         handle = server.scene.add_frame("/frame", axes_length=0.1)
         handle.position = (0.0, 0.0, 0.0)
 
-    server.seek(0)
-    handle.visible = False
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 0 and done.set())
 
     server.seek(0)
+
+    assert done.wait(timeout=1.0)
+    handle.visible = False
+
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 0 and done.set())
+
+    server.seek(0)
+
+    assert done.wait(timeout=1.0)
     assert handle.visible is False
 
 
@@ -240,10 +376,22 @@ def test_recorded_change_overwrites_live_change(server: viser4d.Viser4dServer) -
     with server.at(1):
         handle.position = (1.0, 1.0, 1.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 0 and done.set())
+
     server.seek(0)
+
+    assert done.wait(timeout=1.0)
     handle.position = (5.0, 5.0, 5.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 1 and done.set())
+
     server.seek(1)
+
+    assert done.wait(timeout=1.0)
     assert _position(handle) == (1.0, 1.0, 1.0)
 
 
@@ -271,10 +419,22 @@ def test_at_context_is_thread_local(server: viser4d.Viser4dServer) -> None:
         handle_a = future_a.result(timeout=2.0)
         handle_b = future_b.result(timeout=2.0)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 0 and done.set())
+
     server.seek(0)
+
+    assert done.wait(timeout=1.0)
     assert _position(handle_a) == (0.0, 0.0, 0.0)
     _assert_missing_handle(handle_b)
 
+    done = threading.Event()
+
+    server.on_timestep_change(lambda step: step == 2 and done.set())
+
     server.seek(2)
+
+    assert done.wait(timeout=1.0)
     assert _position(handle_a) == (0.0, 0.0, 0.0)
     assert _position(handle_b) == (2.0, 0.0, 0.0)

@@ -29,11 +29,9 @@ Playback: SceneRenderer reads from Timeline and applies state to the live scene.
 from __future__ import annotations
 
 import asyncio
-import logging
-import threading
 import time
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Callable, Iterator
+from typing import Any, Callable, Iterator
 
 import viser as _viser
 
@@ -42,11 +40,6 @@ from .gui import PlaybackControls
 from .op import CompressionMode
 from .proxy import ProxyScene
 from .timeline import SceneRenderer, Timeline
-
-if TYPE_CHECKING:
-    from viser import SceneApi
-
-_LOG = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -109,12 +102,10 @@ class Viser4dServer(_viser.ViserServer):
         self._playback_task: asyncio.Task[None] | None = None
         self._current_time = 0
         self._fps = fps if fps > 0 else 1.0
-        self._audio_timeline_fps = self._fps
         self._timestep_callbacks: list[Callable[[int], None]] = []
-        self._pending_seek: int | None = None
-        self._seek_dispatch_pending = False
+        self._pending_seek_handle: asyncio.Handle | None = None
 
-        # Initialize viser server first (creates _live_scene)
+        # Initialize viser server first (creates the live SceneApi on self.scene).
         super().__init__(
             host=host,
             port=port,
@@ -122,9 +113,10 @@ class Viser4dServer(_viser.ViserServer):
             verbose=verbose,
             **kwargs,
         )
+        self._live_scene = self.scene
 
         # Now create components that need _live_scene
-        self._audio_api = AudioApi(self)
+        self._audio_api = AudioApi(self, timeline_fps=self._fps)
         self._timeline = Timeline()
         self._proxy_scene = ProxyScene(
             server=self,
@@ -134,31 +126,12 @@ class Viser4dServer(_viser.ViserServer):
             compression=self._compression,
         )
         self._renderer = SceneRenderer(self._timeline, self._live_scene)
+        # Expose context-aware scene operations to callers after base init is complete.
+        setattr(self, "scene", self._proxy_scene)
         if enable_playback_gui:
             self._playback_controls: PlaybackControls | None = PlaybackControls(self)
         else:
             self._playback_controls = None
-
-    @property
-    def scene(self) -> ProxyScene:
-        """The scene API for adding and manipulating 3D objects.
-
-        Context-aware: inside ``at(t)`` operations are recorded to the timeline,
-        outside they are applied immediately to the live scene.
-
-        Returns:
-            ProxyScene (context-aware, always the same object).
-        """
-        # During __init__, _proxy_scene doesn't exist yet
-        # Use __dict__ to avoid triggering __getattr__ recursion
-        if "_proxy_scene" not in self.__dict__:
-            return self._live_scene  # type: ignore[return-value]
-        return self._proxy_scene
-
-    @scene.setter
-    def scene(self, value: SceneApi) -> None:
-        # Called by ViserServer.__init__ to set the live scene
-        self._live_scene = value
 
     @property
     def current_time(self) -> int:
@@ -214,7 +187,7 @@ class Viser4dServer(_viser.ViserServer):
             >>> server.play(fps=30, loop=True)
         """
         self._set_fps(fps)
-        self._dispatch_on_loop(self._start_playback, loop)
+        self.get_event_loop().call_soon_threadsafe(self._start_playback, loop)
 
     def pause(self) -> None:
         """Pause playback.
@@ -223,13 +196,16 @@ class Viser4dServer(_viser.ViserServer):
         Safe to call even if playback is not running. This is non-blocking when
         called from outside the server event loop.
         """
-        self._dispatch_on_loop(self._pause_playback_on_loop)
+        self.get_event_loop().call_soon_threadsafe(self._pause_playback_on_loop)
 
     def seek(self, t: int) -> None:
         """Jump to a specific timestep.
 
-        Pauses any active playback and renders the scene state at timestep ``t``.
-        Registered timestep callbacks are invoked after the scene is updated.
+        Non-blocking: schedules a seek on the server loop and coalesces rapid
+        repeated calls down to the most recent timestep.
+
+        The actual seek pauses any active playback, renders the scene state at
+        timestep ``t``, and then invokes registered timestep callbacks.
 
         Args:
             t: The timestep index (0 to num_steps - 1).
@@ -241,27 +217,14 @@ class Viser4dServer(_viser.ViserServer):
             >>> server.seek(50)  # Jump to frame 50
         """
         assert 0 <= t < self.num_steps
-        self._dispatch_on_loop(self._seek_on_loop, t, wait=True)
+        self.get_event_loop().call_soon_threadsafe(self._queue_seek_on_loop, t)
 
-    def request_seek(self, t: int) -> None:
-        """Queue a seek request and coalesce to the most recent timestep."""
-        assert 0 <= t < self.num_steps
-        self._dispatch_on_loop(self._queue_seek, t)
-
-    def _queue_seek(self, t: int) -> None:
-        self._pending_seek = t
-        if self._seek_dispatch_pending:
-            return
-        self._seek_dispatch_pending = True
-        self.get_event_loop().call_soon(self._drain_pending_seek)
-
-    def _drain_pending_seek(self) -> None:
-        self._seek_dispatch_pending = False
-        t = self._pending_seek
-        self._pending_seek = None
-        if t is None:
-            return
-        self._seek_on_loop(t)
+    def _queue_seek_on_loop(self, t: int) -> None:
+        if self._pending_seek_handle is not None:
+            self._pending_seek_handle.cancel()
+        self._pending_seek_handle = self.get_event_loop().call_soon(
+            self._set_timestep_on_loop, t, True
+        )
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
@@ -285,26 +248,7 @@ class Viser4dServer(_viser.ViserServer):
     def _fire_timestep_callbacks(self, t: int) -> None:
         """Invoke all registered timestep callbacks."""
         for callback in self._timestep_callbacks:
-            try:
-                callback(t)
-            except Exception:
-                _LOG.exception("Timestep callback failed at step %s", t)
-
-    def _dispatch_on_loop(
-        self, fn: Callable[..., None], *args: Any, wait: bool = False
-    ) -> None:
-        loop = self.get_event_loop()
-        if self._is_on_server_loop_thread(loop):
-            fn(*args)
-            return
-        if not wait:
-            loop.call_soon_threadsafe(fn, *args)
-            return
-
-        async def _call() -> None:
-            fn(*args)
-
-        asyncio.run_coroutine_threadsafe(_call(), loop).result()
+            callback(t)
 
     def _is_playing(self) -> bool:
         return self._playback_task is not None and not self._playback_task.done()
@@ -315,7 +259,9 @@ class Viser4dServer(_viser.ViserServer):
                 self._playback_controls.set_playing(True)
             return
         self._playback_task = asyncio.create_task(self._playback_loop(loop))
-        self._on_playback_start(self._current_time, self._fps)
+        self._audio_api.on_play(self._current_time, self._fps)
+        if self._playback_controls is not None:
+            self._playback_controls.set_playing(True)
 
     def _pause_playback_on_loop(self, notify_audio: bool = True) -> None:
         if self._playback_task is not None and not self._playback_task.done():
@@ -326,22 +272,15 @@ class Viser4dServer(_viser.ViserServer):
         if self._playback_controls is not None:
             self._playback_controls.set_playing(False)
 
-    def _seek_on_loop(self, t: int) -> None:
-        self._pause_playback_on_loop(notify_audio=False)
-        self._render_timestep(t)
-        self._audio_api.on_seek(t, self._fps)
-
-    def _is_on_server_loop_thread(self, loop: asyncio.AbstractEventLoop) -> bool:
-        loop_thread_id = getattr(loop, "_thread_id", None)
-        return loop_thread_id is not None and threading.get_ident() == loop_thread_id
-
-    def _render_timestep(self, t: int) -> None:
-        self._dispatch_on_loop(self._render_timestep_on_loop, t, wait=True)
-
-    def _render_timestep_on_loop(self, t: int) -> None:
+    def _set_timestep_on_loop(self, t: int, from_seek: bool = False) -> None:
+        if from_seek:
+            self._pending_seek_handle = None
+            self._pause_playback_on_loop(notify_audio=False)
         self._renderer.apply(t)
         self._current_time = t
         self._fire_timestep_callbacks(t)
+        if from_seek:
+            self._audio_api.on_seek(t, self._fps)
 
     async def _playback_loop(self, loop: bool) -> None:
         """Main playback loop. Runs on the server event loop."""
@@ -364,7 +303,7 @@ class Viser4dServer(_viser.ViserServer):
                 next_frame_time += frames_behind * frame_duration
 
             # Render current frame
-            self._render_timestep(index)
+            self._set_timestep_on_loop(index)
 
             # Advance to next frame
             index += 1
@@ -376,14 +315,18 @@ class Viser4dServer(_viser.ViserServer):
                     break
                 index = 0
                 next_frame_time = time.monotonic()
-                self._on_playback_start(0, self._fps)
+                self._audio_api.on_play(0, self._fps)
+                if self._playback_controls is not None:
+                    self._playback_controls.set_playing(True)
                 continue
 
             # Wait for next frame
             delay = next_frame_time - time.monotonic()
             await asyncio.sleep(delay if delay > 0 else 0)
 
-        self._on_playback_stop()
+        self._audio_api.on_pause()
+        if self._playback_controls is not None:
+            self._playback_controls.set_playing(False)
         if self._playback_task is asyncio.current_task():
             self._playback_task = None
 
@@ -393,15 +336,3 @@ class Viser4dServer(_viser.ViserServer):
             self._playback_controls.set_fps(self._fps)
         if self._is_playing():
             self._audio_api.on_fps_change(self._fps)
-
-    def _on_playback_start(self, step: int, fps: float) -> None:
-        """Notify all playback components that playback has started."""
-        self._audio_api.on_play(step, fps)
-        if self._playback_controls is not None:
-            self._playback_controls.set_playing(True)
-
-    def _on_playback_stop(self) -> None:
-        """Notify all playback components that playback has stopped."""
-        self._audio_api.on_pause()
-        if self._playback_controls is not None:
-            self._playback_controls.set_playing(False)
