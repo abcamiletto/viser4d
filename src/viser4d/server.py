@@ -29,7 +29,6 @@ Playback: SceneRenderer reads from Timeline and applies state to the live scene.
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
@@ -106,7 +105,6 @@ class Viser4dServer(_viser.ViserServer):
         self._timestep_callbacks: list[Callable[[int], None]] = []
         self._queued_seek: int | None = None
         self._seek_flush_scheduled = False
-        self._seek_lock = threading.Lock()
 
         # Initialize viser server first (creates the live SceneApi on self.scene).
         super().__init__(
@@ -220,26 +218,24 @@ class Viser4dServer(_viser.ViserServer):
             >>> server.seek(50)  # Jump to frame 50
         """
         assert 0 <= t < self.num_steps
-        should_schedule_flush = False
-        with self._seek_lock:
-            self._queued_seek = t
-            if not self._seek_flush_scheduled:
-                self._seek_flush_scheduled = True
-                should_schedule_flush = True
-        if should_schedule_flush:
-            self.get_event_loop().call_soon_threadsafe(self._flush_seek_on_loop)
+        self.get_event_loop().call_soon_threadsafe(self._queue_seek_on_loop, t)
+
+    def _queue_seek_on_loop(self, t: int) -> None:
+        self._queued_seek = t
+        if self._seek_flush_scheduled:
+            return
+        self._seek_flush_scheduled = True
+        self.get_event_loop().call_soon(self._flush_seek_on_loop)
 
     def _flush_seek_on_loop(self) -> None:
-        while True:
-            with self._seek_lock:
-                if self._queued_seek is None:
-                    self._seek_flush_scheduled = False
-                    return
-                t = self._queued_seek
-                self._queued_seek = None
-            self._pause_playback_on_loop(notify_audio=False)
-            self._set_timestep_on_loop(t)
-            self._audio_api.on_seek(t, self._fps)
+        self._seek_flush_scheduled = False
+        t = self._queued_seek
+        self._queued_seek = None
+        if t is None:
+            return
+        self._pause_playback_on_loop(notify_audio=False)
+        self._set_timestep_on_loop(t)
+        self._audio_api.on_seek(t, self._fps)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
