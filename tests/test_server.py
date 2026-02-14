@@ -284,6 +284,35 @@ def test_on_timestep_change_callback(server: viser4d.Viser4dServer) -> None:
     assert called_with == [0, 2, 1]
 
 
+def test_timestep_callbacks_run_on_worker_thread(
+    server: viser4d.Viser4dServer,
+) -> None:
+    loop_thread_ids: list[int] = []
+    loop_ready = threading.Event()
+
+    def _capture_loop_thread_id() -> None:
+        loop_thread_ids.append(threading.get_ident())
+        loop_ready.set()
+
+    server.get_event_loop().call_soon_threadsafe(_capture_loop_thread_id)
+    assert loop_ready.wait(timeout=1.0)
+
+    callback_thread_ids: list[int] = []
+    callback_done = threading.Event()
+
+    def _on_step(_t: int) -> None:
+        callback_thread_ids.append(threading.get_ident())
+        callback_done.set()
+
+    server.on_timestep_change(_on_step)
+    server.seek(0)
+
+    assert callback_done.wait(timeout=1.0)
+    assert loop_thread_ids
+    assert callback_thread_ids
+    assert callback_thread_ids[0] != loop_thread_ids[0]
+
+
 def test_multiple_timestep_callbacks(server: viser4d.Viser4dServer) -> None:
     results: list[str] = []
 
@@ -400,4 +429,3 @@ def test_proxy_handle_error_before_seek(server: viser4d.Viser4dServer) -> None:
 
     with pytest.raises(RuntimeError, match="not in live scene"):
         _ = handle.position
-

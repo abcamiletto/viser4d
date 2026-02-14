@@ -55,12 +55,6 @@ class PlaybackControls:
         # Server timeline state is authoritative for slider position.
         self._slider.value = t
 
-        # Detect playback ended (reached last frame while playing, non-looping)
-        if self._playing and t == self._server.num_steps - 1:
-            # Check if playback actually stopped (not looping)
-            # We'll get another callback if it loops, so defer the check
-            pass  # Handled by server calling set_playing(False)
-
     def set_fps(self, fps: float) -> None:
         """Update the FPS slider value."""
         if self._fps_slider.value == fps:
@@ -85,20 +79,16 @@ class PlaybackControls:
 
     def _on_step(self, event) -> None:
         """Handle prev/next button clicks."""
-        current = self._slider.value
-        if event.target.value == "Prev":
-            if current > 0:
-                self._server.seek(current - 1)
-        else:
-            if current < self._server.num_steps - 1:
-                self._server.seek(current + 1)
+        delta = -1 if event.target.value == "Prev" else 1
+        current = int(self._slider.value)
+        next_step = max(0, min(self._server.num_steps - 1, current + delta))
+        if next_step != current:
+            self._server.seek(next_step)
 
     def _on_play_button(self, _event) -> None:
         """Handle play/pause button clicks."""
         next_playing = not self._playing
-
-        self._playing = next_playing
-        self._play_button.label = "Pause" if next_playing else "Play"
+        self.set_playing(next_playing)
 
         loop = self._server.get_event_loop()
         if next_playing:

@@ -29,7 +29,9 @@ Playback: SceneRenderer reads from Timeline and applies state to the live scene.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future, ThreadPoolExecutor
 import time
+import traceback
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
@@ -82,6 +84,7 @@ class Viser4dServer(_viser.ViserServer):
     """
 
     _DEFAULT_COMPRESSION = CompressionMode.FAST
+    scene: Any
 
     def __init__(
         self,
@@ -105,6 +108,11 @@ class Viser4dServer(_viser.ViserServer):
         self._timestep_callbacks: list[Callable[[int], None]] = []
         self._queued_seek: int | None = None
         self._seek_flush_scheduled = False
+        # Run user callbacks off the event loop to keep timeline updates responsive.
+        self._callback_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="viser4d-callbacks",
+        )
 
         # Initialize viser server first (creates the live SceneApi on self.scene).
         super().__init__(
@@ -243,7 +251,8 @@ class Viser4dServer(_viser.ViserServer):
         Callbacks are fired after viser4d applies its own recorded state,
         allowing them to layer additional visualizations on top. This is useful
         when you want to use viser4d's timeline infrastructure but manage your
-        own visualization logic.
+        own visualization logic. Callbacks run on a dedicated worker thread,
+        not on viser's event loop thread.
 
         Args:
             callback: A function that takes the new timestep as its only argument.
@@ -258,8 +267,41 @@ class Viser4dServer(_viser.ViserServer):
 
     def _fire_timestep_callbacks(self, t: int) -> None:
         """Invoke all registered timestep callbacks."""
-        for callback in self._timestep_callbacks:
+        if not self._timestep_callbacks:
+            return
+
+        callbacks = tuple(self._timestep_callbacks)
+        try:
+            future = self._callback_executor.submit(
+                self._run_timestep_callbacks,
+                callbacks,
+                t,
+            )
+        except RuntimeError:
+            # Executor may already be shutting down during server teardown.
+            return
+        future.add_done_callback(self._on_callback_batch_done)
+
+    @staticmethod
+    def _run_timestep_callbacks(
+        callbacks: tuple[Callable[[int], None], ...], t: int
+    ) -> None:
+        for callback in callbacks:
             callback(t)
+
+    @staticmethod
+    def _on_callback_batch_done(future: Future[None]) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            traceback.print_exception(exc)
+
+    def stop(self) -> None:
+        """Stop the server and release callback worker threads."""
+        try:
+            super().stop()
+        finally:
+            self._callback_executor.shutdown(wait=False, cancel_futures=True)
 
     def _is_playing(self) -> bool:
         return self._playback_task is not None and not self._playback_task.done()
