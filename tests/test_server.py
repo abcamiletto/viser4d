@@ -1,5 +1,4 @@
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 
@@ -402,39 +401,3 @@ def test_proxy_handle_error_before_seek(server: viser4d.Viser4dServer) -> None:
     with pytest.raises(RuntimeError, match="not in live scene"):
         _ = handle.position
 
-
-def test_at_context_is_thread_local(server: viser4d.Viser4dServer) -> None:
-    barrier = threading.Barrier(2)
-
-    def record(name: str, t: int, x: float):
-        with server.at(t):
-            handle = server.scene.add_frame(name, axes_length=0.1)
-            barrier.wait(timeout=2.0)
-            handle.position = (x, 0.0, 0.0)
-            return handle
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        future_a = pool.submit(record, "/a", 0, 0.0)
-        future_b = pool.submit(record, "/b", 2, 2.0)
-        handle_a = future_a.result(timeout=2.0)
-        handle_b = future_b.result(timeout=2.0)
-
-    done = threading.Event()
-
-    server.on_timestep_change(lambda step: step == 0 and done.set())
-
-    server.seek(0)
-
-    assert done.wait(timeout=1.0)
-    assert _position(handle_a) == (0.0, 0.0, 0.0)
-    _assert_missing_handle(handle_b)
-
-    done = threading.Event()
-
-    server.on_timestep_change(lambda step: step == 2 and done.set())
-
-    server.seek(2)
-
-    assert done.wait(timeout=1.0)
-    assert _position(handle_a) == (0.0, 0.0, 0.0)
-    assert _position(handle_b) == (2.0, 0.0, 0.0)

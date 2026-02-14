@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -35,7 +34,7 @@ class ProxyScene:
         self._live_scene = live_scene
         self._lazy_threshold_bytes = lazy_threshold_bytes
         self._compression = compression
-        self._recording_context = threading.local()
+        self._recording_time: int | None = None
 
     def add_audio(
         self, name: str, *, data: np.ndarray, sample_rate: int
@@ -94,14 +93,6 @@ class ProxyScene:
 
     def _set_time(self, time_step: int | None) -> None:
         self._recording_time = time_step
-
-    @property
-    def _recording_time(self) -> int | None:
-        return getattr(self._recording_context, "time_step", None)
-
-    @_recording_time.setter
-    def _recording_time(self, value: int | None) -> None:
-        self._recording_context.time_step = value
 
     def _record(self, op: Op) -> None:
         if self._recording_time is None:

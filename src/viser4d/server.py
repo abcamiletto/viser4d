@@ -158,7 +158,7 @@ class Viser4dServer(_viser.ViserServer):
 
         Raises:
             AssertionError: If t is out of bounds.
-            RuntimeError: If called while already inside ``at()`` on this thread.
+            RuntimeError: If called while already inside ``at()``.
 
         Example:
             >>> with server.at(5):
