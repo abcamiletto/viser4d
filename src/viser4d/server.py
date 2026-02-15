@@ -267,6 +267,10 @@ class Viser4dServer(_viser.ViserServer):
         self._set_timestep_on_loop(t)
         self._audio_api.on_seek(t, self._fps)
 
+    def get_thread_pool(self) -> ThreadPoolExecutor:
+        """Return the callback thread pool for offloading work outside the event loop."""
+        return self._callback_executor
+
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
 
