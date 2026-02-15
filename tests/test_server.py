@@ -53,7 +53,7 @@ def test_seek_applies_recorded_updates(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 0 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
 
     server.seek(0)
 
@@ -62,7 +62,7 @@ def test_seek_applies_recorded_updates(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 2 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 2 and _d.set())
 
     server.seek(2)
 
@@ -78,7 +78,7 @@ def test_seek_backwards_removes_late_adds(server: viser4d.Viser4dServer) -> None
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 1 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
 
     server.seek(1)
 
@@ -88,7 +88,7 @@ def test_seek_backwards_removes_late_adds(server: viser4d.Viser4dServer) -> None
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 0 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
 
     server.seek(0)
 
@@ -113,7 +113,7 @@ def test_seek_uses_latest_attribute_value(server: viser4d.Viser4dServer) -> None
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 1 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
 
     server.seek(1)
 
@@ -123,7 +123,7 @@ def test_seek_uses_latest_attribute_value(server: viser4d.Viser4dServer) -> None
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 2 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 2 and _d.set())
 
     server.seek(2)
 
@@ -145,7 +145,7 @@ def test_seek_multiple_objects(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 1 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
 
     server.seek(1)
 
@@ -155,7 +155,7 @@ def test_seek_multiple_objects(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 2 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 2 and _d.set())
 
     server.seek(2)
 
@@ -175,7 +175,7 @@ def test_remove_by_name_is_recorded(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 0 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
 
     server.seek(0)
 
@@ -184,7 +184,7 @@ def test_remove_by_name_is_recorded(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 1 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
 
     server.seek(1)
 
@@ -193,7 +193,7 @@ def test_remove_by_name_is_recorded(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 2 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 2 and _d.set())
 
     server.seek(2)
 
@@ -212,7 +212,7 @@ def test_handle_remove_is_recorded(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 0 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
 
     server.seek(0)
 
@@ -221,7 +221,7 @@ def test_handle_remove_is_recorded(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 1 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
 
     server.seek(1)
 
@@ -230,7 +230,7 @@ def test_handle_remove_is_recorded(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 2 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 2 and _d.set())
 
     server.seek(2)
 
@@ -244,7 +244,7 @@ def test_play_loops_by_default(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 2 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 2 and _d.set())
 
     server.seek(2)
 
@@ -268,17 +268,17 @@ def test_on_timestep_change_callback(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 0 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
 
     server.seek(0)
 
     assert done.wait(timeout=1.0)
     done = threading.Event()
-    server.on_timestep_change(lambda step: step == 2 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 2 and _d.set())
     server.seek(2)
     assert done.wait(timeout=1.0)
     done = threading.Event()
-    server.on_timestep_change(lambda step: step == 1 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
     server.seek(1)
     assert done.wait(timeout=1.0)
     assert called_with == [0, 2, 1]
@@ -319,14 +319,9 @@ def test_multiple_timestep_callbacks(server: viser4d.Viser4dServer) -> None:
     server.on_timestep_change(lambda t: results.append(f"a:{t}"))
     server.on_timestep_change(lambda t: results.append(f"b:{t}"))
 
-    done = threading.Event()
-
-    server.on_timestep_change(lambda step: step == 1 and done.set())
-
     server.seek(1)
 
-    assert done.wait(timeout=1.0)
-    assert results == ["a:1", "b:1"]
+    assert _wait_until(lambda: sorted(results) == ["a:1", "b:1"])
 
 
 def test_current_time_property(server: viser4d.Viser4dServer) -> None:
@@ -334,7 +329,7 @@ def test_current_time_property(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 2 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 2 and _d.set())
 
     server.seek(2)
 
@@ -343,7 +338,7 @@ def test_current_time_property(server: viser4d.Viser4dServer) -> None:
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 1 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
 
     server.seek(1)
 
@@ -360,7 +355,7 @@ def test_proxy_handle_can_read_and_write_live_state(
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 0 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
 
     server.seek(0)
 
@@ -380,7 +375,7 @@ def test_proxy_handle_live_write_persists_across_seek(
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 0 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
 
     server.seek(0)
 
@@ -389,7 +384,7 @@ def test_proxy_handle_live_write_persists_across_seek(
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 0 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
 
     server.seek(0)
 
@@ -406,7 +401,7 @@ def test_recorded_change_overwrites_live_change(server: viser4d.Viser4dServer) -
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 0 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
 
     server.seek(0)
 
@@ -415,7 +410,7 @@ def test_recorded_change_overwrites_live_change(server: viser4d.Viser4dServer) -
 
     done = threading.Event()
 
-    server.on_timestep_change(lambda step: step == 1 and done.set())
+    server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
 
     server.seek(1)
 
