@@ -191,7 +191,7 @@ class Viser4dServer(_viser.ViserServer):
             yield
         finally:
             self._proxy_scene._set_time(None)
-            if self._applied_time == t:
+            if self._current_time == t:
 
                 def _refresh() -> None:
                     self._renderer.reset()
