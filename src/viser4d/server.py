@@ -30,9 +30,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import time
-import traceback
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
@@ -112,7 +111,8 @@ class Viser4dServer(_viser.ViserServer):
         self._applied_time: int | None = None
         self._pending_render_time: int | None = None
         self._render_in_flight = False
-        self._render_plan: tuple[int, deque[tuple[str, str, Any]]] | None = None
+        self._render_target_time: int | None = None
+        self._render_ops: deque[tuple[str, str, Any]] = deque()
         # Run user callbacks off the event loop to keep timeline updates responsive.
         self._callback_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -277,34 +277,8 @@ class Viser4dServer(_viser.ViserServer):
 
     def _fire_timestep_callbacks(self, t: int) -> None:
         """Invoke all registered timestep callbacks."""
-        if not self._timestep_callbacks:
-            return
-
-        callbacks = tuple(self._timestep_callbacks)
-        try:
-            future = self._callback_executor.submit(
-                self._run_timestep_callbacks,
-                callbacks,
-                t,
-            )
-        except RuntimeError:
-            # Executor may already be shutting down during server teardown.
-            return
-        future.add_done_callback(self._on_callback_batch_done)
-
-    @staticmethod
-    def _run_timestep_callbacks(
-        callbacks: tuple[Callable[[int], None], ...], t: int
-    ) -> None:
-        for callback in callbacks:
-            callback(t)
-
-    @staticmethod
-    def _on_callback_batch_done(future: Future[None]) -> None:
-        try:
-            future.result()
-        except Exception as exc:
-            traceback.print_exception(exc)
+        for callback in tuple(self._timestep_callbacks):
+            self._callback_executor.submit(callback, t)
 
     def stop(self) -> None:
         """Stop the server and release worker threads."""
@@ -338,24 +312,23 @@ class Viser4dServer(_viser.ViserServer):
 
     def _set_timestep_on_loop(self, t: int) -> None:
         self._pending_render_time = t
-        self._drive_render_on_loop()
+        self._pump_render_on_loop()
 
-    def _drive_render_on_loop(self) -> None:
-        plan = self._render_plan
-        if plan is not None:
-            target_time, ops = plan
-            if ops:
-                kind, target, payload = ops.popleft()
-                if kind == "remove":
-                    self._renderer.remove_node(target)
-                elif kind == "create_or_replace":
-                    self._renderer.create_or_replace_node(target, payload)
-                else:
-                    self._renderer.update_node_members(target, payload)
-                self.get_event_loop().call_soon(self._drive_render_on_loop)
-                return
+    def _pump_render_on_loop(self) -> None:
+        if self._render_ops:
+            kind, target, payload = self._render_ops.popleft()
+            if kind == "remove":
+                self._renderer.remove_node(target)
+            elif kind == "create_or_replace":
+                self._renderer.create_or_replace_node(target, payload)
+            else:
+                self._renderer.update_node_members(target, payload)
+            self.get_event_loop().call_soon(self._pump_render_on_loop)
+            return
 
-            self._render_plan = None
+        target_time = self._render_target_time
+        if target_time is not None:
+            self._render_target_time = None
             self._applied_time = target_time
             self._current_time = target_time
             self._fire_timestep_callbacks(target_time)
@@ -376,32 +349,29 @@ class Viser4dServer(_viser.ViserServer):
         )
 
         loop = self.get_event_loop()
-
-        def _done_callback(fut: Future[Any], target_time: int = target_time) -> None:
-            loop.call_soon_threadsafe(
+        future.add_done_callback(
+            lambda fut, target_time=target_time: loop.call_soon_threadsafe(
                 self._on_render_diff_ready_on_loop,
                 target_time,
-                fut,
+                fut.result(),
             )
+        )
 
-        future.add_done_callback(_done_callback)
-
-    def _on_render_diff_ready_on_loop(
-        self, target_time: int, future: Future[Any]
-    ) -> None:
+    def _on_render_diff_ready_on_loop(self, target_time: int, diff: Any) -> None:
         self._render_in_flight = False
-        diff = future.result()
-
-        ops: deque[tuple[str, str, Any]] = deque()
-        for target in diff.nodes_to_remove:
-            ops.append(("remove", target, None))
-        for target, state in diff.nodes_to_create_or_replace.items():
-            ops.append(("create_or_replace", target, state))
-        for target, updates in diff.member_updates.items():
-            ops.append(("update", target, updates))
-
-        self._render_plan = (target_time, ops)
-        self._drive_render_on_loop()
+        self._render_target_time = target_time
+        self._render_ops.extend(
+            ("remove", target, None) for target in diff.nodes_to_remove
+        )
+        self._render_ops.extend(
+            ("create_or_replace", target, state)
+            for target, state in diff.nodes_to_create_or_replace.items()
+        )
+        self._render_ops.extend(
+            ("update", target, updates)
+            for target, updates in diff.member_updates.items()
+        )
+        self._pump_render_on_loop()
 
     async def _playback_loop(self, loop: bool) -> None:
         """Main playback loop. Runs on the server event loop."""
