@@ -163,9 +163,7 @@ def test_all_compression_modes_work(mode: viser4d.CompressionMode) -> None:
 
         done = threading.Event()
 
-        server.on_timestep_change(
-            lambda step, _d=done: step == 1 and _d.set()
-        )
+        server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
 
         server.seek(1)
 

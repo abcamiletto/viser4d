@@ -319,14 +319,9 @@ def test_multiple_timestep_callbacks(server: viser4d.Viser4dServer) -> None:
     server.on_timestep_change(lambda t: results.append(f"a:{t}"))
     server.on_timestep_change(lambda t: results.append(f"b:{t}"))
 
-    done = threading.Event()
-
-    server.on_timestep_change(lambda step, _d=done: step == 1 and _d.set())
-
     server.seek(1)
 
-    assert done.wait(timeout=1.0)
-    assert sorted(results) == ["a:1", "b:1"]
+    assert _wait_until(lambda: sorted(results) == ["a:1", "b:1"])
 
 
 def test_current_time_property(server: viser4d.Viser4dServer) -> None:
