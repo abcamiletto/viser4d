@@ -52,7 +52,9 @@ def test_low_threshold_preserves_recorded_motion(
 
     done = threading.Event()
 
-    server_low_threshold.on_timestep_change(lambda step: step == 0 and done.set())
+    server_low_threshold.on_timestep_change(
+        lambda step, _d=done: step == 0 and _d.set()
+    )
 
     server_low_threshold.seek(0)
 
@@ -61,7 +63,9 @@ def test_low_threshold_preserves_recorded_motion(
 
     done = threading.Event()
 
-    server_low_threshold.on_timestep_change(lambda step: step == 1 and done.set())
+    server_low_threshold.on_timestep_change(
+        lambda step, _d=done: step == 1 and _d.set()
+    )
 
     server_low_threshold.seek(1)
 
@@ -80,7 +84,9 @@ def test_high_threshold_preserves_recorded_motion(
 
     done = threading.Event()
 
-    server_high_threshold.on_timestep_change(lambda step: step == 0 and done.set())
+    server_high_threshold.on_timestep_change(
+        lambda step, _d=done: step == 0 and _d.set()
+    )
 
     server_high_threshold.seek(0)
 
@@ -89,7 +95,9 @@ def test_high_threshold_preserves_recorded_motion(
 
     done = threading.Event()
 
-    server_high_threshold.on_timestep_change(lambda step: step == 2 and done.set())
+    server_high_threshold.on_timestep_change(
+        lambda step, _d=done: step == 2 and _d.set()
+    )
 
     server_high_threshold.seek(2)
 
@@ -114,7 +122,9 @@ def test_large_point_cloud_roundtrip_with_low_threshold(
 
     done = threading.Event()
 
-    server_low_threshold.on_timestep_change(lambda step: step == 0 and done.set())
+    server_low_threshold.on_timestep_change(
+        lambda step, _d=done: step == 0 and _d.set()
+    )
 
     server_low_threshold.seek(0)
 
@@ -123,7 +133,9 @@ def test_large_point_cloud_roundtrip_with_low_threshold(
 
     done = threading.Event()
 
-    server_low_threshold.on_timestep_change(lambda step: step == 1 and done.set())
+    server_low_threshold.on_timestep_change(
+        lambda step, _d=done: step == 1 and _d.set()
+    )
 
     server_low_threshold.seek(1)
 
@@ -151,7 +163,9 @@ def test_all_compression_modes_work(mode: viser4d.CompressionMode) -> None:
 
         done = threading.Event()
 
-        server.on_timestep_change(lambda step: step == 1 and done.set())
+        server.on_timestep_change(
+            lambda step, _d=done: step == 1 and _d.set()
+        )
 
         server.seek(1)
 

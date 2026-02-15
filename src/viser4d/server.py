@@ -73,6 +73,7 @@ class Viser4dServer(_viser.ViserServer):
         compression: Compression mode for disk-backed payloads.
             Defaults to :attr:`CompressionMode.FAST`.
         enable_playback_gui: Whether to add built-in playback controls.
+        callback_workers: Number of worker threads for timestep callbacks.
         **kwargs: Additional keyword arguments forwarded to ``viser.ViserServer``.
 
     Example:
@@ -97,6 +98,7 @@ class Viser4dServer(_viser.ViserServer):
         lazy_threshold_bytes: int | None = None,
         compression: CompressionMode | None = None,
         enable_playback_gui: bool = True,
+        callback_workers: int = 64,
         **kwargs: Any,
     ) -> None:
         self.num_steps = num_steps
@@ -113,9 +115,11 @@ class Viser4dServer(_viser.ViserServer):
         self._render_in_flight = False
         self._render_target_time: int | None = None
         self._render_ops: deque[tuple[str, str, Any]] = deque()
+        self._callback_workers = max(1, callback_workers)
         # Run user callbacks off the event loop to keep timeline updates responsive.
+        # Keep a single thread pool alive and enqueue callback jobs on each timestep.
         self._callback_executor = ThreadPoolExecutor(
-            max_workers=1,
+            max_workers=self._callback_workers,
             thread_name_prefix="viser4d-callbacks",
         )
         # Build render diffs off the event loop.
@@ -269,7 +273,7 @@ class Viser4dServer(_viser.ViserServer):
         Callbacks are fired after viser4d applies its own recorded state,
         allowing them to layer additional visualizations on top. This is useful
         when you want to use viser4d's timeline infrastructure but manage your
-        own visualization logic. Callbacks run on a dedicated worker thread,
+        own visualization logic. Callback jobs run on a dedicated thread pool,
         not on viser's event loop thread.
 
         Args:
@@ -295,6 +299,7 @@ class Viser4dServer(_viser.ViserServer):
         finally:
             self._render_executor.shutdown(wait=False, cancel_futures=True)
             self._callback_executor.shutdown(wait=False, cancel_futures=True)
+            self._timestep_callbacks.clear()
 
     def _is_playing(self) -> bool:
         return self._playback_task is not None and not self._playback_task.done()
