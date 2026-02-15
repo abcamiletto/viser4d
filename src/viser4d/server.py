@@ -191,6 +191,13 @@ class Viser4dServer(_viser.ViserServer):
             yield
         finally:
             self._proxy_scene._set_time(None)
+            if self._applied_time == t:
+                def _refresh() -> None:
+                    self._renderer.reset()
+                    self._applied_time = None
+                    self._set_timestep_on_loop(t)
+
+                self.get_event_loop().call_soon_threadsafe(_refresh)
 
     def play(self, fps: float, loop: bool = True) -> None:
         """Start playback of the timeline.
