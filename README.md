@@ -16,20 +16,52 @@ import viser4d
 
 server = viser4d.Viser4dServer(num_steps=10)
 
-point_cloud = None
-for i in range(10):
+with server.at(0):
+    points = np.random.uniform(-1.0, 1.0, size=(200, 3))
+    point_cloud = server.scene.add_point_cloud(
+        "/points",
+        points=points,
+        colors=(255, 200, 0),
+    )
+
+for i in range(1, 10):
     with server.at(i):
         points = np.random.uniform(-1.0, 1.0, size=(200, 3))
-        if point_cloud is None:
-            point_cloud = server.scene.add_point_cloud(
-                "/points",
-                points=points,
-                colors=(255, 200, 0),
-            )
-        else:
-            point_cloud.points = points
+        point_cloud.points = points
 
 server.play(fps=10, loop=True)
+server.sleep_forever()
+```
+
+## Streaming ingest
+
+If data arrives incrementally, initialize components at `t=0` and then record
+updates as each new frame arrives:
+
+```python
+import numpy as np
+import viser4d
+
+num_steps = 180
+server = viser4d.Viser4dServer(num_steps=num_steps)
+
+def get_next_points() -> np.ndarray:
+    # Replace with your real sensor/network/pipeline frame source.
+    return np.random.normal(size=(400, 3)).astype(np.float32)
+
+with server.at(0):
+    point_cloud = server.scene.add_point_cloud(
+        "/stream/points",
+        points=get_next_points(),
+    )
+
+for t in range(1, num_steps):
+    points = get_next_points()
+    with server.at(t):
+        point_cloud.points = points
+    server.seek(t)  # optional: keep view synced to latest streamed frame
+
+server.play(fps=30, loop=True)
 server.sleep_forever()
 ```
 
