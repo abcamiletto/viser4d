@@ -44,12 +44,6 @@ from .proxy import ProxyScene
 from .render import RenderPipeline
 from .timeline import SceneRenderer, Timeline
 
-
-# =============================================================================
-# Public API
-# =============================================================================
-
-
 class Viser4dServer(_viser.ViserServer):
     """Timeline-aware wrapper around :class:`viser.ViserServer`.
 
@@ -164,17 +158,9 @@ class Viser4dServer(_viser.ViserServer):
         else:
             self._playback_controls = None
 
-    # ------------------------------------------------------------------
-    # Public API (delegates to focused components)
-    # ------------------------------------------------------------------
-
     @property
     def current_time(self) -> int:
-        """The current timestep in the timeline.
-
-        Returns:
-            The timestep index (0 to num_steps - 1).
-        """
+        """The current timestep index (0 to num_steps - 1)."""
         return self._playback.current_time
 
     @contextmanager

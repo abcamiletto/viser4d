@@ -11,13 +11,6 @@ from .render import RenderPipeline
 
 
 class PlaybackController:
-    """Owns playback/seek state, FPS, current_time, and transport notifications.
-
-    Transport listeners are duck-typed objects with ``on_play(step, fps)``,
-    ``on_pause(step)``, ``on_seek(step, fps)``, and ``on_fps_change(fps, step)``
-    methods.
-    """
-
     def __init__(
         self,
         num_steps: int,
@@ -49,19 +42,13 @@ class PlaybackController:
         return self._num_steps
 
     def set_current_time(self, t: int) -> None:
-        """Set current_time (called by the render-complete callback)."""
         self._current_time = t
 
     def is_playing(self) -> bool:
         return self._playback_task is not None and not self._playback_task.done()
 
     def add_listener(self, listener: Any) -> None:
-        """Register a transport listener."""
         self._listeners.append(listener)
-
-    # ------------------------------------------------------------------
-    # Public transport API (safe to call from any thread)
-    # ------------------------------------------------------------------
 
     def seek(self, t: int, blocking: bool = False) -> None:
         assert 0 <= t < self._num_steps
@@ -83,12 +70,11 @@ class PlaybackController:
 
     def set_fps(self, fps: float) -> None:
         self._fps = fps if fps > 0 else 1.0
-        for listener in self._listeners:
-            listener.on_fps_change(self._fps, self._current_time)
+        self._notify("on_fps_change", self._fps, self._current_time)
 
-    # ------------------------------------------------------------------
-    # Internal (event-loop) methods
-    # ------------------------------------------------------------------
+    def _notify(self, method: str, *args: Any) -> None:
+        for listener in self._listeners:
+            getattr(listener, method)(*args)
 
     def _queue_seek_on_loop(
         self, t: int, done: threading.Event | None = None
@@ -114,71 +100,55 @@ class PlaybackController:
         self._render_pipeline.transfer_done_events(self._pending_done_events)
         self._pending_done_events.clear()
         self._render_pipeline.schedule_render(t)
-        for listener in self._listeners:
-            listener.on_seek(t, self._fps)
+        self._notify("on_seek", t, self._fps)
 
     def _start_playback(self, loop: bool) -> None:
-        if self.is_playing():
-            for listener in self._listeners:
-                listener.on_play(self._current_time, self._fps)
-            return
-        self._playback_task = asyncio.create_task(self._playback_loop(loop))
-        for listener in self._listeners:
-            listener.on_play(self._current_time, self._fps)
+        if not self.is_playing():
+            self._playback_task = asyncio.create_task(self._playback_loop(loop))
+        self._notify("on_play", self._current_time, self._fps)
 
     def _pause_on_loop(self) -> None:
         self._stop_playback_task()
-        for listener in self._listeners:
-            listener.on_pause(self._current_time)
+        self._notify("on_pause", self._current_time)
 
     def _stop_playback_task(self) -> None:
-        """Cancel the playback task without notifying listeners."""
         if self._playback_task is not None and not self._playback_task.done():
             self._playback_task.cancel()
         self._playback_task = None
 
     async def _playback_loop(self, loop: bool) -> None:
-        """Main playback coroutine. Runs on the server event loop."""
         index = self._current_time
         frame_duration = 1.0 / self._fps
         next_frame_time = time.monotonic()
 
         while True:
-            # Handle dynamic FPS changes
             new_duration = 1.0 / self._fps
             if frame_duration != new_duration:
                 frame_duration = new_duration
                 next_frame_time = time.monotonic()
 
-            # Skip frames if rendering is too slow
             now = time.monotonic()
             if now > next_frame_time + frame_duration:
                 frames_behind = int((now - next_frame_time) / frame_duration)
                 index = min(index + frames_behind, self._num_steps - 1)
                 next_frame_time += frames_behind * frame_duration
 
-            # Render current frame
             self._render_pipeline.schedule_render(index)
 
-            # Advance to next frame
             index += 1
             next_frame_time += frame_duration
 
-            # Handle end of timeline
             if index >= self._num_steps:
                 if not loop:
                     break
                 index = 0
                 next_frame_time = time.monotonic()
-                for listener in self._listeners:
-                    listener.on_play(0, self._fps)
+                self._notify("on_play", 0, self._fps)
                 continue
 
-            # Wait for next frame
             delay = next_frame_time - time.monotonic()
             await asyncio.sleep(delay if delay > 0 else 0)
 
-        for listener in self._listeners:
-            listener.on_pause(self._current_time)
+        self._notify("on_pause", self._current_time)
         if self._playback_task is asyncio.current_task():
             self._playback_task = None

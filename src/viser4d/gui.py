@@ -7,12 +7,7 @@ if TYPE_CHECKING:
 
 
 class PlaybackControls:
-    """GUI controls for timeline playback.
-
-    Acts as a transport listener (``on_play``, ``on_pause``, ``on_seek``,
-    ``on_fps_change``) and registers ``_on_timestep`` as a callback via the
-    server's :class:`CallbackManager`.
-    """
+    """GUI controls for timeline playback (transport listener + timestep callback)."""
 
     def __init__(self, gui: Any, controller: PlaybackController) -> None:
         self._controller = controller
@@ -30,9 +25,7 @@ class PlaybackControls:
                 order=1,
             )
             self._step_buttons = gui.add_button_group(
-                "",
-                ("Prev", "Next"),
-                order=2,
+                "", ("Prev", "Next"), order=2
             )
             self._fps_slider = gui.add_slider(
                 "FPS",
@@ -48,9 +41,7 @@ class PlaybackControls:
         self._slider.on_update(self._on_slider)
         self._fps_slider.on_update(self._on_fps)
 
-    # ------------------------------------------------------------------
-    # Transport listener interface
-    # ------------------------------------------------------------------
+    # Transport listener methods
 
     def on_play(self, step: int, fps: float) -> None:
         if self._playing:
@@ -74,17 +65,10 @@ class PlaybackControls:
         self._fps_slider.value = fps
         self._suppress_fps = False
 
-    # ------------------------------------------------------------------
-    # Timestep callback (registered via CallbackManager by the server)
-    # ------------------------------------------------------------------
-
     def _on_timestep(self, t: int) -> None:
-        """Sync slider position from the current timestep."""
         self._slider.value = t
 
-    # ------------------------------------------------------------------
     # Widget event handlers
-    # ------------------------------------------------------------------
 
     def _on_slider(self, event) -> None:
         if event.client_id is None:
@@ -99,12 +83,9 @@ class PlaybackControls:
             self._controller.seek(next_step)
 
     def _on_play_button(self, _event) -> None:
-        next_playing = not self._playing
-        # Immediate UI feedback
-        self._playing = next_playing
-        self._play_button.label = "Pause" if next_playing else "Play"
-
-        if next_playing:
+        self._playing = not self._playing
+        self._play_button.label = "Pause" if self._playing else "Play"
+        if self._playing:
             self._controller.play(self._fps_slider.value)
         else:
             self._controller.pause()
