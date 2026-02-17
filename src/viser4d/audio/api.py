@@ -160,7 +160,6 @@ class AudioApi:
 
         server.on_client_connect(self._on_client_connect)
         server.on_client_disconnect(self._on_client_disconnect)
-        server.on_timestep_change(self._on_timestep)
 
     def _on_client_connect(self, client: ClientHandle) -> None:
         """Send JS runtime + all tracks to a newly connected client."""
@@ -249,10 +248,10 @@ class AudioApi:
             self._playback_fps = _sanitize_fps(fps, default=self._timeline_fps)
         self._broadcast_transport(step=current_step, hard_sync=True)
 
-    def on_pause(self) -> None:
+    def on_pause(self, step: int) -> None:
         with self._state_lock:
             self._playing = False
-        self._broadcast_transport(step=self._server._current_time, hard_sync=True)
+        self._broadcast_transport(step=step, hard_sync=True)
 
     def on_seek(self, step: int, fps: float) -> None:
         with self._state_lock:
@@ -260,12 +259,12 @@ class AudioApi:
             self._playback_fps = _sanitize_fps(fps, default=self._timeline_fps)
         self._broadcast_transport(step=step, hard_sync=True)
 
-    def on_fps_change(self, fps: float) -> None:
+    def on_fps_change(self, fps: float, step: int) -> None:
         with self._state_lock:
             self._playback_fps = _sanitize_fps(fps, default=self._timeline_fps)
             playing = self._playing
         if playing:
-            self._broadcast_transport(step=self._server._current_time, hard_sync=True)
+            self._broadcast_transport(step=step, hard_sync=True)
 
     def _ensure_client_runtime(self, client: ClientHandle) -> None:
         """Ensure a client has received the audio runtime JS."""
@@ -324,7 +323,7 @@ class AudioApi:
     ) -> None:
         if not self._tracks:
             return
-        step = self._server._current_time if step is None else step
+        step = self._server.current_time if step is None else step
         self._send_js_to_client(client, self._transport_js(step, hard_sync=hard_sync))
 
     def _broadcast_transport(
@@ -337,7 +336,7 @@ class AudioApi:
     ) -> None:
         if not self._tracks:
             return
-        step = self._server._current_time if step is None else step
+        step = self._server.current_time if step is None else step
         self._broadcast_js(
             self._transport_js(step, hard_sync=hard_sync),
             initialize_clients=initialize_clients,

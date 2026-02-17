@@ -1,44 +1,45 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .server import Viser4dServer
+    from .playback import PlaybackController
 
 
 class PlaybackControls:
     """GUI controls for timeline playback.
 
-    Registers itself as a timestep listener and manages its own state based on
-    user interactions and timestep callbacks.
+    Acts as a transport listener (``on_play``, ``on_pause``, ``on_seek``,
+    ``on_fps_change``) and registers ``_on_timestep`` as a callback via the
+    server's :class:`CallbackManager`.
     """
 
-    def __init__(self, server: Viser4dServer) -> None:
-        self._server = server
+    def __init__(self, gui: Any, controller: PlaybackController) -> None:
+        self._controller = controller
         self._playing = False
         self._suppress_fps = False
 
-        with server.gui.add_folder("Playback"):
-            self._play_button = server.gui.add_button("Play", order=0)
-            self._slider = server.gui.add_slider(
+        with gui.add_folder("Playback"):
+            self._play_button = gui.add_button("Play", order=0)
+            self._slider = gui.add_slider(
                 "Timestep",
                 min=0,
-                max=server.num_steps - 1,
+                max=controller.num_steps - 1,
                 step=1,
                 initial_value=0,
                 order=1,
             )
-            self._step_buttons = server.gui.add_button_group(
+            self._step_buttons = gui.add_button_group(
                 "",
                 ("Prev", "Next"),
                 order=2,
             )
-            self._fps_slider = server.gui.add_slider(
+            self._fps_slider = gui.add_slider(
                 "FPS",
                 min=1.0,
                 max=60.0,
                 step=1.0,
-                initial_value=server._fps,
+                initial_value=controller.fps,
                 order=3,
             )
 
@@ -47,57 +48,68 @@ class PlaybackControls:
         self._slider.on_update(self._on_slider)
         self._fps_slider.on_update(self._on_fps)
 
-        # Register as timestep listener
-        server.on_timestep_change(self._on_timestep)
+    # ------------------------------------------------------------------
+    # Transport listener interface
+    # ------------------------------------------------------------------
 
-    def _on_timestep(self, t: int) -> None:
-        """Handle timestep changes from the server."""
-        # Server timeline state is authoritative for slider position.
-        self._slider.value = t
+    def on_play(self, step: int, fps: float) -> None:
+        if self._playing:
+            return
+        self._playing = True
+        self._play_button.label = "Pause"
 
-    def set_fps(self, fps: float) -> None:
-        """Update the FPS slider value."""
+    def on_pause(self, step: int) -> None:
+        if not self._playing:
+            return
+        self._playing = False
+        self._play_button.label = "Play"
+
+    def on_seek(self, step: int, fps: float) -> None:
+        self.on_pause(step)
+
+    def on_fps_change(self, fps: float, step: int) -> None:
         if self._fps_slider.value == fps:
             return
         self._suppress_fps = True
         self._fps_slider.value = fps
         self._suppress_fps = False
 
-    def set_playing(self, playing: bool) -> None:
-        """Update the play/pause button state."""
-        if self._playing == playing:
-            return
-        self._playing = playing
-        self._play_button.label = "Pause" if playing else "Play"
+    # ------------------------------------------------------------------
+    # Timestep callback (registered via CallbackManager by the server)
+    # ------------------------------------------------------------------
+
+    def _on_timestep(self, t: int) -> None:
+        """Sync slider position from the current timestep."""
+        self._slider.value = t
+
+    # ------------------------------------------------------------------
+    # Widget event handlers
+    # ------------------------------------------------------------------
 
     def _on_slider(self, event) -> None:
-        """Handle user dragging the timestep slider."""
-        # Ignore server-originated updates to avoid feedback loops.
         if event.client_id is None:
             return
-        self._server.seek(int(event.target.value))
+        self._controller.seek(int(event.target.value))
 
     def _on_step(self, event) -> None:
-        """Handle prev/next button clicks."""
         delta = -1 if event.target.value == "Prev" else 1
         current = int(self._slider.value)
-        next_step = max(0, min(self._server.num_steps - 1, current + delta))
+        next_step = max(0, min(self._controller.num_steps - 1, current + delta))
         if next_step != current:
-            self._server.seek(next_step)
+            self._controller.seek(next_step)
 
     def _on_play_button(self, _event) -> None:
-        """Handle play/pause button clicks."""
         next_playing = not self._playing
-        self.set_playing(next_playing)
+        # Immediate UI feedback
+        self._playing = next_playing
+        self._play_button.label = "Pause" if next_playing else "Play"
 
-        loop = self._server.get_event_loop()
         if next_playing:
-            loop.call_soon_threadsafe(self._server.play, self._fps_slider.value)
+            self._controller.play(self._fps_slider.value)
         else:
-            loop.call_soon_threadsafe(self._server.pause)
+            self._controller.pause()
 
     def _on_fps(self, event) -> None:
-        """Handle FPS slider changes."""
         if self._suppress_fps:
             return
-        self._server._set_fps(event.target.value)
+        self._controller.set_fps(event.target.value)
