@@ -68,27 +68,30 @@
     _syncTimer: null,
 
     addTrack: function(name, base64Wav, startStep, volume) {
-      mgr.removeTrack(name);
+      var track = mgr.tracks[name];
+      if (!track) {
+        var gain = audioCtx.createGain();
+        gain.gain.value = toFiniteNumber(volume, 1.0);
+        gain.connect(audioCtx.destination);
 
-      var gain = audioCtx.createGain();
-      gain.gain.value = toFiniteNumber(volume, 1.0);
-      gain.connect(audioCtx.destination);
-
-      var track = {
-        name: name,
-        startStep: toFiniteNumber(startStep, 0),
-        gain: gain,
-        buffer: null,
-        decodeToken: 0,
-        source: null,
-        sourceStartCtxTime: 0.0,
-        sourceStartOffset: 0.0,
-        sourceRate: 1.0,
-        prevDrift: 0.0,
-        prevDriftCtxTime: 0.0,
-        lastHardSyncCtxTime: -Infinity
-      };
-      mgr.tracks[name] = track;
+        track = {
+          name: name,
+          startStep: toFiniteNumber(startStep, 0),
+          gain: gain,
+          buffer: null,
+          decodeToken: 0,
+          source: null,
+          sourceStartCtxTime: 0.0,
+          sourceStartOffset: 0.0,
+          sourceRate: 1.0,
+          prevDrift: 0.0,
+          prevDriftCtxTime: 0.0,
+          lastHardSyncCtxTime: -Infinity
+        };
+        mgr.tracks[name] = track;
+      } else {
+        track.gain.gain.value = toFiniteNumber(volume, track.gain.gain.value);
+      }
 
       var decodeToken = ++track.decodeToken;
       var bufferData = base64ToArrayBuffer(base64Wav);
@@ -98,7 +101,7 @@
         if (!current || current !== track || current.decodeToken !== decodeToken) return;
 
         current.buffer = buffer;
-        mgr._syncTrack(current, true);
+        mgr._syncTrack(current, false);
       }).catch(function() {});
     },
 
