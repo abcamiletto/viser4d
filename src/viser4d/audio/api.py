@@ -241,7 +241,9 @@ class AudioApi:
                 )
 
             handle._samples = np.concatenate((handle._samples, incoming), axis=0)
-            handle._base64_wav = _encode_base64_wav(handle._samples, handle._sample_rate)
+            handle._base64_wav = _encode_base64_wav(
+                handle._samples, handle._sample_rate
+            )
 
         self._push_track_update(handle, hard_sync=not is_update)
         return handle
