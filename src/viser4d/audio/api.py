@@ -83,11 +83,6 @@ def _numpy_to_wav(data: np.ndarray, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
-def _encode_base64_wav(data: np.ndarray, sample_rate: int) -> str:
-    wav_bytes = _numpy_to_wav(data, sample_rate)
-    return base64.b64encode(wav_bytes).decode("ascii")
-
-
 class AudioHandle:
     """Handle for an audio track, returned by ``scene.add_audio()``.
 
@@ -103,14 +98,12 @@ class AudioHandle:
     def __init__(
         self,
         name: str,
-        base64_wav: str,
         start_step: int,
         sample_rate: int,
         samples: np.ndarray,
         api: AudioApi,
     ) -> None:
         self._name = name
-        self._base64_wav = base64_wav
         self._start_step = start_step
         self._sample_rate = sample_rate
         self._samples = samples
@@ -138,17 +131,7 @@ class AudioHandle:
 
     @waveform.setter
     def waveform(self, value: np.ndarray) -> None:
-        samples = _to_int16_samples(value)
-        if samples.shape[1] != self._samples.shape[1]:
-            raise ValueError(
-                f"Audio track {self._name!r} has {self._samples.shape[1]} channel(s); "
-                f"got {samples.shape[1]}."
-            )
-        if self._api._tracks.get(self._name) is not self:
-            raise RuntimeError("Audio track has been removed.")
-
-        self._samples = samples
-        self._base64_wav = _encode_base64_wav(self._samples, self._sample_rate)
+        self._samples = _to_int16_samples(value)
         self._api._push_track_update(self, hard_sync=False)
 
     def remove(self) -> None:
@@ -220,7 +203,6 @@ class AudioApi:
         if existing is None:
             handle = AudioHandle(
                 name,
-                _encode_base64_wav(incoming, sample_rate),
                 start_step,
                 sample_rate,
                 incoming,
@@ -234,16 +216,8 @@ class AudioApi:
                     f"Audio track {name!r} already exists with sample_rate="
                     f"{handle._sample_rate}; got {sample_rate}."
                 )
-            if handle._samples.shape[1] != incoming.shape[1]:
-                raise ValueError(
-                    f"Audio track {name!r} already exists with "
-                    f"{handle._samples.shape[1]} channel(s); got {incoming.shape[1]}."
-                )
 
             handle._samples = np.concatenate((handle._samples, incoming), axis=0)
-            handle._base64_wav = _encode_base64_wav(
-                handle._samples, handle._sample_rate
-            )
 
         self._push_track_update(handle, hard_sync=not is_update)
         return handle
@@ -301,10 +275,13 @@ class AudioApi:
         self._send_js_to_client(client, _AUDIO_RUNTIME_JS)
 
     def _send_track_to_client(self, client: ClientHandle, track: AudioHandle) -> None:
+        base64_wav = base64.b64encode(
+            _numpy_to_wav(track._samples, track._sample_rate)
+        ).decode("ascii")
         self._send_js_to_client(
             client,
             f"window.__viser4d_audio.addTrack("
-            f"{track._name!r}, {track._base64_wav!r}, "
+            f"{track._name!r}, {base64_wav!r}, "
             f"{track._start_step}, {track._volume});",
         )
 
