@@ -41,6 +41,22 @@ def _sanitize_fps(value: float, *, default: float) -> float:
     return value if value > 0 else default
 
 
+def _to_int16_samples(data: np.ndarray) -> np.ndarray:
+    if data.ndim == 1:
+        data = data[:, np.newaxis]
+    elif data.ndim != 2:
+        raise ValueError("Audio data must be 1-D or 2-D.")
+    if data.shape[1] < 1:
+        raise ValueError("Audio data must have at least one channel.")
+
+    if data.dtype == np.float32:
+        data = np.clip(data, -1.0, 1.0)
+        return (data * 32767).astype(np.int16)
+    if data.dtype == np.int16:
+        return data
+    raise TypeError(f"Unsupported dtype {data.dtype}; expected int16 or float32")
+
+
 def _numpy_to_wav(data: np.ndarray, sample_rate: int) -> bytes:
     """Encode a numpy array as WAV bytes.
 
@@ -55,23 +71,15 @@ def _numpy_to_wav(data: np.ndarray, sample_rate: int) -> bytes:
     Raises:
         TypeError: If *data* has an unsupported dtype.
     """
-    if data.dtype == np.float32:
-        data = np.clip(data, -1.0, 1.0)
-        data = (data * 32767).astype(np.int16)
-    elif data.dtype != np.int16:
-        raise TypeError(f"Unsupported dtype {data.dtype}; expected int16 or float32")
-
-    if data.ndim == 1:
-        n_channels = 1
-    else:
-        n_channels = data.shape[1]
+    samples = _to_int16_samples(data)
+    n_channels = samples.shape[1]
 
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(n_channels)
         wf.setsampwidth(2)  # 16-bit
         wf.setframerate(sample_rate)
-        wf.writeframes(data.tobytes())
+        wf.writeframes(samples.tobytes())
     return buf.getvalue()
 
 
@@ -90,13 +98,15 @@ class AudioHandle:
     def __init__(
         self,
         name: str,
-        base64_wav: str,
         start_step: int,
+        sample_rate: int,
+        samples: np.ndarray,
         api: AudioApi,
     ) -> None:
         self._name = name
-        self._base64_wav = base64_wav
         self._start_step = start_step
+        self._sample_rate = sample_rate
+        self._samples = samples
         self._volume = 1.0
         self._api = api
 
@@ -113,6 +123,16 @@ class AudioHandle:
         self._api._broadcast_js(
             f"window.__viser4d_audio.setVolume({self._name!r}, {value});"
         )
+
+    @property
+    def waveform(self) -> np.ndarray:
+        """Audio waveform samples as int16 array with shape (N, channels)."""
+        return self._samples.copy()
+
+    @waveform.setter
+    def waveform(self, value: np.ndarray) -> None:
+        self._samples = _to_int16_samples(value)
+        self._api._push_track_update(self, hard_sync=False)
 
     def remove(self) -> None:
         """Remove this audio track."""
@@ -171,20 +191,46 @@ class AudioApi:
         sample_rate: int,
         start_step: int,
     ) -> AudioHandle:
-        """Encode audio data, store, and return a handle."""
-        wav_bytes = _numpy_to_wav(data, sample_rate)
-        b64 = base64.b64encode(wav_bytes).decode("ascii")
-        handle = AudioHandle(name, b64, start_step, api=self)
-        self._tracks[name] = handle
+        """Encode audio data, store, and return a handle.
+
+        If a track with the same name already exists, incoming audio is
+        concatenated to the end of the existing track.
+        """
+        incoming = _to_int16_samples(data)
+        existing = self._tracks.get(name)
+
+        is_update = existing is not None
+        if existing is None:
+            handle = AudioHandle(
+                name,
+                start_step,
+                sample_rate,
+                incoming,
+                api=self,
+            )
+            self._tracks[name] = handle
+        else:
+            handle = existing
+            if handle._sample_rate != sample_rate:
+                raise ValueError(
+                    f"Audio track {name!r} already exists with sample_rate="
+                    f"{handle._sample_rate}; got {sample_rate}."
+                )
+
+            handle._samples = np.concatenate((handle._samples, incoming), axis=0)
+
+        self._push_track_update(handle, hard_sync=not is_update)
+        return handle
+
+    def _push_track_update(self, handle: AudioHandle, *, hard_sync: bool) -> None:
         for client in self._server.get_clients().values():
             if client.client_id in self._initialized_clients:
                 self._send_track_to_client(client, handle)
-                self._send_transport_to_client(client, hard_sync=True)
+                self._send_transport_to_client(client, hard_sync=hard_sync)
             else:
                 # Client connected before audio was initialized: send full state once.
                 self._sync_client_tracks(client)
                 self._sync_client_playback_state(client)
-        return handle
 
     def remove_track(self, name: str) -> None:
         """Remove a track by name."""
@@ -229,10 +275,13 @@ class AudioApi:
         self._send_js_to_client(client, _AUDIO_RUNTIME_JS)
 
     def _send_track_to_client(self, client: ClientHandle, track: AudioHandle) -> None:
+        base64_wav = base64.b64encode(
+            _numpy_to_wav(track._samples, track._sample_rate)
+        ).decode("ascii")
         self._send_js_to_client(
             client,
             f"window.__viser4d_audio.addTrack("
-            f"{track._name!r}, {track._base64_wav!r}, "
+            f"{track._name!r}, {base64_wav!r}, "
             f"{track._start_step}, {track._volume});",
         )
 
