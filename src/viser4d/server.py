@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
@@ -115,6 +116,8 @@ class Viser4dServer(_viser.ViserServer):
         self._render_in_flight = False
         self._render_target_time: int | None = None
         self._render_ops: deque[tuple[str, str, Any]] = deque()
+        self._pending_done_events: list[threading.Event] = []
+        self._render_done_events: list[threading.Event] = []
         self._callback_workers = max(1, callback_workers)
         # Run user callbacks off the event loop to keep timeline updates responsive.
         # Keep a single thread pool alive and enqueue callback jobs on each timestep.
@@ -229,28 +232,43 @@ class Viser4dServer(_viser.ViserServer):
         """
         self.get_event_loop().call_soon_threadsafe(self._pause_playback_on_loop)
 
-    def seek(self, t: int) -> None:
+    def seek(self, t: int, blocking: bool = False) -> None:
         """Jump to a specific timestep.
 
-        Non-blocking: stores the latest requested timestep and schedules a
-        single loop flush. Rapid repeated calls are coalesced to the latest.
+        By default non-blocking: stores the latest requested timestep and
+        schedules a single loop flush. Rapid repeated calls are coalesced to
+        the latest.
 
         The actual seek pauses any active playback, renders the scene state at
         timestep ``t``, and then invokes registered timestep callbacks.
 
         Args:
             t: The timestep index (0 to num_steps - 1).
+            blocking: If ``True``, block until the render and all timestep
+                callbacks have completed.
 
         Raises:
             AssertionError: If t is out of bounds.
 
         Example:
             >>> server.seek(50)  # Jump to frame 50
+            >>> server.seek(50, blocking=True)  # Wait for completion
         """
         assert 0 <= t < self.num_steps
-        self.get_event_loop().call_soon_threadsafe(self._queue_seek_on_loop, t)
+        if blocking:
+            done = threading.Event()
+            self.get_event_loop().call_soon_threadsafe(
+                self._queue_seek_on_loop, t, done
+            )
+            done.wait()
+        else:
+            self.get_event_loop().call_soon_threadsafe(self._queue_seek_on_loop, t)
 
-    def _queue_seek_on_loop(self, t: int) -> None:
+    def _queue_seek_on_loop(
+        self, t: int, done: threading.Event | None = None
+    ) -> None:
+        if done is not None:
+            self._pending_done_events.append(done)
         self._queued_seek = t
         if self._seek_flush_scheduled:
             return
@@ -262,6 +280,9 @@ class Viser4dServer(_viser.ViserServer):
         t = self._queued_seek
         self._queued_seek = None
         if t is None:
+            for ev in self._pending_done_events:
+                ev.set()
+            self._pending_done_events.clear()
             return
         self._pause_playback_on_loop(notify_audio=False)
         self._set_timestep_on_loop(t)
@@ -291,10 +312,27 @@ class Viser4dServer(_viser.ViserServer):
         """
         self._timestep_callbacks.append(callback)
 
-    def _fire_timestep_callbacks(self, t: int) -> None:
+    def _fire_timestep_callbacks(
+        self, t: int, done_events: list[threading.Event] | None = None
+    ) -> None:
         """Invoke all registered timestep callbacks."""
-        for callback in tuple(self._timestep_callbacks):
+        futures = [
             self._callback_executor.submit(callback, t)
+            for callback in tuple(self._timestep_callbacks)
+        ]
+        if done_events:
+            if not futures:
+                for ev in done_events:
+                    ev.set()
+            else:
+
+                def _wait_and_signal() -> None:
+                    for f in futures:
+                        f.result()
+                    for ev in done_events:
+                        ev.set()
+
+                self._callback_executor.submit(_wait_and_signal)
 
     def stop(self) -> None:
         """Stop the server and release worker threads."""
@@ -348,7 +386,9 @@ class Viser4dServer(_viser.ViserServer):
             self._render_target_time = None
             self._applied_time = target_time
             self._current_time = target_time
-            self._fire_timestep_callbacks(target_time)
+            done_events = list(self._render_done_events)
+            self._render_done_events.clear()
+            self._fire_timestep_callbacks(target_time, done_events)
 
         if self._render_in_flight:
             return
@@ -359,6 +399,8 @@ class Viser4dServer(_viser.ViserServer):
 
         self._pending_render_time = None
         self._render_in_flight = True
+        self._render_done_events.extend(self._pending_done_events)
+        self._pending_done_events.clear()
         future = self._render_executor.submit(
             self._timeline.diff_between,
             self._applied_time,
