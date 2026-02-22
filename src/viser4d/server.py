@@ -36,12 +36,10 @@ from typing import Any, Callable, Iterator
 import viser as _viser
 
 from .audio import AudioApi
-from .callbacks import CallbackManager
 from .gui import PlaybackControls
 from .op import CompressionMode
 from .playback import PlaybackController
 from .proxy import ProxyScene
-from .render import RenderPipeline
 from .timeline import SceneRenderer, Timeline
 
 class Viser4dServer(_viser.ViserServer):
@@ -112,33 +110,44 @@ class Viser4dServer(_viser.ViserServer):
         event_loop = self.get_event_loop()
 
         # Core components
-        self._callbacks = CallbackManager(workers=callback_workers)
+        self._timestep_callbacks: list[Callable[[int], None]] = []
+        self._callback_executor = ThreadPoolExecutor(
+            max_workers=max(1, callback_workers),
+            thread_name_prefix="viser4d-callbacks",
+        )
         self._timeline = Timeline()
         self._renderer = SceneRenderer(self._timeline, self._live_scene)
 
         def _on_render_complete(
             target_time: int, done_events: list[threading.Event]
         ) -> None:
-            self._playback.set_current_time(target_time)
-            self._callbacks.fire(target_time, done_events)
+            futures = [
+                self._callback_executor.submit(cb, target_time)
+                for cb in tuple(self._timestep_callbacks)
+            ]
+            if done_events:
 
-        self._render_pipeline = RenderPipeline(
-            timeline=self._timeline,
-            renderer=self._renderer,
-            event_loop=event_loop,
-            on_render_complete=_on_render_complete,
-        )
+                def _signal_when_done() -> None:
+                    for f in futures:
+                        f.result()
+                    for ev in done_events:
+                        ev.set()
+
+                self._callback_executor.submit(_signal_when_done)
+
         self._playback = PlaybackController(
             num_steps=num_steps,
             fps=fps,
             event_loop=event_loop,
-            render_pipeline=self._render_pipeline,
+            timeline=self._timeline,
+            renderer=self._renderer,
+            on_render_complete=_on_render_complete,
         )
 
         # Audio and GUI
         self._audio_api = AudioApi(self, timeline_fps=fps if fps > 0 else 1.0)
         self._playback.add_listener(self._audio_api)
-        self._callbacks.register(self._audio_api._on_timestep)
+        self._timestep_callbacks.append(self._audio_api._on_timestep)
 
         self._proxy_scene = ProxyScene(
             server=self,
@@ -154,7 +163,7 @@ class Viser4dServer(_viser.ViserServer):
                 self.gui, self._playback
             )
             self._playback.add_listener(self._playback_controls)
-            self._callbacks.register(self._playback_controls._on_timestep)
+            self._timestep_callbacks.append(self._playback_controls._on_timestep)
         else:
             self._playback_controls = None
 
@@ -194,12 +203,8 @@ class Viser4dServer(_viser.ViserServer):
         finally:
             self._proxy_scene._set_time(None)
             if self._playback.current_time == t:
-
-                def _refresh() -> None:
-                    self._render_pipeline.reset()
-                    self._render_pipeline.schedule_render(t)
-
-                self.get_event_loop().call_soon_threadsafe(_refresh)
+                self._playback.invalidate_applied_state()
+                self._playback.request_render(t)
 
     def play(self, fps: float, loop: bool = True) -> None:
         """Start playback of the timeline.
@@ -251,7 +256,7 @@ class Viser4dServer(_viser.ViserServer):
 
     def get_thread_pool(self) -> ThreadPoolExecutor:
         """Return the callback thread pool for offloading work outside the event loop."""
-        return self._callbacks.thread_pool
+        return self._callback_executor
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         """Register a callback to be invoked when the timestep changes.
@@ -271,12 +276,13 @@ class Viser4dServer(_viser.ViserServer):
             ...     update_body_meshes(t)
             >>> server.on_timestep_change(on_timestep)
         """
-        self._callbacks.register(callback)
+        self._timestep_callbacks.append(callback)
 
     def stop(self) -> None:
         """Stop the server and release worker threads."""
         try:
             super().stop()
         finally:
-            self._render_pipeline.shutdown()
-            self._callbacks.shutdown()
+            self._playback.shutdown()
+            self._callback_executor.shutdown(wait=False, cancel_futures=True)
+            self._timestep_callbacks.clear()

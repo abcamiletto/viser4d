@@ -11,7 +11,6 @@ class PlaybackControls:
 
     def __init__(self, gui: Any, controller: PlaybackController) -> None:
         self._controller = controller
-        self._playing = False
         self._suppress_fps = False
 
         with gui.add_folder("Playback"):
@@ -44,15 +43,9 @@ class PlaybackControls:
     # Transport listener methods
 
     def on_play(self, step: int, fps: float) -> None:
-        if self._playing:
-            return
-        self._playing = True
         self._play_button.label = "Pause"
 
     def on_pause(self, step: int) -> None:
-        if not self._playing:
-            return
-        self._playing = False
         self._play_button.label = "Play"
 
     def on_seek(self, step: int, fps: float) -> None:
@@ -83,12 +76,10 @@ class PlaybackControls:
             self._controller.seek(next_step)
 
     def _on_play_button(self, _event) -> None:
-        self._playing = not self._playing
-        self._play_button.label = "Pause" if self._playing else "Play"
-        if self._playing:
-            self._controller.play(self._fps_slider.value)
-        else:
+        if self._controller.is_playing():
             self._controller.pause()
+        else:
+            self._controller.play(self._fps_slider.value)
 
     def _on_fps(self, event) -> None:
         if self._suppress_fps:

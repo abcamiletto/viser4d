@@ -1,13 +1,14 @@
-"""Playback controller — owns play/pause/seek state and transport listeners."""
+"""Playback controller — owns play/pause/seek and render application state."""
 
 from __future__ import annotations
 
 import asyncio
 import threading
 import time
-from typing import Protocol
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Protocol
 
-from .render import RenderPipeline
+from .timeline import SceneRenderer, Timeline
 
 
 class TransportListener(Protocol):
@@ -23,18 +24,32 @@ class PlaybackController:
         num_steps: int,
         fps: float,
         event_loop: asyncio.AbstractEventLoop,
-        render_pipeline: RenderPipeline,
+        timeline: Timeline,
+        renderer: SceneRenderer,
+        on_render_complete: Callable[[int, list[threading.Event]], None],
     ) -> None:
         self._num_steps = num_steps
         self._current_time = 0
         self._fps = fps if fps > 0 else 1.0
         self._event_loop = event_loop
-        self._render_pipeline = render_pipeline
+        self._timeline = timeline
+        self._renderer = renderer
+        self._on_render_complete = on_render_complete
+
         self._playback_task: asyncio.Task[None] | None = None
-        self._queued_seek: int | None = None
-        self._seek_flush_scheduled = False
-        self._pending_done_events: list[threading.Event] = []
         self._listeners: list[TransportListener] = []
+
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="viser4d-render",
+        )
+        self._applied_time: int | None = None
+        self._render_in_flight = False
+
+        self._pending_target: int | None = None
+        self._pending_interrupt_playback = False
+        self._pending_notify_seek = False
+        self._pending_done_events: list[threading.Event] = []
 
     @property
     def current_time(self) -> int:
@@ -62,11 +77,35 @@ class PlaybackController:
         if blocking:
             done = threading.Event()
             self._event_loop.call_soon_threadsafe(
-                self._queue_seek_on_loop, t, done
+                self._queue_render_request_on_loop,
+                t,
+                done,
+                True,
+                True,
             )
             done.wait()
         else:
-            self._event_loop.call_soon_threadsafe(self._queue_seek_on_loop, t)
+            self._event_loop.call_soon_threadsafe(
+                self._queue_render_request_on_loop,
+                t,
+                None,
+                True,
+                True,
+            )
+
+    def request_render(self, t: int) -> None:
+        """Schedule a render without seek transport side effects."""
+        assert 0 <= t < self._num_steps
+        self._event_loop.call_soon_threadsafe(
+            self._queue_render_request_on_loop,
+            t,
+            None,
+            False,
+            False,
+        )
+
+    def invalidate_applied_state(self) -> None:
+        self._event_loop.call_soon_threadsafe(self._invalidate_applied_state_on_loop)
 
     def play(self, fps: float, loop: bool = True) -> None:
         self.set_fps(fps)
@@ -80,32 +119,79 @@ class PlaybackController:
         for listener in self._listeners:
             listener.on_fps_change(self._fps, self._current_time)
 
-    def _queue_seek_on_loop(
-        self, t: int, done: threading.Event | None = None
+    def shutdown(self) -> None:
+        try:
+            self._event_loop.call_soon_threadsafe(self._stop_playback_task)
+        except RuntimeError:
+            # Server loop may already be closed during shutdown.
+            self._stop_playback_task()
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def _invalidate_applied_state_on_loop(self) -> None:
+        self._renderer.reset()
+        self._applied_time = None
+
+    def _queue_render_request_on_loop(
+        self,
+        t: int,
+        done: threading.Event | None,
+        interrupt_playback: bool,
+        notify_seek: bool,
     ) -> None:
         if done is not None:
             self._pending_done_events.append(done)
-        self._queued_seek = t
-        if self._seek_flush_scheduled:
-            return
-        self._seek_flush_scheduled = True
-        self._event_loop.call_soon(self._flush_seek_on_loop)
+        self._pending_target = t
+        self._pending_interrupt_playback = (
+            self._pending_interrupt_playback or interrupt_playback
+        )
+        self._pending_notify_seek = self._pending_notify_seek or notify_seek
+        self._pump_render_on_loop()
 
-    def _flush_seek_on_loop(self) -> None:
-        self._seek_flush_scheduled = False
-        t = self._queued_seek
-        self._queued_seek = None
-        if t is None:
-            for ev in self._pending_done_events:
-                ev.set()
-            self._pending_done_events.clear()
+    def _pump_render_on_loop(self) -> None:
+        if self._render_in_flight:
             return
-        self._stop_playback_task()
-        self._render_pipeline.transfer_done_events(self._pending_done_events)
+
+        target = self._pending_target
+        if target is None:
+            return
+
+        done_events = list(self._pending_done_events)
         self._pending_done_events.clear()
-        self._render_pipeline.schedule_render(t)
-        for listener in self._listeners:
-            listener.on_seek(t, self._fps)
+
+        interrupt_playback = self._pending_interrupt_playback
+        notify_seek = self._pending_notify_seek
+        self._pending_target = None
+        self._pending_interrupt_playback = False
+        self._pending_notify_seek = False
+
+        if interrupt_playback:
+            self._stop_playback_task()
+
+        if notify_seek:
+            for listener in self._listeners:
+                listener.on_seek(target, self._fps)
+
+        self._render_in_flight = True
+        from_time = self._applied_time
+        future = self._executor.submit(self._timeline.diff_between, from_time, target)
+        future.add_done_callback(
+            lambda fut, tt=target, evs=done_events: self._event_loop.call_soon_threadsafe(
+                self._on_diff_ready, tt, fut.result(), evs
+            )
+        )
+
+    def _on_diff_ready(
+        self,
+        target_time: int,
+        diff: Any,
+        done_events: list[threading.Event],
+    ) -> None:
+        self._render_in_flight = False
+        self._renderer.apply_diff(diff)
+        self._applied_time = target_time
+        self._current_time = target_time
+        self._on_render_complete(target_time, done_events)
+        self._pump_render_on_loop()
 
     def _start_playback(self, loop: bool) -> None:
         if not self.is_playing():
@@ -140,7 +226,7 @@ class PlaybackController:
                 index = min(index + frames_behind, self._num_steps - 1)
                 next_frame_time += frames_behind * frame_duration
 
-            self._render_pipeline.schedule_render(index)
+            self._queue_render_request_on_loop(index, None, False, False)
 
             index += 1
             next_frame_time += frame_duration

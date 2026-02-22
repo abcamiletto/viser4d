@@ -286,22 +286,17 @@ class AudioApi:
     def _sync_client_playback_state(self, client: ClientHandle) -> None:
         self._send_transport_to_client(client, hard_sync=True)
 
-    def _build_transport_payload(self, step: int, *, hard_sync: bool) -> dict[str, Any]:
+    def _transport_js(self, step: int, *, hard_sync: bool) -> str:
         with self._state_lock:
             self._transport_seq += 1
-            playback_fps = _sanitize_fps(self._playback_fps, default=self._timeline_fps)
             payload = {
                 "seq": self._transport_seq,
                 "step": int(step),
                 "timeline_fps": self._timeline_fps,
-                "playback_fps": playback_fps,
+                "playback_fps": _sanitize_fps(self._playback_fps, default=self._timeline_fps),
                 "playing": self._playing,
                 "hard_sync": hard_sync,
             }
-        return payload
-
-    def _transport_js(self, step: int, *, hard_sync: bool) -> str:
-        payload = self._build_transport_payload(step, hard_sync=hard_sync)
         return (
             "window.__viser4d_audio.setTransport("
             f"{json.dumps(payload, separators=(',', ':'))});"
