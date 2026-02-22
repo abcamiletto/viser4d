@@ -134,6 +134,10 @@ class AudioHandle:
         self._samples = _to_int16_samples(value)
         self._api._push_track_update(self, hard_sync=False)
 
+    def append(self, data: np.ndarray) -> None:
+        """Append samples contiguously to this track."""
+        self._api.append_to_track(self._name, data)
+
     def remove(self) -> None:
         """Remove this audio track."""
         self._api.remove_track(self._name)
@@ -210,11 +214,27 @@ class AudioApi:
                     f"Audio track {name!r} already exists with sample_rate="
                     f"{handle._sample_rate}; got {sample_rate}."
                 )
-
-            handle._samples = np.concatenate((handle._samples, incoming), axis=0)
+            self._append_samples(handle, incoming)
 
         self._push_track_update(handle, hard_sync=not is_update)
         return handle
+
+    def append_to_track(self, name: str, data: np.ndarray) -> None:
+        """Append samples to an existing track by name."""
+        handle = self._tracks.get(name)
+        if handle is None:
+            raise ValueError(f"Audio track {name!r} does not exist.")
+        incoming = _to_int16_samples(data)
+        self._append_samples(handle, incoming)
+        self._push_track_update(handle, hard_sync=False)
+
+    def _append_samples(self, handle: AudioHandle, incoming: np.ndarray) -> None:
+        if handle._samples.shape[1] != incoming.shape[1]:
+            raise ValueError(
+                f"Audio track {handle._name!r} already exists with channels="
+                f"{handle._samples.shape[1]}; got {incoming.shape[1]}."
+            )
+        handle._samples = np.concatenate((handle._samples, incoming), axis=0)
 
     def _push_track_update(self, handle: AudioHandle, *, hard_sync: bool) -> None:
         for client in self._server.get_clients().values():
