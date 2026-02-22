@@ -282,19 +282,43 @@ class Viser4dServer(_viser.ViserServer):
         """
         self._timestep_callbacks.append(callback)
 
-    def export_viser(self, path: str | Path) -> Path:
-        """Serialize the current scene state to a ``.viser`` file.
+    def serialize(
+        self,
+        path: str | Path | None = None,
+        *,
+        static_scene: bool = False,
+        start_timestep: int = 0,
+        end_timestep: int | None = None,
+        fps: float = 30.0,
+    ) -> bytes:
+        """Serialize scene data to viser bytes, optionally across timesteps.
 
         Args:
-            path: Output file path.
+            path: Optional output file path. If provided, bytes are also written.
+            static_scene: If ``True``, only serialize the current scene snapshot.
+            start_timestep: First timestep to render when ``static_scene=False``.
+            end_timestep: Last timestep to render when ``static_scene=False``.
+                Defaults to ``num_steps - 1``.
+            fps: Playback FPS used for inserted sleep durations.
 
         Returns:
-            The output path.
+            Serialized ``.viser`` bytes.
         """
-        output_path = Path(path)
         serializer = self.get_scene_serializer()
-        output_path.write_bytes(serializer.serialize())
-        return output_path
+
+        if not static_scene:
+            assert fps > 0
+            assert 0 <= start_timestep < self.num_steps
+            last_timestep = self.num_steps - 1 if end_timestep is None else end_timestep
+            assert start_timestep <= last_timestep < self.num_steps
+            for t in range(start_timestep, last_timestep + 1):
+                self.seek(t, blocking=True)
+                serializer.insert_sleep(1.0 / fps)
+
+        data = serializer.serialize()
+        if path is not None:
+            Path(path).write_bytes(data)
+        return data
 
     def stop(self) -> None:
         """Stop the server and release worker threads."""

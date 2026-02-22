@@ -91,18 +91,25 @@ Callbacks are invoked after viser4d applies its own recorded state, so you can
 mix both approaches - record some operations with `at(t)` and handle others via
 callbacks.
 
-## Export `.viser` snapshots
+## Serialize `.viser` recordings
 
-To save the current rendered scene state as a `.viser` file:
+To serialize across timesteps, use `server.serialize(...)`:
 
 ```python
 import viser4d
 
 server = viser4d.Viser4dServer(num_steps=100)
-# ... record and seek to the timestep you want to export ...
-server.seek(42, blocking=True)
-server.export_viser("snapshot.viser")
+# ... record timeline data ...
+server.serialize(
+    "recording.viser",
+    static_scene=False,
+    start_timestep=0,
+    end_timestep=99,
+    fps=30.0,
+)
 ```
+
+Set `static_scene=True` to serialize only the current snapshot.
 
 ## Streaming audio append
 

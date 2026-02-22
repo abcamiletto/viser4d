@@ -427,7 +427,7 @@ def test_proxy_handle_error_before_seek(server: viser4d.Viser4dServer) -> None:
         _ = handle.position
 
 
-def test_export_viser_writes_snapshot(
+def test_serialize_writes_snapshot_to_path(
     server: viser4d.Viser4dServer, tmp_path: Path
 ) -> None:
     with server.at(0):
@@ -436,10 +436,36 @@ def test_export_viser_writes_snapshot(
 
     server.seek(0, blocking=True)
     output = tmp_path / "scene.viser"
-    returned = server.export_viser(output)
+    data = server.serialize(output, static_scene=True)
 
-    assert returned == output
     assert output.exists()
-    data = output.read_bytes()
+    assert output.read_bytes() == data
     assert len(data) > 8
     assert int.from_bytes(data[:8], "little") > 0
+
+
+def test_serialize_dynamic_across_timesteps(server: viser4d.Viser4dServer) -> None:
+    seek_calls: list[tuple[int, bool]] = []
+    sleep_durations: list[float] = []
+
+    class _FakeSerializer:
+        def insert_sleep(self, duration: float) -> None:
+            sleep_durations.append(duration)
+
+        def serialize(self) -> bytes:
+            return b"viser-bytes"
+
+    serializer = _FakeSerializer()
+    server.get_scene_serializer = lambda: serializer  # type: ignore[method-assign]
+    server.seek = lambda t, blocking=False: seek_calls.append((t, blocking))  # type: ignore[method-assign]
+
+    data = server.serialize(
+        static_scene=False,
+        start_timestep=0,
+        end_timestep=2,
+        fps=20.0,
+    )
+
+    assert data == b"viser-bytes"
+    assert seek_calls == [(0, True), (1, True), (2, True)]
+    assert sleep_durations == [0.05, 0.05, 0.05]
