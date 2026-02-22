@@ -1,9 +1,12 @@
 from collections.abc import Callable, Iterator
 import threading
 import time
+from pathlib import Path
 
+import msgspec
 import pytest
 import viser4d
+import zstandard
 
 
 @pytest.fixture
@@ -39,6 +42,16 @@ def _wait_until(
             return True
         time.sleep(interval)
     return predicate()
+
+
+def _decode_viser_bytes(data: bytes) -> dict[str, object]:
+    uncompressed_size = int.from_bytes(data[:8], "little")
+    payload = zstandard.ZstdDecompressor().decompress(
+        data[8:], max_output_size=uncompressed_size
+    )
+    decoded = msgspec.msgpack.decode(payload)
+    assert isinstance(decoded, dict)
+    return decoded
 
 
 def test_seek_applies_recorded_updates(server: viser4d.Viser4dServer) -> None:
@@ -424,3 +437,28 @@ def test_proxy_handle_error_before_seek(server: viser4d.Viser4dServer) -> None:
 
     with pytest.raises(RuntimeError, match="not in live scene"):
         _ = handle.position
+
+
+def test_serialize_integration_with_real_state_serializer(
+    server: viser4d.Viser4dServer, tmp_path: Path
+) -> None:
+    with server.at(0):
+        handle = server.scene.add_frame("/frame", axes_length=0.1)
+        handle.position = (0.0, 0.0, 0.0)
+    with server.at(1):
+        handle.position = (1.0, 0.0, 0.0)
+    with server.at(2):
+        handle.position = (2.0, 0.0, 0.0)
+
+    output = tmp_path / "recording.viser"
+    data = server.serialize(output)
+
+    assert output.exists()
+    assert output.read_bytes() == data
+    assert len(data) > 8
+    assert int.from_bytes(data[:8], "little") > 0
+    decoded = _decode_viser_bytes(data)
+    assert decoded["durationSeconds"] == pytest.approx(3.0 / 30.0)
+    messages = decoded["messages"]
+    assert isinstance(messages, list)
+    assert len(messages) > 0

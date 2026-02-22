@@ -91,6 +91,22 @@ Callbacks are invoked after viser4d applies its own recorded state, so you can
 mix both approaches - record some operations with `at(t)` and handle others via
 callbacks.
 
+## Serialize `.viser` recordings
+
+To serialize across timesteps, use `server.serialize(...)`:
+
+```python
+import viser4d
+
+server = viser4d.Viser4dServer(num_steps=100)
+# ... record timeline data ...
+server.serialize(
+    "recording.viser",
+    start_timestep=0,
+    end_timestep=-1,  # -1 means final timestep
+)
+```
+
 ## Streaming audio append
 
 For audio that arrives incrementally, create a track once inside `at(t)` and
