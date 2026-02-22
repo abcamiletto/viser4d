@@ -5,9 +5,16 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import Any
+from typing import Protocol
 
 from .render import RenderPipeline
+
+
+class TransportListener(Protocol):
+    def on_play(self, step: int, fps: float) -> None: ...
+    def on_pause(self, step: int) -> None: ...
+    def on_seek(self, step: int, fps: float) -> None: ...
+    def on_fps_change(self, fps: float, step: int) -> None: ...
 
 
 class PlaybackController:
@@ -27,7 +34,7 @@ class PlaybackController:
         self._queued_seek: int | None = None
         self._seek_flush_scheduled = False
         self._pending_done_events: list[threading.Event] = []
-        self._listeners: list[Any] = []
+        self._listeners: list[TransportListener] = []
 
     @property
     def current_time(self) -> int:
@@ -47,7 +54,7 @@ class PlaybackController:
     def is_playing(self) -> bool:
         return self._playback_task is not None and not self._playback_task.done()
 
-    def add_listener(self, listener: Any) -> None:
+    def add_listener(self, listener: TransportListener) -> None:
         self._listeners.append(listener)
 
     def seek(self, t: int, blocking: bool = False) -> None:
@@ -70,11 +77,8 @@ class PlaybackController:
 
     def set_fps(self, fps: float) -> None:
         self._fps = fps if fps > 0 else 1.0
-        self._notify("on_fps_change", self._fps, self._current_time)
-
-    def _notify(self, method: str, *args: Any) -> None:
         for listener in self._listeners:
-            getattr(listener, method)(*args)
+            listener.on_fps_change(self._fps, self._current_time)
 
     def _queue_seek_on_loop(
         self, t: int, done: threading.Event | None = None
@@ -100,16 +104,19 @@ class PlaybackController:
         self._render_pipeline.transfer_done_events(self._pending_done_events)
         self._pending_done_events.clear()
         self._render_pipeline.schedule_render(t)
-        self._notify("on_seek", t, self._fps)
+        for listener in self._listeners:
+            listener.on_seek(t, self._fps)
 
     def _start_playback(self, loop: bool) -> None:
         if not self.is_playing():
             self._playback_task = asyncio.create_task(self._playback_loop(loop))
-        self._notify("on_play", self._current_time, self._fps)
+        for listener in self._listeners:
+            listener.on_play(self._current_time, self._fps)
 
     def _pause_on_loop(self) -> None:
         self._stop_playback_task()
-        self._notify("on_pause", self._current_time)
+        for listener in self._listeners:
+            listener.on_pause(self._current_time)
 
     def _stop_playback_task(self) -> None:
         if self._playback_task is not None and not self._playback_task.done():
@@ -143,12 +150,14 @@ class PlaybackController:
                     break
                 index = 0
                 next_frame_time = time.monotonic()
-                self._notify("on_play", 0, self._fps)
+                for listener in self._listeners:
+                    listener.on_play(0, self._fps)
                 continue
 
             delay = next_frame_time - time.monotonic()
             await asyncio.sleep(delay if delay > 0 else 0)
 
-        self._notify("on_pause", self._current_time)
+        for listener in self._listeners:
+            listener.on_pause(self._current_time)
         if self._playback_task is asyncio.current_task():
             self._playback_task = None
