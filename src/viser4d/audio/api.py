@@ -367,7 +367,9 @@ class AudioApi:
         base64_wav = base64.b64encode(
             _numpy_to_wav(track._samples, track._sample_rate)
         ).decode("ascii")
-        return js.call("addTrack", track._name, base64_wav, track._start_step, track._volume)
+        return js.call(
+            "addTrack", track._name, base64_wav, track._start_step, track._volume
+        )
 
     def _send_transport_to_client(
         self,
