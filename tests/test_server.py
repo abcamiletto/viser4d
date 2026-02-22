@@ -1,6 +1,7 @@
 from collections.abc import Callable, Iterator
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import viser4d
@@ -424,3 +425,21 @@ def test_proxy_handle_error_before_seek(server: viser4d.Viser4dServer) -> None:
 
     with pytest.raises(RuntimeError, match="not in live scene"):
         _ = handle.position
+
+
+def test_export_viser_writes_snapshot(
+    server: viser4d.Viser4dServer, tmp_path: Path
+) -> None:
+    with server.at(0):
+        handle = server.scene.add_frame("/frame", axes_length=0.1)
+        handle.position = (1.0, 2.0, 3.0)
+
+    server.seek(0, blocking=True)
+    output = tmp_path / "scene.viser"
+    returned = server.export_viser(output)
+
+    assert returned == output
+    assert output.exists()
+    data = output.read_bytes()
+    assert len(data) > 8
+    assert int.from_bytes(data[:8], "little") > 0

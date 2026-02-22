@@ -31,6 +31,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Iterator, cast
 
 import viser as _viser
@@ -280,6 +281,20 @@ class Viser4dServer(_viser.ViserServer):
             >>> server.on_timestep_change(on_timestep)
         """
         self._timestep_callbacks.append(callback)
+
+    def export_viser(self, path: str | Path) -> Path:
+        """Serialize the current scene state to a ``.viser`` file.
+
+        Args:
+            path: Output file path.
+
+        Returns:
+            The output path.
+        """
+        output_path = Path(path)
+        serializer = self.get_scene_serializer()
+        output_path.write_bytes(serializer.serialize())
+        return output_path
 
     def stop(self) -> None:
         """Stop the server and release worker threads."""
