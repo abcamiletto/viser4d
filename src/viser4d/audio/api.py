@@ -31,6 +31,7 @@ from viser._messages import RunJavascriptMessage
 
 if TYPE_CHECKING:
     from viser import ClientHandle
+    from viser.infra import StateSerializer
 
     from ..server import Viser4dServer
 
@@ -287,15 +288,7 @@ class AudioApi:
         self._send_js_to_client(client, _AUDIO_RUNTIME_JS)
 
     def _send_track_to_client(self, client: ClientHandle, track: AudioHandle) -> None:
-        base64_wav = base64.b64encode(
-            _numpy_to_wav(track._samples, track._sample_rate)
-        ).decode("ascii")
-        self._send_js_to_client(
-            client,
-            f"window.__viser4d_audio.addTrack("
-            f"{track._name!r}, {base64_wav!r}, "
-            f"{track._start_step}, {track._volume});",
-        )
+        self._send_js_to_client(client, self._track_add_js(track))
 
     def _sync_client_tracks(self, client: ClientHandle) -> None:
         """Send runtime + current track state to a single client."""
@@ -306,22 +299,87 @@ class AudioApi:
     def _sync_client_playback_state(self, client: ClientHandle) -> None:
         self._send_transport_to_client(client, hard_sync=True)
 
+    def serialize_into(
+        self,
+        serializer: StateSerializer,
+    ) -> bool:
+        """Insert audio runtime/track/transport messages into a .viser serializer."""
+        if not self._tracks:
+            return False
+
+        serializer._insert_message(RunJavascriptMessage(source=_AUDIO_RUNTIME_JS))
+        for track in self._tracks.values():
+            serializer._insert_message(
+                RunJavascriptMessage(source=self._track_add_js(track))
+            )
+        return True
+
+    def serialize_transport_into(
+        self,
+        serializer: StateSerializer,
+        *,
+        seq: int,
+        step: int,
+        fps: float,
+        hard_sync: bool,
+    ) -> None:
+        """Insert one serialized transport update."""
+        serializer._insert_message(
+            RunJavascriptMessage(
+                source=self._transport_source(
+                    seq=int(seq),
+                    step=int(step),
+                    playback_fps=_sanitize_fps(fps, default=self._timeline_fps),
+                    playing=True,
+                    hard_sync=hard_sync,
+                )
+            )
+        )
+
     def _transport_js(self, step: int, *, hard_sync: bool) -> str:
         with self._state_lock:
             self._transport_seq += 1
-            payload = {
-                "seq": self._transport_seq,
-                "step": int(step),
-                "timeline_fps": self._timeline_fps,
-                "playback_fps": _sanitize_fps(
+            return self._transport_source(
+                seq=self._transport_seq,
+                step=int(step),
+                playback_fps=_sanitize_fps(
                     self._playback_fps, default=self._timeline_fps
                 ),
-                "playing": self._playing,
-                "hard_sync": hard_sync,
-            }
+                playing=self._playing,
+                hard_sync=hard_sync,
+            )
+
+    def _transport_source(
+        self,
+        *,
+        seq: int,
+        step: int,
+        playback_fps: float,
+        playing: bool,
+        hard_sync: bool,
+    ) -> str:
+        payload = {
+            "seq": seq,
+            "step": step,
+            "timeline_fps": self._timeline_fps,
+            "playback_fps": playback_fps,
+            "playing": playing,
+            "hard_sync": hard_sync,
+        }
         return (
             "window.__viser4d_audio.setTransport("
             f"{json.dumps(payload, separators=(',', ':'))});"
+        )
+
+    @staticmethod
+    def _track_add_js(track: AudioHandle) -> str:
+        base64_wav = base64.b64encode(
+            _numpy_to_wav(track._samples, track._sample_rate)
+        ).decode("ascii")
+        return (
+            "window.__viser4d_audio.addTrack("
+            f"{track._name!r}, {base64_wav!r}, "
+            f"{track._start_step}, {track._volume});"
         )
 
     def _send_transport_to_client(

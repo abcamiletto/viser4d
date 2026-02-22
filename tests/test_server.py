@@ -2,6 +2,7 @@ from collections.abc import Callable, Iterator
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 import msgspec
 import pytest
@@ -442,9 +443,16 @@ def test_proxy_handle_error_before_seek(server: viser4d.Viser4dServer) -> None:
 def test_serialize_integration_with_real_state_serializer(
     server: viser4d.Viser4dServer, tmp_path: Path
 ) -> None:
+    import numpy as np
+
     with server.at(0):
         handle = server.scene.add_frame("/frame", axes_length=0.1)
         handle.position = (0.0, 0.0, 0.0)
+        server.scene.add_audio(
+            "/tone",
+            data=np.ones(64, dtype=np.float32),
+            sample_rate=16000,
+        )
     with server.at(1):
         handle.position = (1.0, 0.0, 0.0)
     with server.at(2):
@@ -462,3 +470,20 @@ def test_serialize_integration_with_real_state_serializer(
     messages = decoded["messages"]
     assert isinstance(messages, list)
     assert len(messages) > 0
+    run_js_sources: list[str] = []
+    for entry in messages:
+        if not isinstance(entry, list | tuple) or len(entry) != 2:
+            continue
+        _timestamp, msg = entry
+        if not isinstance(msg, dict):
+            continue
+        msg_dict = cast(dict[str, object], msg)
+        source = msg_dict.get("source")
+        if msg_dict.get("type") == "RunJavascriptMessage" and isinstance(source, str):
+            run_js_sources.append(source)
+    assert any(
+        "window.__viser4d_audio.addTrack(" in source for source in run_js_sources
+    )
+    assert any(
+        "window.__viser4d_audio.setTransport(" in source for source in run_js_sources
+    )
