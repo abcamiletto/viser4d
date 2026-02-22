@@ -19,22 +19,21 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import threading
 import wave
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from viser._messages import RunJavascriptMessage
 
+from . import js
+
 if TYPE_CHECKING:
     from viser import ClientHandle
+    from viser.infra import StateSerializer
 
     from ..server import Viser4dServer
-
-_AUDIO_RUNTIME_JS = (Path(__file__).parent / "runtime.js").read_text()
 
 
 def _sanitize_fps(value: float, *, default: float) -> float:
@@ -120,9 +119,7 @@ class AudioHandle:
         if self._volume == value:
             return
         self._volume = value
-        self._api._broadcast_js(
-            f"window.__viser4d_audio.setVolume({self._name!r}, {value});"
-        )
+        self._api._broadcast_js(js.call("setVolume", self._name, value))
 
     @property
     def waveform(self) -> np.ndarray:
@@ -251,9 +248,7 @@ class AudioApi:
         removed = self._tracks.pop(name, None)
         if removed is None:
             return
-        self._broadcast_js_to_initialized(
-            f"window.__viser4d_audio.removeTrack({name!r});"
-        )
+        self._broadcast_js_to_initialized(js.call("removeTrack", name))
 
     def on_play(self, current_step: int, fps: float) -> None:
         with self._state_lock:
@@ -284,18 +279,10 @@ class AudioApi:
         if client.client_id in self._initialized_clients:
             return
         self._initialized_clients.add(client.client_id)
-        self._send_js_to_client(client, _AUDIO_RUNTIME_JS)
+        self._send_js_to_client(client, js.RUNTIME)
 
     def _send_track_to_client(self, client: ClientHandle, track: AudioHandle) -> None:
-        base64_wav = base64.b64encode(
-            _numpy_to_wav(track._samples, track._sample_rate)
-        ).decode("ascii")
-        self._send_js_to_client(
-            client,
-            f"window.__viser4d_audio.addTrack("
-            f"{track._name!r}, {base64_wav!r}, "
-            f"{track._start_step}, {track._volume});",
-        )
+        self._send_js_to_client(client, self._track_add_js(track))
 
     def _sync_client_tracks(self, client: ClientHandle) -> None:
         """Send runtime + current track state to a single client."""
@@ -306,22 +293,77 @@ class AudioApi:
     def _sync_client_playback_state(self, client: ClientHandle) -> None:
         self._send_transport_to_client(client, hard_sync=True)
 
+    def serialize_timestep_into(
+        self,
+        serializer: StateSerializer,
+        *,
+        step: int,
+        start_timestep: int,
+        fps: float,
+    ) -> None:
+        """Insert audio JS needed for one serialized timestep."""
+        if not self._tracks:
+            return
+
+        hard_sync = step == start_timestep
+        if hard_sync:
+            serializer._insert_message(RunJavascriptMessage(source=js.RUNTIME))
+            for track in self._tracks.values():
+                serializer._insert_message(
+                    RunJavascriptMessage(source=self._track_add_js(track))
+                )
+
+        serializer._insert_message(
+            RunJavascriptMessage(
+                source=self._transport_source(
+                    seq=(step - start_timestep + 1),
+                    step=int(step),
+                    playback_fps=_sanitize_fps(fps, default=self._timeline_fps),
+                    playing=True,
+                    hard_sync=hard_sync,
+                )
+            )
+        )
+
     def _transport_js(self, step: int, *, hard_sync: bool) -> str:
         with self._state_lock:
             self._transport_seq += 1
-            payload = {
-                "seq": self._transport_seq,
-                "step": int(step),
-                "timeline_fps": self._timeline_fps,
-                "playback_fps": _sanitize_fps(
+            return self._transport_source(
+                seq=self._transport_seq,
+                step=int(step),
+                playback_fps=_sanitize_fps(
                     self._playback_fps, default=self._timeline_fps
                 ),
-                "playing": self._playing,
-                "hard_sync": hard_sync,
-            }
-        return (
-            "window.__viser4d_audio.setTransport("
-            f"{json.dumps(payload, separators=(',', ':'))});"
+                playing=self._playing,
+                hard_sync=hard_sync,
+            )
+
+    def _transport_source(
+        self,
+        *,
+        seq: int,
+        step: int,
+        playback_fps: float,
+        playing: bool,
+        hard_sync: bool,
+    ) -> str:
+        payload = {
+            "seq": seq,
+            "step": step,
+            "timeline_fps": self._timeline_fps,
+            "playback_fps": playback_fps,
+            "playing": playing,
+            "hard_sync": hard_sync,
+        }
+        return js.call("setTransport", payload)
+
+    @staticmethod
+    def _track_add_js(track: AudioHandle) -> str:
+        base64_wav = base64.b64encode(
+            _numpy_to_wav(track._samples, track._sample_rate)
+        ).decode("ascii")
+        return js.call(
+            "addTrack", track._name, base64_wav, track._start_step, track._volume
         )
 
     def _send_transport_to_client(

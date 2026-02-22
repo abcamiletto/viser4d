@@ -306,6 +306,12 @@ class Viser4dServer(_viser.ViserServer):
         assert start_timestep <= last_timestep < self.num_steps
         assert self._playback.fps > 0
         for t in range(start_timestep, last_timestep + 1):
+            self._audio_api.serialize_timestep_into(
+                serializer,
+                step=t,
+                start_timestep=start_timestep,
+                fps=self._playback.fps,
+            )
             self.seek(t, blocking=True)
             serializer.insert_sleep(1.0 / self._playback.fps)
 
