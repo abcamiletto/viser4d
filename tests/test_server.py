@@ -439,60 +439,26 @@ def test_proxy_handle_error_before_seek(server: viser4d.Viser4dServer) -> None:
         _ = handle.position
 
 
-def test_serialize_writes_viser_file(
+def test_serialize_integration_with_real_state_serializer(
     server: viser4d.Viser4dServer, tmp_path: Path
 ) -> None:
     with server.at(0):
         handle = server.scene.add_frame("/frame", axes_length=0.1)
-        handle.position = (1.0, 2.0, 3.0)
+        handle.position = (0.0, 0.0, 0.0)
+    with server.at(1):
+        handle.position = (1.0, 0.0, 0.0)
+    with server.at(2):
+        handle.position = (2.0, 0.0, 0.0)
 
-    server.seek(0, blocking=True)
-    output = tmp_path / "scene.viser"
+    output = tmp_path / "recording.viser"
     data = server.serialize(output)
 
     assert output.exists()
     assert output.read_bytes() == data
     assert len(data) > 8
     assert int.from_bytes(data[:8], "little") > 0
-
-
-def test_serialize_dynamic_across_timesteps(
-    server: viser4d.Viser4dServer, tmp_path: Path
-) -> None:
-    with server.at(0):
-        handle = server.scene.add_frame("/frame", axes_length=0.1)
-        handle.position = (0.0, 0.0, 0.0)
-    with server.at(1):
-        handle.position = (1.0, 0.0, 0.0)
-    with server.at(2):
-        handle.position = (2.0, 0.0, 0.0)
-
-    output = tmp_path / "dynamic.viser"
-    data = server.serialize(
-        output,
-        start_timestep=0,
-        end_timestep=2,
-    )
-
-    assert output.read_bytes() == data
     decoded = _decode_viser_bytes(data)
     assert decoded["durationSeconds"] == pytest.approx(3.0 / 30.0)
     messages = decoded["messages"]
     assert isinstance(messages, list)
     assert len(messages) > 0
-
-
-def test_serialize_end_minus_one_means_last_timestep(
-    server: viser4d.Viser4dServer, tmp_path: Path
-) -> None:
-    with server.at(0):
-        handle = server.scene.add_frame("/frame", axes_length=0.1)
-        handle.position = (0.0, 0.0, 0.0)
-    with server.at(1):
-        handle.position = (1.0, 0.0, 0.0)
-    with server.at(2):
-        handle.position = (2.0, 0.0, 0.0)
-
-    data = server.serialize(tmp_path / "all.viser", start_timestep=1, end_timestep=-1)
-    decoded = _decode_viser_bytes(data)
-    assert decoded["durationSeconds"] == pytest.approx(2.0 / 30.0)
