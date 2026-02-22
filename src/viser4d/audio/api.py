@@ -23,7 +23,7 @@ import json
 import threading
 import wave
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -293,7 +293,9 @@ class AudioApi:
                 "seq": self._transport_seq,
                 "step": int(step),
                 "timeline_fps": self._timeline_fps,
-                "playback_fps": _sanitize_fps(self._playback_fps, default=self._timeline_fps),
+                "playback_fps": _sanitize_fps(
+                    self._playback_fps, default=self._timeline_fps
+                ),
                 "playing": self._playing,
                 "hard_sync": hard_sync,
             }
@@ -321,9 +323,7 @@ class AudioApi:
     def _broadcast_transport_to_initialized(self, step: int) -> None:
         if not self._tracks:
             return
-        self._broadcast_js_to_initialized(
-            self._transport_js(step, hard_sync=False)
-        )
+        self._broadcast_js_to_initialized(self._transport_js(step, hard_sync=False))
 
     def _send_js_to_client(self, client: ClientHandle, source: str) -> None:
         client._websock_connection.queue_message(RunJavascriptMessage(source=source))

@@ -23,9 +23,7 @@ class PlaybackControls:
                 initial_value=0,
                 order=1,
             )
-            self._step_buttons = gui.add_button_group(
-                "", ("Prev", "Next"), order=2
-            )
+            self._step_buttons = gui.add_button_group("", ("Prev", "Next"), order=2)
             self._fps_slider = gui.add_slider(
                 "FPS",
                 min=1.0,

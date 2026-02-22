@@ -217,9 +217,7 @@ class SceneRenderer:
         self._nodes[target] = node
         self._apply_set_values(node, state.set_values)
 
-    def update_node_members(
-        self, target: str, updates: dict[str, _ValueState]
-    ) -> None:
+    def update_node_members(self, target: str, updates: dict[str, _ValueState]) -> None:
         node = self._nodes.get(target)
         if node is None:
             raise RuntimeError(

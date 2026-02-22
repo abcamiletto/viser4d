@@ -31,16 +31,17 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, cast
 
 import viser as _viser
 
 from .audio import AudioApi
 from .gui import PlaybackControls
 from .op import CompressionMode
-from .playback import PlaybackController
+from .playback import PlaybackController, TransportListener
 from .proxy import ProxyScene
 from .timeline import SceneRenderer, Timeline
+
 
 class Viser4dServer(_viser.ViserServer):
     """Timeline-aware wrapper around :class:`viser.ViserServer`.
@@ -146,7 +147,7 @@ class Viser4dServer(_viser.ViserServer):
 
         # Audio and GUI
         self._audio_api = AudioApi(self, timeline_fps=fps if fps > 0 else 1.0)
-        self._playback.add_listener(self._audio_api)
+        self._playback.add_listener(cast(TransportListener, self._audio_api))
         self._timestep_callbacks.append(self._audio_api._on_timestep)
 
         self._proxy_scene = ProxyScene(
@@ -162,7 +163,9 @@ class Viser4dServer(_viser.ViserServer):
             self._playback_controls: PlaybackControls | None = PlaybackControls(
                 self.gui, self._playback
             )
-            self._playback.add_listener(self._playback_controls)
+            self._playback.add_listener(
+                cast(TransportListener, self._playback_controls)
+            )
             self._timestep_callbacks.append(self._playback_controls._on_timestep)
         else:
             self._playback_controls = None

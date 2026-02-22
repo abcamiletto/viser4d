@@ -190,8 +190,10 @@ class PlaybackController:
         done_events = list(request.done_events)
         future = self._executor.submit(self._timeline.diff_between, from_time, target)
         future.add_done_callback(
-            lambda fut, tt=target, evs=done_events: self._event_loop.call_soon_threadsafe(
-                self._on_diff_ready, tt, fut.result(), evs
+            lambda fut, tt=target, evs=done_events: (
+                self._event_loop.call_soon_threadsafe(
+                    self._on_diff_ready, tt, fut.result(), evs
+                )
             )
         )
 
