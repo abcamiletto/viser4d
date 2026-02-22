@@ -103,12 +103,9 @@ server = viser4d.Viser4dServer(num_steps=100)
 server.serialize(
     "recording.viser",
     start_timestep=0,
-    end_timestep=99,
+    end_timestep=-1,  # -1 means final timestep
 )
 ```
-
-Call `server.serialize("snapshot.viser")` to serialize only the current
-snapshot.
 
 ## Streaming audio append
 
