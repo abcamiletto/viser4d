@@ -91,6 +91,32 @@ Callbacks are invoked after viser4d applies its own recorded state, so you can
 mix both approaches - record some operations with `at(t)` and handle others via
 callbacks.
 
+## Streaming audio append
+
+For audio that arrives incrementally, create a track once inside `at(t)` and
+append chunks through the returned handle:
+
+```python
+import numpy as np
+import viser4d
+
+server = viser4d.Viser4dServer(num_steps=300, fps=30)
+
+with server.at(0):
+    audio = server.scene.add_audio(
+        "/stream/audio",
+        data=np.zeros(1600, dtype=np.float32),
+        sample_rate=16000,
+    )
+
+for _ in range(120):
+    chunk = np.random.uniform(-0.05, 0.05, size=(1600,)).astype(np.float32)
+    audio.append(chunk)
+```
+
+`AudioHandle.append(...)` extends the same track contiguously (same channel
+count).
+
 ## How it works
 
 Context determines behavior. `server.scene` always returns the same `ProxyScene` object, but

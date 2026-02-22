@@ -69,3 +69,29 @@ def test_add_audio_same_name_rejects_channel_mismatch(
             data=np.zeros((32, 2), dtype=np.float32),
             sample_rate=16000,
         )
+
+
+def test_audio_handle_append_extends_waveform(server: viser4d.Viser4dServer) -> None:
+    with server.at(0):
+        handle = server.scene.add_audio(
+            "/tone",
+            data=np.zeros(32, dtype=np.float32),
+            sample_rate=16000,
+        )
+
+    handle.append(np.ones(16, dtype=np.float32))
+    assert handle.waveform.shape == (48, 1)
+
+
+def test_audio_handle_append_rejects_channel_mismatch(
+    server: viser4d.Viser4dServer,
+) -> None:
+    with server.at(0):
+        handle = server.scene.add_audio(
+            "/tone",
+            data=np.zeros((32, 2), dtype=np.float32),
+            sample_rate=16000,
+        )
+
+    with pytest.raises(ValueError, match="channels"):
+        handle.append(np.ones(16, dtype=np.float32))
