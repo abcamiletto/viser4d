@@ -19,29 +19,21 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import threading
 import wave
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from viser._messages import RunJavascriptMessage
 
+from . import js
+
 if TYPE_CHECKING:
     from viser import ClientHandle
     from viser.infra import StateSerializer
 
     from ..server import Viser4dServer
-
-_AUDIO_RUNTIME_JS = (Path(__file__).parent / "runtime.js").read_text()
-
-
-def _js_call(method: str, *args: object) -> str:
-    """Build a ``window.__viser4d_audio.<method>(...)`` JS call string."""
-    serialized = ", ".join(json.dumps(a) for a in args)
-    return f"window.__viser4d_audio.{method}({serialized});"
 
 
 def _sanitize_fps(value: float, *, default: float) -> float:
@@ -127,7 +119,7 @@ class AudioHandle:
         if self._volume == value:
             return
         self._volume = value
-        self._api._broadcast_js(_js_call("setVolume", self._name, value))
+        self._api._broadcast_js(js.call("setVolume", self._name, value))
 
     @property
     def waveform(self) -> np.ndarray:
@@ -256,7 +248,7 @@ class AudioApi:
         removed = self._tracks.pop(name, None)
         if removed is None:
             return
-        self._broadcast_js_to_initialized(_js_call("removeTrack", name))
+        self._broadcast_js_to_initialized(js.call("removeTrack", name))
 
     def on_play(self, current_step: int, fps: float) -> None:
         with self._state_lock:
@@ -287,7 +279,7 @@ class AudioApi:
         if client.client_id in self._initialized_clients:
             return
         self._initialized_clients.add(client.client_id)
-        self._send_js_to_client(client, _AUDIO_RUNTIME_JS)
+        self._send_js_to_client(client, js.RUNTIME)
 
     def _send_track_to_client(self, client: ClientHandle, track: AudioHandle) -> None:
         self._send_js_to_client(client, self._track_add_js(track))
@@ -309,7 +301,7 @@ class AudioApi:
         if not self._tracks:
             return False
 
-        serializer._insert_message(RunJavascriptMessage(source=_AUDIO_RUNTIME_JS))
+        serializer._insert_message(RunJavascriptMessage(source=js.RUNTIME))
         for track in self._tracks.values():
             serializer._insert_message(
                 RunJavascriptMessage(source=self._track_add_js(track))
@@ -368,14 +360,14 @@ class AudioApi:
             "playing": playing,
             "hard_sync": hard_sync,
         }
-        return _js_call("setTransport", payload)
+        return js.call("setTransport", payload)
 
     @staticmethod
     def _track_add_js(track: AudioHandle) -> str:
         base64_wav = base64.b64encode(
             _numpy_to_wav(track._samples, track._sample_rate)
         ).decode("ascii")
-        return _js_call("addTrack", track._name, base64_wav, track._start_step, track._volume)
+        return js.call("addTrack", track._name, base64_wav, track._start_step, track._volume)
 
     def _send_transport_to_client(
         self,
