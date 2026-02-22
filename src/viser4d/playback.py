@@ -6,6 +6,7 @@ import asyncio
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from .timeline import SceneRenderer, Timeline
@@ -16,6 +17,27 @@ class TransportListener(Protocol):
     def on_pause(self, step: int) -> None: ...
     def on_seek(self, step: int, fps: float) -> None: ...
     def on_fps_change(self, fps: float, step: int) -> None: ...
+
+
+@dataclass
+class _RenderRequest:
+    target: int
+    interrupt_playback: bool = False
+    notify_seek: bool = False
+    done_events: list[threading.Event] = field(default_factory=list)
+
+    def merge(
+        self,
+        target: int,
+        done: threading.Event | None,
+        interrupt_playback: bool,
+        notify_seek: bool,
+    ) -> None:
+        self.target = target
+        self.interrupt_playback = self.interrupt_playback or interrupt_playback
+        self.notify_seek = self.notify_seek or notify_seek
+        if done is not None:
+            self.done_events.append(done)
 
 
 class PlaybackController:
@@ -46,10 +68,7 @@ class PlaybackController:
         self._applied_time: int | None = None
         self._render_in_flight = False
 
-        self._pending_target: int | None = None
-        self._pending_interrupt_playback = False
-        self._pending_notify_seek = False
-        self._pending_done_events: list[threading.Event] = []
+        self._pending_request: _RenderRequest | None = None
 
     @property
     def current_time(self) -> int:
@@ -138,41 +157,37 @@ class PlaybackController:
         interrupt_playback: bool,
         notify_seek: bool,
     ) -> None:
-        if done is not None:
-            self._pending_done_events.append(done)
-        self._pending_target = t
-        self._pending_interrupt_playback = (
-            self._pending_interrupt_playback or interrupt_playback
+        if self._pending_request is None:
+            self._pending_request = _RenderRequest(target=t)
+        self._pending_request.merge(
+            target=t,
+            done=done,
+            interrupt_playback=interrupt_playback,
+            notify_seek=notify_seek,
         )
-        self._pending_notify_seek = self._pending_notify_seek or notify_seek
         self._pump_render_on_loop()
 
     def _pump_render_on_loop(self) -> None:
         if self._render_in_flight:
             return
 
-        target = self._pending_target
-        if target is None:
+        request = self._pending_request
+        if request is None:
             return
 
-        done_events = list(self._pending_done_events)
-        self._pending_done_events.clear()
+        self._pending_request = None
 
-        interrupt_playback = self._pending_interrupt_playback
-        notify_seek = self._pending_notify_seek
-        self._pending_target = None
-        self._pending_interrupt_playback = False
-        self._pending_notify_seek = False
-
-        if interrupt_playback:
+        if request.interrupt_playback:
             self._stop_playback_task()
 
-        if notify_seek:
+        if request.notify_seek:
             for listener in self._listeners:
-                listener.on_seek(target, self._fps)
+                listener.on_seek(request.target, self._fps)
 
         self._render_in_flight = True
         from_time = self._applied_time
+        target = request.target
+        done_events = list(request.done_events)
         future = self._executor.submit(self._timeline.diff_between, from_time, target)
         future.add_done_callback(
             lambda fut, tt=target, evs=done_events: self._event_loop.call_soon_threadsafe(
