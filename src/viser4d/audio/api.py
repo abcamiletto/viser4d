@@ -293,35 +293,30 @@ class AudioApi:
     def _sync_client_playback_state(self, client: ClientHandle) -> None:
         self._send_transport_to_client(client, hard_sync=True)
 
-    def serialize_into(
-        self,
-        serializer: StateSerializer,
-    ) -> bool:
-        """Insert audio runtime/track/transport messages into a .viser serializer."""
-        if not self._tracks:
-            return False
-
-        serializer._insert_message(RunJavascriptMessage(source=js.RUNTIME))
-        for track in self._tracks.values():
-            serializer._insert_message(
-                RunJavascriptMessage(source=self._track_add_js(track))
-            )
-        return True
-
-    def serialize_transport_into(
+    def serialize_timestep_into(
         self,
         serializer: StateSerializer,
         *,
-        seq: int,
         step: int,
+        start_timestep: int,
         fps: float,
-        hard_sync: bool,
     ) -> None:
-        """Insert one serialized transport update."""
+        """Insert audio JS needed for one serialized timestep."""
+        if not self._tracks:
+            return
+
+        hard_sync = step == start_timestep
+        if hard_sync:
+            serializer._insert_message(RunJavascriptMessage(source=js.RUNTIME))
+            for track in self._tracks.values():
+                serializer._insert_message(
+                    RunJavascriptMessage(source=self._track_add_js(track))
+                )
+
         serializer._insert_message(
             RunJavascriptMessage(
                 source=self._transport_source(
-                    seq=int(seq),
+                    seq=(step - start_timestep + 1),
                     step=int(step),
                     playback_fps=_sanitize_fps(fps, default=self._timeline_fps),
                     playing=True,
