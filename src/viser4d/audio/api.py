@@ -23,7 +23,7 @@ import json
 import threading
 import wave
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -160,7 +160,6 @@ class AudioApi:
 
         server.on_client_connect(self._on_client_connect)
         server.on_client_disconnect(self._on_client_disconnect)
-        server.on_timestep_change(self._on_timestep)
 
     def _on_client_connect(self, client: ClientHandle) -> None:
         """Send JS runtime + all tracks to a newly connected client."""
@@ -177,12 +176,7 @@ class AudioApi:
         with self._state_lock:
             if not self._playing or not self._tracks:
                 return
-        self._broadcast_transport(
-            step=step,
-            hard_sync=False,
-            initialize_clients=False,
-            only_initialized=True,
-        )
+        self._broadcast_transport_to_initialized(step)
 
     def add_track(
         self,
@@ -237,35 +231,33 @@ class AudioApi:
         removed = self._tracks.pop(name, None)
         if removed is None:
             return
-        self._broadcast_js(
-            f"window.__viser4d_audio.removeTrack({name!r});",
-            initialize_clients=False,
-            only_initialized=True,
+        self._broadcast_js_to_initialized(
+            f"window.__viser4d_audio.removeTrack({name!r});"
         )
 
     def on_play(self, current_step: int, fps: float) -> None:
         with self._state_lock:
             self._playing = True
             self._playback_fps = _sanitize_fps(fps, default=self._timeline_fps)
-        self._broadcast_transport(step=current_step, hard_sync=True)
+        self._broadcast_transport(current_step, hard_sync=True)
 
-    def on_pause(self) -> None:
+    def on_pause(self, step: int) -> None:
         with self._state_lock:
             self._playing = False
-        self._broadcast_transport(step=self._server._current_time, hard_sync=True)
+        self._broadcast_transport(step, hard_sync=True)
 
     def on_seek(self, step: int, fps: float) -> None:
         with self._state_lock:
             self._playing = False
             self._playback_fps = _sanitize_fps(fps, default=self._timeline_fps)
-        self._broadcast_transport(step=step, hard_sync=True)
+        self._broadcast_transport(step, hard_sync=True)
 
-    def on_fps_change(self, fps: float) -> None:
+    def on_fps_change(self, fps: float, step: int) -> None:
         with self._state_lock:
             self._playback_fps = _sanitize_fps(fps, default=self._timeline_fps)
             playing = self._playing
         if playing:
-            self._broadcast_transport(step=self._server._current_time, hard_sync=True)
+            self._broadcast_transport(step, hard_sync=True)
 
     def _ensure_client_runtime(self, client: ClientHandle) -> None:
         """Ensure a client has received the audio runtime JS."""
@@ -294,22 +286,19 @@ class AudioApi:
     def _sync_client_playback_state(self, client: ClientHandle) -> None:
         self._send_transport_to_client(client, hard_sync=True)
 
-    def _build_transport_payload(self, step: int, *, hard_sync: bool) -> dict[str, Any]:
+    def _transport_js(self, step: int, *, hard_sync: bool) -> str:
         with self._state_lock:
             self._transport_seq += 1
-            playback_fps = _sanitize_fps(self._playback_fps, default=self._timeline_fps)
             payload = {
                 "seq": self._transport_seq,
                 "step": int(step),
                 "timeline_fps": self._timeline_fps,
-                "playback_fps": playback_fps,
+                "playback_fps": _sanitize_fps(
+                    self._playback_fps, default=self._timeline_fps
+                ),
                 "playing": self._playing,
                 "hard_sync": hard_sync,
             }
-        return payload
-
-    def _transport_js(self, step: int, *, hard_sync: bool) -> str:
-        payload = self._build_transport_payload(step, hard_sync=hard_sync)
         return (
             "window.__viser4d_audio.setTransport("
             f"{json.dumps(payload, separators=(',', ':'))});"
@@ -319,46 +308,36 @@ class AudioApi:
         self,
         client: ClientHandle,
         *,
-        step: int | None = None,
         hard_sync: bool,
     ) -> None:
         if not self._tracks:
             return
-        step = self._server._current_time if step is None else step
+        step = self._server.current_time
         self._send_js_to_client(client, self._transport_js(step, hard_sync=hard_sync))
 
-    def _broadcast_transport(
-        self,
-        *,
-        step: int | None = None,
-        hard_sync: bool,
-        initialize_clients: bool = True,
-        only_initialized: bool = False,
-    ) -> None:
+    def _broadcast_transport(self, step: int, *, hard_sync: bool) -> None:
         if not self._tracks:
             return
-        step = self._server._current_time if step is None else step
-        self._broadcast_js(
-            self._transport_js(step, hard_sync=hard_sync),
-            initialize_clients=initialize_clients,
-            only_initialized=only_initialized,
-        )
+        self._broadcast_js(self._transport_js(step, hard_sync=hard_sync))
+
+    def _broadcast_transport_to_initialized(self, step: int) -> None:
+        if not self._tracks:
+            return
+        self._broadcast_js_to_initialized(self._transport_js(step, hard_sync=False))
 
     def _send_js_to_client(self, client: ClientHandle, source: str) -> None:
         client._websock_connection.queue_message(RunJavascriptMessage(source=source))
 
-    def _broadcast_js(
-        self,
-        source: str,
-        *,
-        initialize_clients: bool = True,
-        only_initialized: bool = False,
-    ) -> None:
-        """Send JS to connected clients with optional initialization policy."""
+    def _broadcast_js(self, source: str) -> None:
+        """Send JS to all connected clients, initializing runtime if needed."""
         msg = RunJavascriptMessage(source=source)
         for client in self._server.get_clients().values():
-            if only_initialized and client.client_id not in self._initialized_clients:
-                continue
-            if initialize_clients:
-                self._ensure_client_runtime(client)
+            self._ensure_client_runtime(client)
             client._websock_connection.queue_message(msg)
+
+    def _broadcast_js_to_initialized(self, source: str) -> None:
+        """Send JS only to already-initialized clients."""
+        msg = RunJavascriptMessage(source=source)
+        for client in self._server.get_clients().values():
+            if client.client_id in self._initialized_clients:
+                client._websock_connection.queue_message(msg)

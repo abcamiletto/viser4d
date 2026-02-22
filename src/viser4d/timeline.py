@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .op import Op
 
@@ -39,24 +39,21 @@ class _RenderedNode:
     set_indices: dict[str, int] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class _TimelineValueState:
+class _ValueState(NamedTuple):
     version: int
     value: Any
 
 
-@dataclass(frozen=True)
-class _TimelineNodeState:
+class _NodeState(NamedTuple):
     add_index: int
     add_op: Op
-    set_values: dict[str, _TimelineValueState]
+    set_values: dict[str, _ValueState]
 
 
-@dataclass(frozen=True)
-class _TimelineDiff:
+class _Diff(NamedTuple):
     nodes_to_remove: set[str]
-    nodes_to_create_or_replace: dict[str, _TimelineNodeState]
-    member_updates: dict[str, dict[str, _TimelineValueState]]
+    nodes_to_create_or_replace: dict[str, _NodeState]
+    member_updates: dict[str, dict[str, _ValueState]]
 
 
 class Timeline:
@@ -77,33 +74,33 @@ class Timeline:
     def record_set(self, t: int, target: str, member: str, value: Any) -> None:
         self._track(target).sets.setdefault(member, _TimeSeries()).add(t, value)
 
-    def state_at(self, t: int) -> dict[str, _TimelineNodeState]:
+    def state_at(self, t: int) -> dict[str, _NodeState]:
         """Return the full renderable state for timestep ``t``."""
-        state_by_target: dict[str, _TimelineNodeState] = {}
+        state_by_target: dict[str, _NodeState] = {}
         for target, track in self._tracks.items():
             add_info = self._resolve_add(track, t)
             if add_info is None:
                 continue
 
             add_index, add_op, add_time = add_info
-            set_values: dict[str, _TimelineValueState] = {}
+            set_values: dict[str, _ValueState] = {}
             for member, series in track.sets.items():
                 set_index = series.latest_index(t)
                 if set_index is None or series.times[set_index] < add_time:
                     continue
-                set_values[member] = _TimelineValueState(
+                set_values[member] = _ValueState(
                     version=set_index,
                     value=series.values[set_index],
                 )
 
-            state_by_target[target] = _TimelineNodeState(
+            state_by_target[target] = _NodeState(
                 add_index=add_index,
                 add_op=add_op,
                 set_values=set_values,
             )
         return state_by_target
 
-    def diff_between(self, t_from: int | None, t_to: int) -> _TimelineDiff:
+    def diff_between(self, t_from: int | None, t_to: int) -> _Diff:
         """Return render changes needed to move from ``t_from`` to ``t_to``."""
         from_state = {} if t_from is None else self.state_at(t_from)
         to_state = self.state_at(t_to)
@@ -124,15 +121,15 @@ class Timeline:
 
     @staticmethod
     def _diff_states(
-        from_state: dict[str, _TimelineNodeState],
-        to_state: dict[str, _TimelineNodeState],
-    ) -> _TimelineDiff:
+        from_state: dict[str, _NodeState],
+        to_state: dict[str, _NodeState],
+    ) -> _Diff:
         from_targets = set(from_state)
         to_targets = set(to_state)
 
         nodes_to_remove = from_targets - to_targets
-        nodes_to_create_or_replace: dict[str, _TimelineNodeState] = {}
-        member_updates: dict[str, dict[str, _TimelineValueState]] = {}
+        nodes_to_create_or_replace: dict[str, _NodeState] = {}
+        member_updates: dict[str, dict[str, _ValueState]] = {}
 
         for target, to_node in to_state.items():
             from_node = from_state.get(target)
@@ -149,7 +146,7 @@ class Timeline:
             if updates:
                 member_updates[target] = updates
 
-        return _TimelineDiff(
+        return _Diff(
             nodes_to_remove=nodes_to_remove,
             nodes_to_create_or_replace=nodes_to_create_or_replace,
             member_updates=member_updates,
@@ -157,10 +154,10 @@ class Timeline:
 
     @staticmethod
     def _member_updates(
-        from_node: _TimelineNodeState,
-        to_node: _TimelineNodeState,
-    ) -> dict[str, _TimelineValueState]:
-        updates: dict[str, _TimelineValueState] = {}
+        from_node: _NodeState,
+        to_node: _NodeState,
+    ) -> dict[str, _ValueState]:
+        updates: dict[str, _ValueState] = {}
         for member, to_value in to_node.set_values.items():
             from_value = from_node.set_values.get(member)
             if from_value is None or from_value.version != to_value.version:
@@ -195,7 +192,7 @@ class SceneRenderer:
         self._nodes.clear()
         self._rendered_time = -1
 
-    def apply_diff(self, diff: _TimelineDiff) -> None:
+    def apply_diff(self, diff: _Diff) -> None:
         """Apply a timeline diff to the current rendered scene state."""
         for target in diff.nodes_to_remove:
             self.remove_node(target)
@@ -208,7 +205,7 @@ class SceneRenderer:
         self._scene.remove_by_name(target)
         self._nodes.pop(target, None)
 
-    def create_or_replace_node(self, target: str, state: _TimelineNodeState) -> None:
+    def create_or_replace_node(self, target: str, state: _NodeState) -> None:
         if target in self._nodes:
             self._scene.remove_by_name(target)
         node = _RenderedNode(
@@ -220,9 +217,7 @@ class SceneRenderer:
         self._nodes[target] = node
         self._apply_set_values(node, state.set_values)
 
-    def update_node_members(
-        self, target: str, updates: dict[str, _TimelineValueState]
-    ) -> None:
+    def update_node_members(self, target: str, updates: dict[str, _ValueState]) -> None:
         node = self._nodes.get(target)
         if node is None:
             raise RuntimeError(
@@ -232,7 +227,7 @@ class SceneRenderer:
 
     @staticmethod
     def _apply_set_values(
-        node: _RenderedNode, set_values: dict[str, _TimelineValueState]
+        node: _RenderedNode, set_values: dict[str, _ValueState]
     ) -> None:
         for member, value_state in set_values.items():
             if node.set_indices.get(member) == value_state.version:

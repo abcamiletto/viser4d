@@ -968,7 +968,7 @@ wheels = [
 
 [[package]]
 name = "viser4d"
-version = "0.3.3"
+version = "0.3.4"
 source = { editable = "." }
 dependencies = [
     { name = "cloudpickle" },
