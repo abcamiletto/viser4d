@@ -436,7 +436,7 @@ def test_serialize_writes_snapshot_to_path(
 
     server.seek(0, blocking=True)
     output = tmp_path / "scene.viser"
-    data = server.serialize(output, static_scene=True)
+    data = server.serialize(output)
 
     assert output.exists()
     assert output.read_bytes() == data
@@ -444,7 +444,9 @@ def test_serialize_writes_snapshot_to_path(
     assert int.from_bytes(data[:8], "little") > 0
 
 
-def test_serialize_dynamic_across_timesteps(server: viser4d.Viser4dServer) -> None:
+def test_serialize_dynamic_across_timesteps(
+    server: viser4d.Viser4dServer, tmp_path: Path
+) -> None:
     seek_calls: list[tuple[int, bool]] = []
     sleep_durations: list[float] = []
 
@@ -459,13 +461,14 @@ def test_serialize_dynamic_across_timesteps(server: viser4d.Viser4dServer) -> No
     server.get_scene_serializer = lambda: serializer  # type: ignore[method-assign]
     server.seek = lambda t, blocking=False: seek_calls.append((t, blocking))  # type: ignore[method-assign]
 
+    output = tmp_path / "dynamic.viser"
     data = server.serialize(
-        static_scene=False,
+        output,
         start_timestep=0,
         end_timestep=2,
-        fps=20.0,
     )
 
     assert data == b"viser-bytes"
+    assert output.read_bytes() == b"viser-bytes"
     assert seek_calls == [(0, True), (1, True), (2, True)]
-    assert sleep_durations == [0.05, 0.05, 0.05]
+    assert sleep_durations == [1.0 / 30.0, 1.0 / 30.0, 1.0 / 30.0]

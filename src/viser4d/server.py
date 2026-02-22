@@ -284,40 +284,34 @@ class Viser4dServer(_viser.ViserServer):
 
     def serialize(
         self,
-        path: str | Path | None = None,
+        path: str | Path,
         *,
-        static_scene: bool = False,
         start_timestep: int = 0,
         end_timestep: int | None = None,
-        fps: float = 30.0,
     ) -> bytes:
-        """Serialize scene data to viser bytes, optionally across timesteps.
+        """Serialize scene data to viser bytes and write to ``path``.
 
         Args:
-            path: Optional output file path. If provided, bytes are also written.
-            static_scene: If ``True``, only serialize the current scene snapshot.
-            start_timestep: First timestep to render when ``static_scene=False``.
-            end_timestep: Last timestep to render when ``static_scene=False``.
-                Defaults to ``num_steps - 1``.
-            fps: Playback FPS used for inserted sleep durations.
+            path: Output file path.
+            start_timestep: First timestep for timeline serialization.
+            end_timestep: Optional last timestep for timeline serialization.
+                If omitted, only the current scene snapshot is serialized.
 
         Returns:
             Serialized ``.viser`` bytes.
         """
         serializer = self.get_scene_serializer()
 
-        if not static_scene:
-            assert fps > 0
+        if end_timestep is not None:
             assert 0 <= start_timestep < self.num_steps
-            last_timestep = self.num_steps - 1 if end_timestep is None else end_timestep
-            assert start_timestep <= last_timestep < self.num_steps
-            for t in range(start_timestep, last_timestep + 1):
+            assert start_timestep <= end_timestep < self.num_steps
+            assert self._playback.fps > 0
+            for t in range(start_timestep, end_timestep + 1):
                 self.seek(t, blocking=True)
-                serializer.insert_sleep(1.0 / fps)
+                serializer.insert_sleep(1.0 / self._playback.fps)
 
         data = serializer.serialize()
-        if path is not None:
-            Path(path).write_bytes(data)
+        Path(path).write_bytes(data)
         return data
 
     def stop(self) -> None:
