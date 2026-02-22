@@ -38,6 +38,12 @@ if TYPE_CHECKING:
 _AUDIO_RUNTIME_JS = (Path(__file__).parent / "runtime.js").read_text()
 
 
+def _js_call(method: str, *args: object) -> str:
+    """Build a ``window.__viser4d_audio.<method>(...)`` JS call string."""
+    serialized = ", ".join(json.dumps(a) for a in args)
+    return f"window.__viser4d_audio.{method}({serialized});"
+
+
 def _sanitize_fps(value: float, *, default: float) -> float:
     return value if value > 0 else default
 
@@ -121,9 +127,7 @@ class AudioHandle:
         if self._volume == value:
             return
         self._volume = value
-        self._api._broadcast_js(
-            f"window.__viser4d_audio.setVolume({self._name!r}, {value});"
-        )
+        self._api._broadcast_js(_js_call("setVolume", self._name, value))
 
     @property
     def waveform(self) -> np.ndarray:
@@ -252,9 +256,7 @@ class AudioApi:
         removed = self._tracks.pop(name, None)
         if removed is None:
             return
-        self._broadcast_js_to_initialized(
-            f"window.__viser4d_audio.removeTrack({name!r});"
-        )
+        self._broadcast_js_to_initialized(_js_call("removeTrack", name))
 
     def on_play(self, current_step: int, fps: float) -> None:
         with self._state_lock:
@@ -366,21 +368,14 @@ class AudioApi:
             "playing": playing,
             "hard_sync": hard_sync,
         }
-        return (
-            "window.__viser4d_audio.setTransport("
-            f"{json.dumps(payload, separators=(',', ':'))});"
-        )
+        return _js_call("setTransport", payload)
 
     @staticmethod
     def _track_add_js(track: AudioHandle) -> str:
         base64_wav = base64.b64encode(
             _numpy_to_wav(track._samples, track._sample_rate)
         ).decode("ascii")
-        return (
-            "window.__viser4d_audio.addTrack("
-            f"{track._name!r}, {base64_wav!r}, "
-            f"{track._start_step}, {track._volume});"
-        )
+        return _js_call("addTrack", track._name, base64_wav, track._start_step, track._volume)
 
     def _send_transport_to_client(
         self,
