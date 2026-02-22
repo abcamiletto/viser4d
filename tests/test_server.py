@@ -477,7 +477,9 @@ def test_serialize_dynamic_across_timesteps(
     assert output.read_bytes() == data
     decoded = _decode_viser_bytes(data)
     assert decoded["durationSeconds"] == pytest.approx(3.0 / 30.0)
-    assert len(decoded["messages"]) > 0
+    messages = decoded["messages"]
+    assert isinstance(messages, list)
+    assert len(messages) > 0
 
 
 def test_serialize_end_minus_one_means_last_timestep(
