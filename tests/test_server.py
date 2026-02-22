@@ -3,8 +3,10 @@ import threading
 import time
 from pathlib import Path
 
+import msgspec
 import pytest
 import viser4d
+import zstandard
 
 
 @pytest.fixture
@@ -40,6 +42,16 @@ def _wait_until(
             return True
         time.sleep(interval)
     return predicate()
+
+
+def _decode_viser_bytes(data: bytes) -> dict[str, object]:
+    uncompressed_size = int.from_bytes(data[:8], "little")
+    payload = zstandard.ZstdDecompressor().decompress(
+        data[8:], max_output_size=uncompressed_size
+    )
+    decoded = msgspec.msgpack.decode(payload)
+    assert isinstance(decoded, dict)
+    return decoded
 
 
 def test_seek_applies_recorded_updates(server: viser4d.Viser4dServer) -> None:
@@ -447,19 +459,13 @@ def test_serialize_writes_viser_file(
 def test_serialize_dynamic_across_timesteps(
     server: viser4d.Viser4dServer, tmp_path: Path
 ) -> None:
-    seek_calls: list[tuple[int, bool]] = []
-    sleep_durations: list[float] = []
-
-    class _FakeSerializer:
-        def insert_sleep(self, duration: float) -> None:
-            sleep_durations.append(duration)
-
-        def serialize(self) -> bytes:
-            return b"viser-bytes"
-
-    serializer = _FakeSerializer()
-    server.get_scene_serializer = lambda: serializer  # type: ignore[method-assign]
-    server.seek = lambda t, blocking=False: seek_calls.append((t, blocking))  # type: ignore[method-assign]
+    with server.at(0):
+        handle = server.scene.add_frame("/frame", axes_length=0.1)
+        handle.position = (0.0, 0.0, 0.0)
+    with server.at(1):
+        handle.position = (1.0, 0.0, 0.0)
+    with server.at(2):
+        handle.position = (2.0, 0.0, 0.0)
 
     output = tmp_path / "dynamic.viser"
     data = server.serialize(
@@ -468,26 +474,23 @@ def test_serialize_dynamic_across_timesteps(
         end_timestep=2,
     )
 
-    assert data == b"viser-bytes"
-    assert output.read_bytes() == b"viser-bytes"
-    assert seek_calls == [(0, True), (1, True), (2, True)]
-    assert sleep_durations == [1.0 / 30.0, 1.0 / 30.0, 1.0 / 30.0]
+    assert output.read_bytes() == data
+    decoded = _decode_viser_bytes(data)
+    assert decoded["durationSeconds"] == pytest.approx(3.0 / 30.0)
+    assert len(decoded["messages"]) > 0
 
 
 def test_serialize_end_minus_one_means_last_timestep(
     server: viser4d.Viser4dServer, tmp_path: Path
 ) -> None:
-    seek_calls: list[tuple[int, bool]] = []
+    with server.at(0):
+        handle = server.scene.add_frame("/frame", axes_length=0.1)
+        handle.position = (0.0, 0.0, 0.0)
+    with server.at(1):
+        handle.position = (1.0, 0.0, 0.0)
+    with server.at(2):
+        handle.position = (2.0, 0.0, 0.0)
 
-    class _FakeSerializer:
-        def insert_sleep(self, duration: float) -> None:
-            pass
-
-        def serialize(self) -> bytes:
-            return b"viser-bytes"
-
-    server.get_scene_serializer = lambda: _FakeSerializer()  # type: ignore[method-assign]
-    server.seek = lambda t, blocking=False: seek_calls.append((t, blocking))  # type: ignore[method-assign]
-
-    server.serialize(tmp_path / "all.viser", start_timestep=1, end_timestep=-1)
-    assert seek_calls == [(1, True), (2, True)]
+    data = server.serialize(tmp_path / "all.viser", start_timestep=1, end_timestep=-1)
+    decoded = _decode_viser_bytes(data)
+    assert decoded["durationSeconds"] == pytest.approx(2.0 / 30.0)
