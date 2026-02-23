@@ -191,7 +191,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Run viser4d performance benchmarks.")
-    parser.add_argument("--repeats", type=int, default=9)
+    parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--update-md", type=Path, default=Path("BENCHMARKS.md"))
     args = parser.parse_args()
