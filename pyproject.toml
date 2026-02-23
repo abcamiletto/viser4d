@@ -1,6 +1,6 @@
 [project]
 name = "viser4d"
-version = "0.3.4"
+version = "0.3.5"
 description = "A viser extension with out-of-the-box support for the time dimension"
 readme = "README.md"
 license = "Apache-2.0"
@@ -30,6 +30,7 @@ Issues = "https://github.com/abcamiletto/viser4d/issues"
 
 [dependency-groups]
 dev = [
+    "playwright>=1.51.0",
     "pytest>=8.3.4",
     "ty>=0.0.1a7",
 ]
@@ -47,3 +48,8 @@ viser4d = ["py.typed"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: browser end-to-end tests for exported .viser playback",
+]
