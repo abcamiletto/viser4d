@@ -177,7 +177,7 @@ class AudioApi:
         with self._state_lock:
             if not self._playing or not self._tracks:
                 return
-        self._broadcast_transport_to_initialized(step)
+        self._broadcast_transport(step, hard_sync=False, initialized_only=True)
 
     def add_track(
         self,
@@ -248,7 +248,7 @@ class AudioApi:
         removed = self._tracks.pop(name, None)
         if removed is None:
             return
-        self._broadcast_js_to_initialized(js.call("removeTrack", name))
+        self._broadcast_js(js.call("removeTrack", name), initialized_only=True)
 
     def on_play(self, current_step: int, fps: float) -> None:
         with self._state_lock:
@@ -377,29 +377,31 @@ class AudioApi:
         step = self._server.current_time
         self._send_js_to_client(client, self._transport_js(step, hard_sync=hard_sync))
 
-    def _broadcast_transport(self, step: int, *, hard_sync: bool) -> None:
+    def _broadcast_transport(
+        self, step: int, *, hard_sync: bool, initialized_only: bool = False
+    ) -> None:
         if not self._tracks:
             return
-        self._broadcast_js(self._transport_js(step, hard_sync=hard_sync))
-
-    def _broadcast_transport_to_initialized(self, step: int) -> None:
-        if not self._tracks:
-            return
-        self._broadcast_js_to_initialized(self._transport_js(step, hard_sync=False))
+        self._broadcast_js(
+            self._transport_js(step, hard_sync=hard_sync),
+            initialized_only=initialized_only,
+        )
 
     def _send_js_to_client(self, client: ClientHandle, source: str) -> None:
         client._websock_connection.queue_message(RunJavascriptMessage(source=source))
 
-    def _broadcast_js(self, source: str) -> None:
-        """Send JS to all connected clients, initializing runtime if needed."""
-        msg = RunJavascriptMessage(source=source)
-        for client in self._server.get_clients().values():
-            self._ensure_client_runtime(client)
-            client._websock_connection.queue_message(msg)
+    def _broadcast_js(self, source: str, *, initialized_only: bool = False) -> None:
+        """Send JS to connected clients.
 
-    def _broadcast_js_to_initialized(self, source: str) -> None:
-        """Send JS only to already-initialized clients."""
+        When *initialized_only* is ``False`` (default), every client receives
+        the message and uninitialized clients get the runtime first.  When
+        ``True``, only already-initialized clients are targeted.
+        """
         msg = RunJavascriptMessage(source=source)
         for client in self._server.get_clients().values():
-            if client.client_id in self._initialized_clients:
+            if initialized_only:
+                if client.client_id in self._initialized_clients:
+                    client._websock_connection.queue_message(msg)
+            else:
+                self._ensure_client_runtime(client)
                 client._websock_connection.queue_message(msg)
