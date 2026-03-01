@@ -107,7 +107,14 @@ class ProxyScene:
 
     @staticmethod
     def _target_from_add(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
-        return kwargs.get("name", args[0])
+        if "name" in kwargs:
+            return kwargs["name"]
+        if args:
+            return args[0]
+        raise TypeError(
+            "Recorded add_* calls require a node name via the first positional "
+            "argument or the 'name' keyword."
+        )
 
 
 class ProxyHandle:

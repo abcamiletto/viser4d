@@ -84,6 +84,20 @@ def test_seek_applies_recorded_updates(server: viser4d.Viser4dServer) -> None:
     assert _position(handle) == (2.0, 0.0, 0.0)
 
 
+def test_seek_records_add_with_keyword_name(server: viser4d.Viser4dServer) -> None:
+    with server.at(0):
+        handle = server.scene.add_frame(name="/kw", axes_length=0.1)
+        handle.position = (0.0, 1.0, 2.0)
+
+    done = threading.Event()
+    server.on_timestep_change(lambda step, _d=done: step == 0 and _d.set())
+
+    server.seek(0)
+
+    assert done.wait(timeout=1.0)
+    assert _position(handle) == (0.0, 1.0, 2.0)
+
+
 def test_seek_backwards_removes_late_adds(server: viser4d.Viser4dServer) -> None:
     with server.at(0):
         handle_a = server.scene.add_frame("/a", axes_length=0.1)
