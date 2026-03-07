@@ -21,6 +21,11 @@ def test_audio_requires_timestep_context() -> None:
         server.stop()
 
 
+def test_num_steps_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="num_steps must be >= 1"):
+        viser4d.Viser4dServer(num_steps=0, port=0, verbose=False)
+
+
 def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
@@ -74,6 +79,25 @@ def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
         server.stop()
 
 
+def test_serialize_rejects_invalid_timestep_range(tmp_path: pathlib.Path) -> None:
+    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
+    try:
+        with pytest.raises(ValueError, match="Invalid timestep range"):
+            server.serialize(tmp_path / "scene.viser4d", start_timestep=2, end_timestep=1)
+    finally:
+        server.stop()
+
+
+def test_stop_shuts_down_predictor_thread() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    predictor_thread = server._controller._predictor_thread
+    assert predictor_thread.is_alive()
+
+    server.stop()
+
+    assert predictor_thread.is_alive() is False
+
+
 def test_audio_payload_normalizes_integer_formats() -> None:
     int16_payload = audio_array_payload(np.array([-32768, 0, 32767], dtype=np.int16))
     int16_values = np.frombuffer(
@@ -93,3 +117,23 @@ def test_audio_payload_normalizes_integer_formats() -> None:
         int32_values,
         np.array([-1.0, 0.0, 2147483647 / 2147483648], dtype=np.float32),
     )
+
+
+def test_audio_append_keeps_chunked_state_until_waveform_is_read() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0):
+            audio = server.scene.add_audio(
+                "/audio",
+                data=np.array([1, 2], dtype=np.int16),
+                sample_rate=16_000,
+            )
+
+        audio.append(np.array([3, 4], dtype=np.int16))
+        audio.append(np.array([5, 6], dtype=np.int16))
+
+        expected = np.array([1, 2, 3, 4, 5, 6], dtype=np.int16)
+        assert np.array_equal(audio.waveform, expected)
+        assert np.array_equal(audio._state.waveform, expected)
+    finally:
+        server.stop()

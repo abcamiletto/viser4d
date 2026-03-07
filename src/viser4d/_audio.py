@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -31,12 +30,42 @@ def audio_array_payload(array: np.ndarray) -> dict[str, str]:
     }
 
 
-@dataclass
 class AudioState:
-    name: str
-    sample_rate: int
-    waveform: np.ndarray
-    volume: float = 1.0
+    def __init__(
+        self,
+        *,
+        name: str,
+        sample_rate: int,
+        waveform: np.ndarray,
+        volume: float = 1.0,
+    ) -> None:
+        self.name = name
+        self.sample_rate = sample_rate
+        self.volume = volume
+        self._chunks: list[np.ndarray] = []
+        self._waveform_cache: np.ndarray | None = None
+        self.waveform = waveform
+
+    @property
+    def waveform(self) -> np.ndarray:
+        if self._waveform_cache is None:
+            if len(self._chunks) == 1:
+                self._waveform_cache = self._chunks[0]
+            else:
+                self._waveform_cache = np.concatenate(self._chunks)
+        return self._waveform_cache
+
+    @waveform.setter
+    def waveform(self, value: np.ndarray) -> None:
+        arr = np.ascontiguousarray(value)
+        self._chunks = [arr]
+        self._waveform_cache = arr
+
+    def append_chunk(self, data: np.ndarray) -> np.ndarray:
+        chunk = np.ascontiguousarray(data)
+        self._chunks.append(chunk)
+        self._waveform_cache = None
+        return chunk
 
 
 class AudioHandle:
@@ -73,8 +102,7 @@ class AudioHandle:
         )
 
     def append(self, data: np.ndarray) -> None:
-        append_data = np.ascontiguousarray(data)
-        self._state.waveform = np.concatenate([self._state.waveform, append_data])
+        append_data = self._state.append_chunk(data)
         self._server._dispatch_audio_update(
             self._state.name,
             {

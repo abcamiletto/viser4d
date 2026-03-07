@@ -89,6 +89,7 @@ class TimelineController:
         self._syncing_timestep_slider = False
         self._callbacks: list[Callable[[int], None]] = []
         self._lock = threading.RLock()
+        self._stop_event = threading.Event()
         self._anchor_step = 0.0
         self._anchor_time = time.monotonic()
         self._predictor_thread = threading.Thread(
@@ -144,6 +145,10 @@ class TimelineController:
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         self._callbacks.append(callback)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._predictor_thread.join()
 
     def sync_from_client(self, timestep: int) -> None:
         timestep = _clamp(int(timestep), 0, self._server.num_steps - 1)
@@ -232,8 +237,7 @@ class TimelineController:
         return max(0.0, min(step, self._server.num_steps - 1))
 
     def _predictor_loop(self) -> None:
-        while True:
-            time.sleep(0.05)
+        while not self._stop_event.wait(0.05):
             with self._lock:
                 is_playing = self._is_playing
                 timestep = int(self._transport_step())
@@ -354,6 +358,11 @@ class ExportBuilder:
     ) -> bytes:
         start = max(0, int(start_timestep))
         end = self._normalized_end_timestep(end_timestep)
+        if start > end:
+            raise ValueError(
+                f"Invalid timestep range: start_timestep={start_timestep}, "
+                f"end_timestep={end_timestep}."
+            )
         export_num_steps = end - start + 1
         export_step = _clamp(
             self._server._controller.current_timestep - start,
@@ -470,9 +479,12 @@ class Viser4dServer(viser.ViserServer):
         scene: Viser4dSceneApi
 
     def __init__(self, num_steps: int, fps: float = 30.0, **kwargs) -> None:
+        num_steps = int(num_steps)
+        if num_steps < 1:
+            raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
         super().__init__(**kwargs)
 
-        self.num_steps = int(num_steps)
+        self.num_steps = num_steps
         self._timeline = TimelineStore(self.num_steps)
         setattr(self.scene, "add_audio", MethodType(_scene_add_audio, self.scene))
         self._controller = TimelineController(self, fps=fps)
@@ -581,6 +593,10 @@ class Viser4dServer(viser.ViserServer):
             start_timestep=start_timestep,
             end_timestep=end_timestep,
         )
+
+    def stop(self) -> None:
+        self._controller.stop()
+        super().stop()
 
     def _add_audio(self, name: str, *, data: np.ndarray, sample_rate: int) -> AudioHandle:
         if self._recorder.active_step is None:
