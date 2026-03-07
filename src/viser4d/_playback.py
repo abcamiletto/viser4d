@@ -7,7 +7,6 @@ import viser
 
 from . import _viser_private as impl
 from ._runtime import (
-    clamp,
     client_runtime_config_payload,
     make_runtime_message,
 )
@@ -150,7 +149,8 @@ class ClientPlaybackHandle:
         self._send_runtime_call("pause", {})
 
     def seek(self, t: int) -> None:
-        timestep = clamp(int(t), 0, self._server.num_steps - 1)
+        timestep = int(t)
+        assert 0 <= timestep < self._server.num_steps
         self._set_current_timestep(timestep)
         self._send_runtime_call("seek", {"step": timestep})
 
@@ -188,7 +188,9 @@ class ClientPlaybackHandle:
     ) -> None:
         with self._lock:
             if timestep is not None:
-                self._current_timestep = clamp(int(timestep), 0, self._server.num_steps - 1)
+                timestep = int(timestep)
+                assert 0 <= timestep < self._server.num_steps
+                self._current_timestep = timestep
             if fps is not None:
                 self._fps = float(fps)
             if loop is not None:
@@ -216,7 +218,8 @@ class ClientPlaybackHandle:
             self._sync_playback_buttons()
 
     def _set_current_timestep(self, timestep: int) -> None:
-        timestep = clamp(int(timestep), 0, self._server.num_steps - 1)
+        timestep = int(timestep)
+        assert 0 <= timestep < self._server.num_steps
         with self._lock:
             self._current_timestep = timestep
             self._syncing_timestep_slider = True

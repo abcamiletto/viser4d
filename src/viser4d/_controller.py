@@ -4,8 +4,6 @@ import threading
 import time
 from typing import TYPE_CHECKING, Callable
 
-from ._runtime import clamp
-
 if TYPE_CHECKING:
     from ._server import Viser4dServer
 
@@ -64,7 +62,8 @@ class TimelineController:
             self._is_playing = False
 
     def seek(self, t: int) -> None:
-        timestep = clamp(int(t), 0, self._server.num_steps - 1)
+        timestep = int(t)
+        assert 0 <= timestep < self._server.num_steps
         with self._lock:
             self._set_anchor(float(timestep))
         self.set_current_timestep(timestep)
@@ -83,7 +82,7 @@ class TimelineController:
             self._set_anchor(current_step)
 
     def set_current_timestep(self, timestep: int) -> None:
-        timestep = clamp(timestep, 0, self._server.num_steps - 1)
+        assert 0 <= timestep < self._server.num_steps
         if timestep == self._current_timestep:
             return
         self._current_timestep = timestep

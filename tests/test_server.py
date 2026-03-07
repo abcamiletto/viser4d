@@ -71,15 +71,12 @@ def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
         decoded = zstandard.ZstdDecompressor().decompress(blob[8:], size)
         payload = msgspec.msgpack.decode(decoded)
         assert set(payload) == {"durationSeconds", "messages", "viserVersion"}
-        assert any(
+        assert payload["durationSeconds"] == pytest.approx(2 / 30.0)
+        assert not any(
             message["type"] == "RunJavascriptMessage"
             for _, message in payload["messages"]
         )
-        assert not any(
-            message["type"] == "GuiUpdateMessage"
-            and message["uuid"] == "__viser4d_export_timestep__"
-            for _, message in payload["messages"]
-        )
+        assert any(time > 0.0 for time, _ in payload["messages"])
     finally:
         server.stop()
 
@@ -87,7 +84,7 @@ def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
 def test_serialize_rejects_invalid_timestep_range(tmp_path: pathlib.Path) -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
-        with pytest.raises(ValueError, match="Invalid timestep range"):
+        with pytest.raises(AssertionError):
             server.serialize(
                 tmp_path / "scene.viser4d", start_timestep=2, end_timestep=1
             )

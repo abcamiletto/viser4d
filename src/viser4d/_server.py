@@ -16,7 +16,7 @@ from ._controller import TimelineController
 from ._export import ExportBuilder
 from ._playback import ClientPlaybackHandle
 from ._recording import SceneRecorder
-from ._runtime import make_runtime_message, runtime_config_payload, runtime_source
+from ._runtime import make_runtime_message, runtime_source
 from ._timeline import TimelineStore
 
 if TYPE_CHECKING:
@@ -111,14 +111,12 @@ class Viser4dServer(viser.ViserServer):
         self,
         path: str | pathlib.Path,
         *,
-        client: ClientHandle | None = None,
         start_timestep: int = 0,
         end_timestep: int = -1,
     ) -> bytes:
         """Write the recorded timeline to ``path`` and return its bytes."""
         return self._export_builder.serialize(
             path,
-            client=client,
             start_timestep=start_timestep,
             end_timestep=end_timestep,
         )
@@ -143,14 +141,6 @@ class Viser4dServer(viser.ViserServer):
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:
         with self._client_playbacks_lock:
             return list(self._client_playbacks.values())
-
-    def _runtime_config_payload(self, *, num_steps: int | None = None) -> dict[str, Any]:
-        return runtime_config_payload(
-            num_steps=self.num_steps if num_steps is None else num_steps,
-            fps=self._fps,
-            base_fps=self._base_fps,
-            loop=self._loop,
-        )
 
     def _sync_client_playback_state(
         self,
