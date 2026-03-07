@@ -34,7 +34,7 @@ def runtime_config_payload(
     fps: float,
     base_fps: float,
     loop: bool,
-    timestep_sync_uuid: str,
+    timestep_sync_uuid: str | None,
 ) -> dict[str, Any]:
     return {
         "numSteps": num_steps,

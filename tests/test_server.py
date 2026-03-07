@@ -50,18 +50,16 @@ def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
         assert server._timeline.step(1).messages
         assert server._timeline.step(1).audio_ops
 
-        server._fps_slider.value = 24.0
+        server.set_fps(24.0)
         assert server._fps == 24.0
 
         server.play(server._fps)
-        assert server._play_button.visible is False
-        assert server._pause_button.visible is True
+        assert server._is_playing is True
         server.pause()
-        assert server._play_button.visible is True
-        assert server._pause_button.visible is False
+        assert server._is_playing is False
 
         server.seek(2)
-        assert server._timeline_slider.value == 2
+        assert server._current_timestep == 2
         assert seen_timesteps[-1] == 2
 
         out_path = tmp_path / "scene.viser4d"
@@ -75,6 +73,11 @@ def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
         assert set(payload) == {"durationSeconds", "messages", "viserVersion"}
         assert any(
             message["type"] == "RunJavascriptMessage"
+            for _, message in payload["messages"]
+        )
+        assert not any(
+            message["type"] == "GuiUpdateMessage"
+            and message["uuid"] == "__viser4d_export_timestep__"
             for _, message in payload["messages"]
         )
     finally:

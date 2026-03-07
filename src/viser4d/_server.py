@@ -14,11 +14,13 @@ from viser import _messages
 from ._audio import AudioHandle
 from ._controller import TimelineController
 from ._export import ExportBuilder
+from ._playback import ClientPlaybackHandle
 from ._recording import SceneRecorder
 from ._runtime import make_runtime_message, runtime_source
 from ._timeline import TimelineStore
 
 if TYPE_CHECKING:
+    from viser._viser import ClientHandle
 
     class Viser4dSceneApi(viser.SceneApi):
         def add_audio(
@@ -40,6 +42,8 @@ class Viser4dServer(viser.ViserServer):
 
         self.num_steps = num_steps
         self._timeline = TimelineStore(self.num_steps)
+        self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
+        self._client_playbacks_lock = threading.Lock()
         setattr(self.scene, "add_audio", MethodType(_scene_add_audio, self.scene))
         self._controller = TimelineController(self, fps=fps)
         self._recorder = SceneRecorder(self, self._timeline)
@@ -48,72 +52,18 @@ class Viser4dServer(viser.ViserServer):
         self._websock_server.queue_message(
             _messages.RunJavascriptMessage(runtime_source())
         )
-        self._timestep_sync = self.gui.add_number(
-            "__viser4d_timestep_sync__",
-            0,
-            min=0,
-            max=max(self.num_steps - 1, 0),
-            step=1,
-            visible=False,
-        )
-        with self.gui.add_folder("Playback"):
-            self._timeline_slider = self.gui.add_slider(
-                "Timestep",
-                min=0,
-                max=max(self.num_steps - 1, 0),
-                step=1,
-                initial_value=0,
-            )
-            self._fps_slider = self.gui.add_slider(
-                "FPS",
-                min=1.0,
-                max=120.0,
-                step=1.0,
-                initial_value=self._controller.fps,
-            )
-            self._step_buttons = self.gui.add_button_group("Step", ("Prev", "Next"))
-            self._play_button = self.gui.add_button(
-                "Play",
-                color="green",
-                icon=viser.Icon.PLAYER_PLAY_FILLED,
-            )
-            self._pause_button = self.gui.add_button(
-                "Pause",
-                color="yellow",
-                icon=viser.Icon.PLAYER_PAUSE_FILLED,
-                visible=False,
-            )
 
-        @self._timestep_sync.on_update
-        def _sync(_event: Any) -> None:
-            self._controller.sync_from_client(int(self._timestep_sync.value))
+        @self.on_client_connect
+        def _attach_playback(client: ClientHandle) -> None:
+            playback = ClientPlaybackHandle(self, client)
+            with self._client_playbacks_lock:
+                self._client_playbacks[client.client_id] = playback
+            setattr(client, "playback", playback)
 
-        @self._timeline_slider.on_update
-        def _sync_slider(_event: Any) -> None:
-            if self._controller.syncing_timestep_slider:
-                return
-            self.seek(int(self._timeline_slider.value))
-
-        @self._fps_slider.on_update
-        def _sync_fps(_event: Any) -> None:
-            self._controller.set_fps(float(self._fps_slider.value))
-
-        @self._step_buttons.on_click
-        def _step(_event: Any) -> None:
-            if self._step_buttons.value == "Prev":
-                self.seek(self._controller.current_timestep - 1)
-            else:
-                self.seek(self._controller.current_timestep + 1)
-
-        @self._play_button.on_click
-        def _play(_event: Any) -> None:
-            self.play(self._controller.fps, loop=self._controller.loop)
-
-        @self._pause_button.on_click
-        def _pause(_event: Any) -> None:
-            self.pause()
-
-        self._controller.sync_runtime_config()
+        @self.on_client_disconnect
+        def _detach_playback(client: ClientHandle) -> None:
+            with self._client_playbacks_lock:
+                self._client_playbacks.pop(client.client_id, None)
 
     @contextlib.contextmanager
     def at(self, t: int) -> Iterator[None]:
@@ -124,12 +74,24 @@ class Viser4dServer(viser.ViserServer):
     def play(self, fps: float, loop: bool = False) -> None:
         """Start timeline playback at ``fps`` and optionally loop."""
         self._controller.play(fps, loop=loop)
+        for playback in self._client_playback_values():
+            playback.play(fps, loop=loop)
 
     def pause(self) -> None:
         self._controller.pause()
+        for playback in self._client_playback_values():
+            playback.pause()
 
     def seek(self, t: int) -> None:
         self._controller.seek(t)
+        timestep = self._controller.current_timestep
+        for playback in self._client_playback_values():
+            playback.seek(timestep)
+
+    def set_fps(self, fps: float) -> None:
+        self._controller.set_fps(fps)
+        for playback in self._client_playback_values():
+            playback.set_fps(self._controller.fps)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
         self._controller.on_timestep_change(callback)
@@ -149,12 +111,14 @@ class Viser4dServer(viser.ViserServer):
         self,
         path: str | pathlib.Path,
         *,
+        client: ClientHandle | None = None,
         start_timestep: int = 0,
         end_timestep: int = -1,
     ) -> bytes:
         """Write the recorded timeline to ``path`` and return its bytes."""
         return self._export_builder.serialize(
             path,
+            client=client,
             start_timestep=start_timestep,
             end_timestep=end_timestep,
         )
@@ -176,9 +140,36 @@ class Viser4dServer(viser.ViserServer):
     def _send_runtime_call(self, method: str, payload: dict[str, Any]) -> None:
         self._websock_server.queue_message(make_runtime_message(method, payload))
 
+    def _client_playback_values(self) -> list[ClientPlaybackHandle]:
+        with self._client_playbacks_lock:
+            return list(self._client_playbacks.values())
+
+    def _runtime_config_payload(self, *, num_steps: int | None = None) -> dict[str, Any]:
+        return self._controller.runtime_config_payload(num_steps=num_steps)
+
+    def _sync_client_playback_state(
+        self,
+        *,
+        timestep: int | None = None,
+        fps: float | None = None,
+        loop: bool | None = None,
+        is_playing: bool | None = None,
+    ) -> None:
+        for playback in self._client_playback_values():
+            playback.sync_state(
+                timestep=timestep,
+                fps=fps,
+                loop=loop,
+                is_playing=is_playing,
+            )
+
     @property
     def _fps(self) -> float:
         return self._controller.fps
+
+    @property
+    def _base_fps(self) -> float:
+        return self._controller.base_fps
 
     @property
     def _loop(self) -> bool:
