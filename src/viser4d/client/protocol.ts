@@ -80,21 +80,21 @@ export function getWindow(): TimelineRuntimeWindow {
   return window as TimelineRuntimeWindow;
 }
 
-export function findViewer(): ViewerLike | null {
+export function findViewer(): ViewerLike {
   const root = document.getElementById("root");
   if (!root) {
-    return null;
+    throw new Error("[viser4d] Could not find #root while locating the viewer.");
   }
   const rootRecord = root as unknown;
   if (!isObjectRecord(rootRecord)) {
-    return null;
+    throw new Error("[viser4d] React root is not an object while locating the viewer.");
   }
   const containerKey = Object.keys(rootRecord).find((key) =>
     key.startsWith("__reactContainer$"),
   );
   const reactRoot = containerKey ? rootRecord[containerKey] : null;
   if (!isObjectRecord(reactRoot)) {
-    return null;
+    throw new Error("[viser4d] Could not find the React container while locating the viewer.");
   }
   const seen = new Set<unknown>();
   const stack: ReactFiberNode[] = [reactRoot as ReactFiberNode];
@@ -115,5 +115,5 @@ export function findViewer(): ViewerLike | null {
       stack.push(fiber.sibling);
     }
   }
-  return null;
+  throw new Error("[viser4d] Could not locate the viewer in the React fiber tree.");
 }

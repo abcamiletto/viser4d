@@ -65,7 +65,7 @@ export class TimelineRuntime {
     (event, payload) => debugState.push(event, payload),
   );
 
-  private getViewer(): ViewerLike | null {
+  private getViewer(): ViewerLike {
     if (!this.viewer) {
       this.viewer = findViewer();
     }
@@ -73,11 +73,11 @@ export class TimelineRuntime {
   }
 
   private pushMessages(messages: RuntimeMessage[]): void {
-    this.getViewer()?.mutable.current.messageQueue.push(...messages);
+    this.getViewer().mutable.current.messageQueue.push(...messages);
   }
 
   private sendGuiUpdate(uuid: string, value: number): void {
-    this.getViewer()?.mutable.current.sendMessage({
+    this.getViewer().mutable.current.sendMessage({
       type: "GuiUpdateMessage",
       uuid,
       updates: { value },

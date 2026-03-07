@@ -4,9 +4,12 @@ import base64
 from dataclasses import dataclass, field
 from typing import Any
 
+import msgspec
 import numpy as np
+import viser
+import zstandard
 from viser import _messages
-from viser.infra import StateSerializer, WebsockMessageHandler
+from viser.infra import WebsockMessageHandler
 
 
 def to_jsonable(value: Any) -> Any:
@@ -73,12 +76,16 @@ class TimelineStore:
         return step_state
 
 
-class _ListMessageBuffer:
-    def __init__(self, messages: list[_messages.Message]) -> None:
-        self._messages = messages
+class TimelineRecorder(WebsockMessageHandler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[_messages.Message] = []
+
+    def get_message_buffer(self) -> Any:
+        return self
 
     def push(self, message: _messages.Message) -> None:
-        self._messages.append(message)
+        self.messages.append(message)
 
     def atomic_start(self) -> None:
         return
@@ -87,34 +94,19 @@ class _ListMessageBuffer:
         return
 
 
-class TimelineRecorder(WebsockMessageHandler):
-    def __init__(self) -> None:
-        super().__init__()
-        self.messages: list[_messages.Message] = []
-        self._buffer = _ListMessageBuffer(self.messages)
-
-    def get_message_buffer(self) -> Any:
-        return self._buffer
-
-
 def serialize_viser_messages(
     messages: list[_messages.Message],
     *,
     duration_seconds: float = 0.0,
 ) -> bytes:
-    class _SerializerHandler(WebsockMessageHandler):
-        def __init__(self) -> None:
-            super().__init__()
-            self._buffer = _ListMessageBuffer([])
-
-        def get_message_buffer(self) -> Any:
-            return self._buffer
-
-    handler = _SerializerHandler()
-    serializer = StateSerializer(handler, filter=lambda _message: True)
-    handler._record_handles.append(serializer)
-    for message in messages:
-        serializer._insert_message(message)
-    if duration_seconds > 0.0:
-        serializer.insert_sleep(duration_seconds)
-    return serializer.serialize()
+    packed = msgspec.msgpack.encode(
+        {
+            "durationSeconds": duration_seconds,
+            "messages": [
+                (0.0, message.as_serializable_dict()) for message in messages
+            ],
+            "viserVersion": viser.__version__,
+        }
+    )
+    compressed = zstandard.ZstdCompressor(level=12).compress(packed)
+    return len(packed).to_bytes(8, "little") + compressed
