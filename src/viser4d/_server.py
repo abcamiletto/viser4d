@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import pathlib
+import signal
 import threading
 import time
 from types import MethodType
@@ -591,8 +592,16 @@ class Viser4dServer(viser.ViserServer):
         self._controller.on_timestep_change(callback)
 
     def sleep_forever(self) -> None:
+        if (
+            threading.current_thread() is threading.main_thread()
+            and hasattr(signal, "pause")
+        ):
+            while True:
+                signal.pause()
+
+        sleeper = threading.Event()
         while True:
-            time.sleep(3600)
+            sleeper.wait(3600)
 
     def serialize(
         self,

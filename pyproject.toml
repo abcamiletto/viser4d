@@ -1,6 +1,6 @@
 [project]
 name = "viser4d"
-version = "0.5.0"
+version = "0.5.1"
 description = "A viser extension with out-of-the-box support for the time dimension"
 readme = "README.md"
 license = "Apache-2.0"
@@ -11,10 +11,12 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.1",
     "nodeenv>=1.9.1",
