@@ -160,12 +160,13 @@ See `examples/` for more.
 uvx ruff format .
 uvx ruff check .
 uvx ty check
-npm run typecheck:runtime
-npm run build:runtime
+pnpm run typecheck:runtime
+pnpm run build:runtime
 ```
 
 ## Tests
 
 ```bash
+pnpm run build:runtime
 uv run --group dev pytest -q
 ```

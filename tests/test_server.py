@@ -118,7 +118,6 @@ def test_audio_payload_normalizes_integer_formats() -> None:
         np.array([-1.0, 0.0, 2147483647 / 2147483648], dtype=np.float32),
     )
 
-
 def test_audio_append_keeps_chunked_state_until_waveform_is_read() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:

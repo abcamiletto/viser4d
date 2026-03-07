@@ -13,5 +13,5 @@
     "types": [],
     "noEmit": true
   },
-  "include": ["src/viser4d/runtime-src/**/*.ts"]
+  "include": ["src/viser4d/client/**/*.ts"]
 }

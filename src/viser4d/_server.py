@@ -33,7 +33,14 @@ if TYPE_CHECKING:
 
 
 def _runtime_source() -> str:
-    return _RUNTIME_MARKER + (pathlib.Path(__file__).resolve().parent / "runtime.js").read_text()
+    runtime_path = pathlib.Path(__file__).resolve().parent / "runtime.js"
+    try:
+        return _RUNTIME_MARKER + runtime_path.read_text()
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Missing generated client bundle at src/viser4d/runtime.js. "
+            "Run `pnpm run build:runtime` from the repository root."
+        ) from exc
 
 
 def _clamp(value: int, lower: int, upper: int) -> int:
