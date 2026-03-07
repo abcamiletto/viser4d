@@ -34,15 +34,31 @@ def runtime_config_payload(
     fps: float,
     base_fps: float,
     loop: bool,
-    timestep_sync_uuid: str | None,
 ) -> dict[str, Any]:
     return {
         "numSteps": num_steps,
         "fps": fps,
         "baseFps": base_fps,
         "loop": loop,
-        "timestepSyncUuid": timestep_sync_uuid,
     }
+
+
+def client_runtime_config_payload(
+    *,
+    num_steps: int,
+    fps: float,
+    base_fps: float,
+    loop: bool,
+    timestep_sync_uuid: str,
+) -> dict[str, Any]:
+    payload = runtime_config_payload(
+        num_steps=num_steps,
+        fps=fps,
+        base_fps=base_fps,
+        loop=loop,
+    )
+    payload["timestepSyncUuid"] = timestep_sync_uuid
+    return payload
 
 
 def make_runtime_message(

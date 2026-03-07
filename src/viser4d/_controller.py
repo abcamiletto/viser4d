@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import TYPE_CHECKING, Callable, Any
+from typing import TYPE_CHECKING, Callable
 
-from ._runtime import clamp, runtime_config_payload
+from ._runtime import clamp
 
 if TYPE_CHECKING:
     from ._server import Viser4dServer
@@ -81,15 +81,6 @@ class TimelineController:
             current_step = self._transport_step()
             self._fps = float(fps)
             self._set_anchor(current_step)
-
-    def runtime_config_payload(self, *, num_steps: int | None = None) -> dict[str, Any]:
-        return runtime_config_payload(
-            num_steps=self._server.num_steps if num_steps is None else num_steps,
-            fps=self._fps,
-            base_fps=self._base_fps,
-            loop=self._loop,
-            timestep_sync_uuid=None,
-        )
 
     def set_current_timestep(self, timestep: int) -> None:
         timestep = clamp(timestep, 0, self._server.num_steps - 1)

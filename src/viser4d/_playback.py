@@ -6,7 +6,11 @@ from typing import TYPE_CHECKING, Any
 import viser
 
 from . import _viser_private as impl
-from ._runtime import clamp, make_runtime_message, runtime_config_payload
+from ._runtime import (
+    clamp,
+    client_runtime_config_payload,
+    make_runtime_message,
+)
 
 if TYPE_CHECKING:
     from viser._viser import ClientHandle
@@ -163,7 +167,7 @@ class ClientPlaybackHandle:
             loop = self._loop
         self._send_runtime_call(
             "configure",
-            runtime_config_payload(
+            client_runtime_config_payload(
                 num_steps=self._server.num_steps,
                 fps=fps,
                 base_fps=self._server._base_fps,
