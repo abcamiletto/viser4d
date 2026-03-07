@@ -5,7 +5,7 @@ import pathlib
 import signal
 import threading
 from types import MethodType
-from typing import TYPE_CHECKING, Any, Callable, Iterator, cast
+from typing import TYPE_CHECKING, Callable, Iterator, cast
 
 import numpy as np
 import viser
@@ -15,6 +15,7 @@ from ._audio import AudioHandle
 from ._controller import TimelineController
 from ._export import ExportBuilder
 from ._playback import ClientPlaybackHandle
+from ._protocol import AudioOp, RuntimeMethod, RuntimePayload
 from ._recording import SceneRecorder
 from ._runtime import make_runtime_message, runtime_source
 from ._timeline import TimelineStore
@@ -109,13 +110,25 @@ class Viser4dServer(viser.ViserServer):
 
     def serialize(
         self,
+        *,
+        start_timestep: int = 0,
+        end_timestep: int | None = None,
+    ) -> bytes:
+        """Serialize the recorded timeline to bytes."""
+        return self._export_builder.serialize(
+            start_timestep=start_timestep,
+            end_timestep=end_timestep,
+        )
+
+    def write_recording(
+        self,
         path: str | pathlib.Path,
         *,
         start_timestep: int = 0,
-        end_timestep: int = -1,
-    ) -> bytes:
-        """Write the recorded timeline to ``path`` and return its bytes."""
-        return self._export_builder.serialize(
+        end_timestep: int | None = None,
+    ) -> None:
+        """Write the recorded timeline to ``path``."""
+        self._export_builder.write(
             path,
             start_timestep=start_timestep,
             end_timestep=end_timestep,
@@ -132,10 +145,10 @@ class Viser4dServer(viser.ViserServer):
             raise RuntimeError("add_audio() is only valid inside server.at(t).")
         return self._recorder.add_audio(name, data=data, sample_rate=sample_rate)
 
-    def _dispatch_audio_update(self, op: dict[str, Any]) -> None:
+    def _dispatch_audio_update(self, op: AudioOp) -> None:
         self._recorder.dispatch_audio_update(op)
 
-    def _send_runtime_call(self, method: str, payload: dict[str, Any]) -> None:
+    def _send_runtime_call(self, method: RuntimeMethod, payload: RuntimePayload) -> None:
         self._websock_server.queue_message(make_runtime_message(method, payload))
 
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:

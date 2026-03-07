@@ -93,17 +93,23 @@ callbacks.
 
 ## Serialize `.viser` recordings
 
-To serialize across timesteps, use `server.serialize(...)`:
+To serialize across timesteps in memory, use `server.serialize()`:
 
 ```python
 import viser4d
 
 server = viser4d.Viser4dServer(num_steps=100)
 # ... record timeline data ...
-server.serialize(
+blob = server.serialize(start_timestep=0, end_timestep=None)
+```
+
+To write the recording to disk, use `server.write_recording(...)`:
+
+```python
+server.write_recording(
     "recording.viser",
     start_timestep=0,
-    end_timestep=-1,  # -1 means final timestep
+    end_timestep=None,
 )
 ```
 

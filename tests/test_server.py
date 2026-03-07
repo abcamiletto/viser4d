@@ -62,9 +62,10 @@ def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
         assert server._current_timestep == 2
         assert seen_timesteps[-1] == 2
 
-        out_path = tmp_path / "scene.viser4d"
-        blob = server.serialize(out_path)
+        blob = server.serialize()
         assert blob
+        out_path = tmp_path / "scene.viser4d"
+        server.write_recording(out_path)
         assert out_path.read_bytes() == blob
 
         size = int.from_bytes(blob[:8], "little")
@@ -86,7 +87,7 @@ def test_serialize_rejects_invalid_timestep_range(tmp_path: pathlib.Path) -> Non
     try:
         with pytest.raises(AssertionError):
             server.serialize(
-                tmp_path / "scene.viser4d", start_timestep=2, end_timestep=1
+                start_timestep=2, end_timestep=1
             )
     finally:
         server.stop()

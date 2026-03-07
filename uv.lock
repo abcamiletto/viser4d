@@ -1248,7 +1248,7 @@ dev = [
 requires-dist = [
     { name = "nodeenv", specifier = ">=1.9.1" },
     { name = "numpy", specifier = ">=2.4.1" },
-    { name = "viser", specifier = ">=1.0.19" },
+    { name = "viser", specifier = ">=1.0.19,<1.1" },
 ]
 
 [package.metadata.requires-dev]

@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import json
 import pathlib
-from typing import Any
 
 from viser import _messages
 
 from . import _client_autobuild
+from ._protocol import ClientRuntimeConfig, RuntimeMethod, RuntimePayload
 
 
 RUNTIME_MARKER = "/*__VISER4D_RUNTIME__*/"
-
-
-def clamp(value: int, lower: int, upper: int) -> int:
-    return max(lower, min(value, upper))
 
 
 def runtime_source() -> str:
@@ -28,21 +24,6 @@ def runtime_source() -> str:
         ) from exc
 
 
-def runtime_config_payload(
-    *,
-    num_steps: int,
-    fps: float,
-    base_fps: float,
-    loop: bool,
-) -> dict[str, Any]:
-    return {
-        "numSteps": num_steps,
-        "fps": fps,
-        "baseFps": base_fps,
-        "loop": loop,
-    }
-
-
 def client_runtime_config_payload(
     *,
     num_steps: int,
@@ -50,20 +31,19 @@ def client_runtime_config_payload(
     base_fps: float,
     loop: bool,
     timestep_sync_uuid: str,
-) -> dict[str, Any]:
-    payload = runtime_config_payload(
-        num_steps=num_steps,
+) -> ClientRuntimeConfig:
+    return ClientRuntimeConfig(
+        numSteps=num_steps,
         fps=fps,
-        base_fps=base_fps,
+        baseFps=base_fps,
         loop=loop,
+        timestepSyncUuid=timestep_sync_uuid,
     )
-    payload["timestepSyncUuid"] = timestep_sync_uuid
-    return payload
 
 
 def make_runtime_message(
-    method: str,
-    payload: dict[str, Any],
+    method: RuntimeMethod,
+    payload: RuntimePayload,
 ) -> _messages.RunJavascriptMessage:
     source = (
         RUNTIME_MARKER

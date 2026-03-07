@@ -5,6 +5,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ._protocol import (
+    AppendAudioOp,
+    AudioArrayPayload,
+    RemoveAudioOp,
+    SetAudioVolumeOp,
+    SetAudioWaveformOp,
+)
+
 if TYPE_CHECKING:
     from ._server import Viser4dServer
 
@@ -39,7 +47,7 @@ def _audio_samples_for_transport(array: np.ndarray) -> np.ndarray:
     return arr.astype(np.float32, copy=False)
 
 
-def audio_array_payload(array: np.ndarray) -> dict[str, str | int]:
+def audio_array_payload(array: np.ndarray) -> AudioArrayPayload:
     arr = _audio_samples_for_transport(array)
     num_channels, num_frames = _audio_layout(arr)
     return {
@@ -105,11 +113,11 @@ class AudioHandle:
     def volume(self, value: float) -> None:
         self._state.volume = float(value)
         self._server._dispatch_audio_update(
-            {
-                "op": "set_volume",
-                "name": self._state.name,
-                "volume": self._state.volume,
-            }
+            SetAudioVolumeOp(
+                op="set_volume",
+                name=self._state.name,
+                volume=self._state.volume,
+            )
         )
 
     @property
@@ -120,22 +128,24 @@ class AudioHandle:
     def waveform(self, value: np.ndarray) -> None:
         self._state.waveform = value
         self._server._dispatch_audio_update(
-            {
-                "op": "set_waveform",
-                "name": self._state.name,
-                "waveform": audio_array_payload(self._state.waveform),
-            }
+            SetAudioWaveformOp(
+                op="set_waveform",
+                name=self._state.name,
+                waveform=audio_array_payload(self._state.waveform),
+            )
         )
 
     def append(self, data: np.ndarray) -> None:
         append_data = self._state.append_chunk(data)
         self._server._dispatch_audio_update(
-            {
-                "op": "append",
-                "name": self._state.name,
-                "waveform": audio_array_payload(append_data),
-            }
+            AppendAudioOp(
+                op="append",
+                name=self._state.name,
+                waveform=audio_array_payload(append_data),
+            )
         )
 
     def remove(self) -> None:
-        self._server._dispatch_audio_update({"op": "remove", "name": self._state.name})
+        self._server._dispatch_audio_update(
+            RemoveAudioOp(op="remove", name=self._state.name)
+        )

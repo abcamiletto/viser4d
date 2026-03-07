@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import msgspec
 import numpy as np
@@ -11,23 +11,35 @@ import zstandard
 from viser import _messages
 from viser.infra import WebsockMessageHandler
 
+from ._protocol import AudioOp, BinaryPayload, JSONValue, SerializedMessage
 
-def to_jsonable(value: Any) -> Any:
+
+def to_jsonable(value: Any) -> JSONValue:
     if isinstance(value, memoryview):
         value = value.tobytes()
     if isinstance(value, (bytes, bytearray)):
-        return {"__viser4d_binary__": base64.b64encode(bytes(value)).decode("ascii")}
+        return cast(
+            JSONValue,
+            BinaryPayload(
+                __viser4d_binary__=base64.b64encode(bytes(value)).decode("ascii")
+            ),
+        )
     if isinstance(value, np.ndarray):
-        return {"__viser4d_binary__": base64.b64encode(value.tobytes()).decode("ascii")}
+        return cast(
+            JSONValue,
+            BinaryPayload(
+                __viser4d_binary__=base64.b64encode(value.tobytes()).decode("ascii")
+            ),
+        )
     if isinstance(value, dict):
-        return {key: to_jsonable(val) for key, val in value.items()}
+        return {str(key): to_jsonable(val) for key, val in value.items()}
     if isinstance(value, (tuple, list)):
         return [to_jsonable(item) for item in value]
     return value
 
 
-def extract_node_names(message: dict[str, Any]) -> set[str]:
-    name = message.get("name")
+def extract_node_names(message: _messages.Message) -> set[str]:
+    name = getattr(message, "name", None)
     return {name} if isinstance(name, str) and name else set()
 
 
@@ -37,9 +49,9 @@ def is_scene_message(message: Any) -> bool:
 
 @dataclass
 class TimelineStep:
-    messages: list[dict[str, Any]] = field(default_factory=list)
+    messages: list[_messages.Message] = field(default_factory=list)
     node_names: set[str] = field(default_factory=set)
-    audio_ops: list[dict[str, Any]] = field(default_factory=list)
+    audio_ops: list[AudioOp] = field(default_factory=list)
 
 
 class TimelineStore:
@@ -47,7 +59,7 @@ class TimelineStore:
         self.num_steps = num_steps
         self.steps = [TimelineStep() for _ in range(num_steps)]
         self.node_names: set[str] = set()
-        self.baseline_messages_by_name: dict[str, list[dict[str, Any]]] = {}
+        self.baseline_messages_by_name: dict[str, list[_messages.Message]] = {}
 
     def validate_step(self, step: int) -> int:
         if step < 0 or step >= self.num_steps:
@@ -60,7 +72,7 @@ class TimelineStore:
         return self.steps[self.validate_step(step)]
 
     def record_scene_messages(
-        self, step: int, messages: list[dict[str, Any]]
+        self, step: int, messages: list[_messages.Message]
     ) -> TimelineStep:
         step_state = self.step(step)
         step_state.messages.extend(messages)
@@ -70,7 +82,7 @@ class TimelineStore:
             self.node_names.update(node_names)
         return step_state
 
-    def record_audio_ops(self, step: int, ops: list[dict[str, Any]]) -> TimelineStep:
+    def record_audio_ops(self, step: int, ops: list[AudioOp]) -> TimelineStep:
         step_state = self.step(step)
         step_state.audio_ops.extend(ops)
         return step_state
@@ -95,7 +107,7 @@ class TimelineRecorder(WebsockMessageHandler):
 
 
 def serialize_viser_recording(
-    messages: list[tuple[float, dict[str, Any]]],
+    messages: list[tuple[float, SerializedMessage]],
     *,
     duration_seconds: float = 0.0,
 ) -> bytes:
@@ -108,4 +120,3 @@ def serialize_viser_recording(
     )
     compressed = zstandard.ZstdCompressor(level=12).compress(packed)
     return len(packed).to_bytes(8, "little") + compressed
-
