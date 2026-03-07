@@ -57,21 +57,4 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build:runtime
-      - run: uv run --group dev pytest -q -m "not e2e"
-
-  e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build:runtime
-      - run: uv run --group dev playwright install --with-deps chromium
-      - run: VISER4D_RUN_E2E=1 uv run --group dev pytest -q tests/test_e2e_runtime.py
+      - run: uv run --group dev pytest -q
