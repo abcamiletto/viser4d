@@ -1,3 +1,4 @@
+include build_backend.py
 include package.json
 include pnpm-lock.yaml
 include tsconfig.json
