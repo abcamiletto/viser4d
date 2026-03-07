@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any
 
 import numpy as np
 from viser import _messages
-from viser.infra import StateSerializer
+from viser.infra import StateSerializer, WebsockMessageHandler
 
 
 def to_jsonable(value: Any) -> Any:
@@ -74,28 +73,41 @@ class TimelineStore:
         return step_state
 
 
-class TimelineRecorder:
-    def __init__(self) -> None:
-        self.messages: list[_messages.Message] = []
+class _ListMessageBuffer:
+    def __init__(self, messages: list[_messages.Message]) -> None:
+        self._messages = messages
 
-    def queue_message(self, message: _messages.Message) -> None:
-        self.messages.append(message)
+    def push(self, message: _messages.Message) -> None:
+        self._messages.append(message)
+
+    def atomic_start(self) -> None:
+        return
+
+    def atomic_end(self) -> None:
+        return
+
+
+class TimelineRecorder(WebsockMessageHandler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[_messages.Message] = []
+        self._buffer = _ListMessageBuffer(self.messages)
 
     def get_message_buffer(self) -> Any:
-        raise RuntimeError("Timeline recorder does not expose a live message buffer.")
-
-    @contextlib.contextmanager
-    def atomic(self) -> Iterator[None]:
-        yield
+        return self._buffer
 
 def serialize_viser_messages(
     messages: list[_messages.Message],
     *,
     duration_seconds: float = 0.0,
 ) -> bytes:
-    class _SerializerHandler:
+    class _SerializerHandler(WebsockMessageHandler):
         def __init__(self) -> None:
-            self._record_handles: list[StateSerializer] = []
+            super().__init__()
+            self._buffer = _ListMessageBuffer([])
+
+        def get_message_buffer(self) -> Any:
+            return self._buffer
 
     handler = _SerializerHandler()
     serializer = StateSerializer(handler, filter=lambda _message: True)

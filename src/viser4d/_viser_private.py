@@ -25,4 +25,8 @@ def scene_recording_interface(
 
 
 def broadcast_messages(server: viser.ViserServer) -> list[_messages.Message]:
-    return list(server._websock_server._broadcast_buffer.message_from_id.values())
+    return [
+        message
+        for message in server._websock_server._broadcast_buffer.message_from_id.values()
+        if isinstance(message, _messages.Message)
+    ]

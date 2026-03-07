@@ -5,12 +5,14 @@ import json
 import pathlib
 import threading
 import time
-from typing import Any, Callable, Iterator
+from types import MethodType
+from typing import TYPE_CHECKING, Any, Callable, Iterator, cast
 
 import numpy as np
 import viser
 from viser import _messages
 
+from . import _viser_private as impl
 from ._audio import AudioHandle, AudioState, audio_array_payload
 from ._timeline import (
     TimelineRecorder,
@@ -19,14 +21,15 @@ from ._timeline import (
     serialize_viser_messages,
     to_jsonable,
 )
-from ._viser_private import (
-    broadcast_messages,
-    gui_uuid,
-    scene_recording_interface,
-)
 
 
 _RUNTIME_MARKER = "/*__VISER4D_RUNTIME__*/"
+
+if TYPE_CHECKING:
+    class Viser4dSceneApi(viser.SceneApi):
+        def add_audio(
+            self, name: str, *, data: np.ndarray, sample_rate: int
+        ) -> AudioHandle: ...
 
 
 def _runtime_source() -> str:
@@ -195,7 +198,7 @@ class TimelineController:
             fps=self._fps,
             base_fps=self._base_fps,
             loop=self._loop,
-            timestep_sync_uuid=gui_uuid(self._server._timestep_sync),
+            timestep_sync_uuid=impl.gui_uuid(self._server._timestep_sync),
         )
 
     def set_current_timestep(self, timestep: int) -> None:
@@ -255,7 +258,7 @@ class SceneRecorder:
         recorder = TimelineRecorder()
         self._active_step = step
         try:
-            with scene_recording_interface(self._server._live_scene, recorder):
+            with impl.scene_recording_interface(self._server.scene, recorder):
                 yield
         finally:
             self._active_step = None
@@ -332,7 +335,7 @@ class SceneRecorder:
     def _collect_live_messages_for_name(self, name: str) -> list[dict[str, Any]]:
         return [
             to_jsonable(message.as_serializable_dict())
-            for message in broadcast_messages(self._server)
+            for message in impl.broadcast_messages(self._server)
             if is_scene_message(message) and getattr(message, "name", None) == name
         ]
 
@@ -395,7 +398,7 @@ class ExportBuilder:
 
     def _base_messages(self) -> list[_messages.Message]:
         messages: list[_messages.Message] = []
-        for message in broadcast_messages(self._server):
+        for message in impl.broadcast_messages(self._server):
             if (
                 isinstance(message, _messages.RunJavascriptMessage)
                 and message.source.startswith(_RUNTIME_MARKER)
@@ -446,43 +449,32 @@ class ExportBuilder:
         server = self._server
         return [
             _messages.GuiUpdateMessage(
-                gui_uuid(server._timestep_sync),
+                impl.gui_uuid(server._timestep_sync),
                 {"value": export_step, "max": export_num_steps - 1},
             ),
             _messages.GuiUpdateMessage(
-                gui_uuid(server._timeline_slider),
+                impl.gui_uuid(server._timeline_slider),
                 {"value": export_step, "max": export_num_steps - 1},
             ),
-            _messages.GuiUpdateMessage(gui_uuid(server._play_button), {"visible": True}),
-            _messages.GuiUpdateMessage(gui_uuid(server._pause_button), {"visible": False}),
+            _messages.GuiUpdateMessage(
+                impl.gui_uuid(server._play_button), {"visible": True}
+            ),
+            _messages.GuiUpdateMessage(
+                impl.gui_uuid(server._pause_button), {"visible": False}
+            ),
             _make_runtime_message("seek", {"step": export_step}),
         ]
 
-
-class _SceneFacade:
-    def __init__(self, server: Viser4dServer, live_scene: viser.SceneApi):
-        self._server = server
-        self._live_scene = live_scene
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._live_scene, name)
-
-    def add_audio(
-        self, name: str, *, data: np.ndarray, sample_rate: int
-    ) -> AudioHandle:
-        if self._server._recorder.active_step is None:
-            raise RuntimeError("scene.add_audio() is only valid inside server.at(t).")
-        return self._server._add_audio(name, data=data, sample_rate=sample_rate)
-
-
 class Viser4dServer(viser.ViserServer):
+    if TYPE_CHECKING:
+        scene: Viser4dSceneApi
+
     def __init__(self, num_steps: int, fps: float = 30.0, **kwargs) -> None:
         super().__init__(**kwargs)
 
         self.num_steps = int(num_steps)
         self._timeline = TimelineStore(self.num_steps)
-        self._live_scene = self.scene
-        self.scene = _SceneFacade(self, self._live_scene)
+        setattr(self.scene, "add_audio", MethodType(_scene_add_audio, self.scene))
         self._controller = TimelineController(self, fps=fps)
         self._recorder = SceneRecorder(self, self._timeline)
         self._export_builder = ExportBuilder(self, self._timeline)
@@ -591,6 +583,8 @@ class Viser4dServer(viser.ViserServer):
         )
 
     def _add_audio(self, name: str, *, data: np.ndarray, sample_rate: int) -> AudioHandle:
+        if self._recorder.active_step is None:
+            raise RuntimeError("add_audio() is only valid inside server.at(t).")
         return self._recorder.add_audio(name, data=data, sample_rate=sample_rate)
 
     def _dispatch_audio_update(self, _name: str, op: dict[str, Any]) -> None:
@@ -614,3 +608,14 @@ class Viser4dServer(viser.ViserServer):
     @property
     def _current_timestep(self) -> int:
         return self._controller.current_timestep
+
+
+def _scene_add_audio(
+    scene: viser.SceneApi,
+    name: str,
+    *,
+    data: np.ndarray,
+    sample_rate: int,
+) -> AudioHandle:
+    server = cast(Viser4dServer, scene._owner)
+    return server._add_audio(name, data=data, sample_rate=sample_rate)

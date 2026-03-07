@@ -135,8 +135,8 @@ count).
 
 ## How it works
 
-Context determines behavior. `server.scene` always returns the same `ProxyScene` object, but
-it behaves differently based on whether you're inside an `at(t)` context:
+Context determines behavior. `server.scene` is viser's normal scene API, but
+its websocket target is swapped while you're inside an `at(t)` context:
 
 ```
 Inside at(t):                          Outside at(t):
