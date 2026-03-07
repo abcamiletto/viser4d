@@ -475,6 +475,8 @@ class ExportBuilder:
         ]
 
 class Viser4dServer(viser.ViserServer):
+    """Viser server with timestep recording, playback, and synced audio."""
+
     if TYPE_CHECKING:
         scene: Viser4dSceneApi
 
@@ -562,10 +564,12 @@ class Viser4dServer(viser.ViserServer):
 
     @contextlib.contextmanager
     def at(self, t: int) -> Iterator[None]:
+        """Record scene and audio operations for timestep ``t``."""
         with self._recorder.at(t):
             yield
 
     def play(self, fps: float, loop: bool = False) -> None:
+        """Start timeline playback at ``fps`` and optionally loop."""
         self._controller.play(fps, loop=loop)
 
     def pause(self) -> None:
@@ -588,6 +592,7 @@ class Viser4dServer(viser.ViserServer):
         start_timestep: int = 0,
         end_timestep: int = -1,
     ) -> bytes:
+        """Write the recorded timeline to ``path`` and return its bytes."""
         return self._export_builder.serialize(
             path,
             start_timestep=start_timestep,

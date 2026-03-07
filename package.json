@@ -1,0 +1,13 @@
+{
+  "name": "viser4d-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:runtime": "node scripts/build-runtime.mjs",
+    "typecheck:runtime": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.2"
+  }
+}

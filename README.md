@@ -160,6 +160,8 @@ See `examples/` for more.
 uvx ruff format .
 uvx ruff check .
 uvx ty check
+npm run typecheck:runtime
+npm run build:runtime
 ```
 
 ## Tests

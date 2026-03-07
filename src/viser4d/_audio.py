@@ -69,6 +69,8 @@ class AudioState:
 
 
 class AudioHandle:
+    """Handle for a timeline-synced audio track."""
+
     def __init__(self, server: Viser4dServer, state: AudioState):
         self._server = server
         self._state = state
