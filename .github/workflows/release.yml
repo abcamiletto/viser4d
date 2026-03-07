@@ -18,6 +18,13 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
       - name: Detect version change
         id: version
         run: |
@@ -47,6 +54,12 @@ jobs:
           git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
           git tag "v${{ steps.version.outputs.version }}"
           git push origin "v${{ steps.version.outputs.version }}"
+      - name: Install JS dependencies
+        if: steps.version.outputs.changed == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Build runtime
+        if: steps.version.outputs.changed == 'true'
+        run: pnpm run build:runtime
       - name: Build
         if: steps.version.outputs.changed == 'true'
         run: uv build

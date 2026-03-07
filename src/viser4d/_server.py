@@ -14,6 +14,7 @@ from viser import _messages
 
 from . import _viser_private as impl
 from ._audio import AudioHandle, AudioState, audio_array_payload
+from ._runtime_bundle import ensure_runtime_bundle
 from ._timeline import (
     TimelineRecorder,
     TimelineStore,
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
 
 def _runtime_source() -> str:
     runtime_path = pathlib.Path(__file__).resolve().parent / "runtime.js"
+    ensure_runtime_bundle(runtime_path)
     try:
         return _RUNTIME_MARKER + runtime_path.read_text()
     except FileNotFoundError as exc:

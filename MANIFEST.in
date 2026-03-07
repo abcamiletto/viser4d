@@ -1,0 +1,5 @@
+include package.json
+include pnpm-lock.yaml
+include tsconfig.json
+include scripts/build-runtime.mjs
+recursive-include src/viser4d/client *.ts
