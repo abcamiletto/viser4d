@@ -84,7 +84,11 @@ class AudioHandle:
         self._state.volume = float(value)
         self._server._dispatch_audio_update(
             self._state.name,
-            {"op": "set_volume", "name": self._state.name, "volume": self._state.volume},
+            {
+                "op": "set_volume",
+                "name": self._state.name,
+                "volume": self._state.volume,
+            },
         )
 
     @property

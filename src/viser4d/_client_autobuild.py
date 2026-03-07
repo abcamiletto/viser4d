@@ -57,9 +57,7 @@ def ensure_client_is_built() -> None:
         )
 
 
-def _bundle_is_stale(
-    runtime_path: pathlib.Path, inputs: list[pathlib.Path]
-) -> bool:
+def _bundle_is_stale(runtime_path: pathlib.Path, inputs: list[pathlib.Path]) -> bool:
     if not runtime_path.exists():
         return True
     runtime_mtime = runtime_path.stat().st_mtime

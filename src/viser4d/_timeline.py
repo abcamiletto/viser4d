@@ -96,6 +96,7 @@ class TimelineRecorder(WebsockMessageHandler):
     def get_message_buffer(self) -> Any:
         return self._buffer
 
+
 def serialize_viser_messages(
     messages: list[_messages.Message],
     *,

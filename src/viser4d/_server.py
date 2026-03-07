@@ -28,6 +28,7 @@ from ._timeline import (
 _RUNTIME_MARKER = "/*__VISER4D_RUNTIME__*/"
 
 if TYPE_CHECKING:
+
     class Viser4dSceneApi(viser.SceneApi):
         def add_audio(
             self, name: str, *, data: np.ndarray, sample_rate: int
@@ -71,7 +72,9 @@ def _make_runtime_message(
     method: str,
     payload: dict[str, Any],
 ) -> _messages.RunJavascriptMessage:
-    source = _RUNTIME_MARKER + f"""
+    source = (
+        _RUNTIME_MARKER
+        + f"""
 (() => {{
   const invoke = () => {{
     if (!window.__VISER4D__) return false;
@@ -85,6 +88,7 @@ def _make_runtime_message(
   }}, 50);
 }})();
 """
+    )
     return _messages.RunJavascriptMessage(source)
 
 
@@ -164,7 +168,11 @@ class TimelineController:
         timestep = _clamp(int(timestep), 0, self._server.num_steps - 1)
         should_sync_buttons = False
         with self._lock:
-            if self._is_playing and not self._loop and timestep >= self._server.num_steps - 1:
+            if (
+                self._is_playing
+                and not self._loop
+                and timestep >= self._server.num_steps - 1
+            ):
                 self._set_anchor(float(timestep))
                 self._is_playing = False
                 should_sync_buttons = True
@@ -407,21 +415,26 @@ class ExportBuilder:
         messages.append(
             _make_runtime_message(
                 "configure",
-                self._server._controller.runtime_config_payload(num_steps=export_num_steps),
+                self._server._controller.runtime_config_payload(
+                    num_steps=export_num_steps
+                ),
             )
         )
         messages.extend(self._timeline_messages(start=start, end=end))
         messages.extend(self._baseline_messages())
-        messages.extend(self._gui_messages(export_num_steps=export_num_steps, export_step=export_step))
+        messages.extend(
+            self._gui_messages(
+                export_num_steps=export_num_steps, export_step=export_step
+            )
+        )
         return messages
 
     def _base_messages(self) -> list[_messages.Message]:
         messages: list[_messages.Message] = []
         for message in impl.broadcast_messages(self._server):
-            if (
-                isinstance(message, _messages.RunJavascriptMessage)
-                and message.source.startswith(_RUNTIME_MARKER)
-            ):
+            if isinstance(
+                message, _messages.RunJavascriptMessage
+            ) and message.source.startswith(_RUNTIME_MARKER):
                 continue
             messages.append(message)
         return messages
@@ -483,6 +496,7 @@ class ExportBuilder:
             ),
             _make_runtime_message("seek", {"step": export_step}),
         ]
+
 
 class Viser4dServer(viser.ViserServer):
     """Viser server with timestep recording, playback, and synced audio."""
@@ -570,6 +584,7 @@ class Viser4dServer(viser.ViserServer):
         @self._pause_button.on_click
         def _pause(_event: Any) -> None:
             self.pause()
+
         self._controller.sync_runtime_config()
 
     @contextlib.contextmanager
@@ -592,9 +607,8 @@ class Viser4dServer(viser.ViserServer):
         self._controller.on_timestep_change(callback)
 
     def sleep_forever(self) -> None:
-        if (
-            threading.current_thread() is threading.main_thread()
-            and hasattr(signal, "pause")
+        if threading.current_thread() is threading.main_thread() and hasattr(
+            signal, "pause"
         ):
             while True:
                 signal.pause()
@@ -621,7 +635,9 @@ class Viser4dServer(viser.ViserServer):
         self._controller.stop()
         super().stop()
 
-    def _add_audio(self, name: str, *, data: np.ndarray, sample_rate: int) -> AudioHandle:
+    def _add_audio(
+        self, name: str, *, data: np.ndarray, sample_rate: int
+    ) -> AudioHandle:
         if self._recorder.active_step is None:
             raise RuntimeError("add_audio() is only valid inside server.at(t).")
         return self._recorder.add_audio(name, data=data, sample_rate=sample_rate)

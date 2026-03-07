@@ -16,7 +16,9 @@ def test_audio_requires_timestep_context() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with pytest.raises(RuntimeError):
-            server.scene.add_audio("/audio", data=np.zeros(4, dtype=np.int16), sample_rate=8_000)
+            server.scene.add_audio(
+                "/audio", data=np.zeros(4, dtype=np.int16), sample_rate=8_000
+            )
     finally:
         server.stop()
 
@@ -83,7 +85,9 @@ def test_serialize_rejects_invalid_timestep_range(tmp_path: pathlib.Path) -> Non
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
         with pytest.raises(ValueError, match="Invalid timestep range"):
-            server.serialize(tmp_path / "scene.viser4d", start_timestep=2, end_timestep=1)
+            server.serialize(
+                tmp_path / "scene.viser4d", start_timestep=2, end_timestep=1
+            )
     finally:
         server.stop()
 
@@ -104,7 +108,9 @@ def test_audio_payload_normalizes_integer_formats() -> None:
         base64.b64decode(int16_payload["data"]), dtype=np.float32
     )
     assert int16_payload["dtype"] == "float32"
-    assert np.allclose(int16_values, np.array([-1.0, 0.0, 32767 / 32768], dtype=np.float32))
+    assert np.allclose(
+        int16_values, np.array([-1.0, 0.0, 32767 / 32768], dtype=np.float32)
+    )
 
     int32_payload = audio_array_payload(
         np.array([-2147483648, 0, 2147483647], dtype=np.int32)
@@ -117,6 +123,7 @@ def test_audio_payload_normalizes_integer_formats() -> None:
         int32_values,
         np.array([-1.0, 0.0, 2147483647 / 2147483648], dtype=np.float32),
     )
+
 
 def test_audio_append_keeps_chunked_state_until_waveform_is_read() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)

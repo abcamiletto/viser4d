@@ -52,7 +52,9 @@ def test_runtime_replays_recorded_steps_in_browser() -> None:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(f"http://127.0.0.1:{port}", wait_until="networkidle", timeout=30_000)
+            page.goto(
+                f"http://127.0.0.1:{port}", wait_until="networkidle", timeout=30_000
+            )
             page.wait_for_timeout(2_000)
 
             initial = page.evaluate(
