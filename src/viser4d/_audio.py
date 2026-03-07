@@ -9,8 +9,25 @@ if TYPE_CHECKING:
     from ._server import Viser4dServer
 
 
+def _normalize_audio_array(array: np.ndarray) -> np.ndarray:
+    arr = np.asarray(array)
+    if arr.ndim == 1:
+        return np.ascontiguousarray(arr)
+    if arr.ndim == 2 and arr.shape[1] in (1, 2):
+        return np.ascontiguousarray(arr)
+    raise ValueError(
+        "Audio data must be mono or stereo with shape (frames,) or (frames, channels)."
+    )
+
+
+def _audio_layout(array: np.ndarray) -> tuple[int, int]:
+    if array.ndim == 1:
+        return (1, int(array.shape[0]))
+    return (int(array.shape[1]), int(array.shape[0]))
+
+
 def _audio_samples_for_transport(array: np.ndarray) -> np.ndarray:
-    arr = np.ascontiguousarray(array)
+    arr = _normalize_audio_array(array)
     if np.issubdtype(arr.dtype, np.signedinteger):
         info = np.iinfo(arr.dtype)
         scale = max(abs(info.min), info.max)
@@ -22,10 +39,13 @@ def _audio_samples_for_transport(array: np.ndarray) -> np.ndarray:
     return arr.astype(np.float32, copy=False)
 
 
-def audio_array_payload(array: np.ndarray) -> dict[str, str]:
+def audio_array_payload(array: np.ndarray) -> dict[str, str | int]:
     arr = _audio_samples_for_transport(array)
+    num_channels, num_frames = _audio_layout(arr)
     return {
         "dtype": str(arr.dtype),
+        "numChannels": num_channels,
+        "numFrames": num_frames,
         "data": base64.b64encode(arr.tobytes()).decode("ascii"),
     }
 
@@ -57,12 +77,14 @@ class AudioState:
 
     @waveform.setter
     def waveform(self, value: np.ndarray) -> None:
-        arr = np.ascontiguousarray(value)
+        arr = _normalize_audio_array(value)
         self._chunks = [arr]
         self._waveform_cache = arr
 
     def append_chunk(self, data: np.ndarray) -> np.ndarray:
-        chunk = np.ascontiguousarray(data)
+        chunk = _normalize_audio_array(data)
+        if _audio_layout(chunk)[0] != _audio_layout(self._chunks[0])[0]:
+            raise ValueError("Audio append must preserve channel count.")
         self._chunks.append(chunk)
         self._waveform_cache = None
         return chunk
@@ -97,7 +119,7 @@ class AudioHandle:
 
     @waveform.setter
     def waveform(self, value: np.ndarray) -> None:
-        self._state.waveform = np.ascontiguousarray(value)
+        self._state.waveform = value
         self._server._dispatch_audio_update(
             self._state.name,
             {

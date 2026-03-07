@@ -1,7 +1,6 @@
 import {
-  decodeAudioArray,
+  decodeAudioWaveform,
   reviveMessage,
-  samplesToFloat32,
   type AudioArrayPayload,
   type RuntimeMessage,
   type RuntimeValue,
@@ -72,8 +71,9 @@ type TimelineRuntimeWindow = Window & {
 };
 
 type TrackState = {
+  channels: number;
   sampleRate: number;
-  waveform: Float32Array;
+  waveform: Float32Array[];
   volume: number;
   startStep: number;
   removed: boolean;
@@ -83,7 +83,7 @@ type RuntimeTrack = {
   source: AudioBufferSourceNode | null;
   gain: GainNode | null;
   buffer: AudioBuffer | null;
-  bufferWaveform: Float32Array | null;
+  bufferWaveform: Float32Array[] | null;
   bufferSampleRate: number | null;
   token: number;
 };
@@ -169,8 +169,9 @@ function findViewer(): ViewerLike | null {
 
 function makeTrackState(step: number, sampleRate = 44100): TrackState {
   return {
+    channels: 1,
     sampleRate,
-    waveform: new Float32Array(0),
+    waveform: [new Float32Array(0)],
     volume: 1.0,
     startStep: step,
     removed: false,
@@ -193,6 +194,7 @@ function mergeTrackState(
       return null;
     }
     return {
+      channels: override.channels ?? override.waveform.length,
       sampleRate: override.sampleRate,
       waveform: override.waveform,
       volume: override.volume ?? 1.0,
@@ -204,12 +206,26 @@ function mergeTrackState(
     return base;
   }
   return {
+    channels: override.channels ?? base.channels,
     sampleRate: override.sampleRate ?? base.sampleRate,
     waveform: override.waveform ?? base.waveform,
     volume: override.volume ?? base.volume,
     startStep: override.startStep ?? base.startStep,
     removed: override.removed ?? base.removed,
   };
+}
+
+function appendWaveforms(head: Float32Array[], tail: Float32Array[]): Float32Array[] {
+  return head.map((samples, channel) => {
+    const merged = new Float32Array(samples.length + (tail[channel]?.length ?? 0));
+    merged.set(samples, 0);
+    merged.set(tail[channel] ?? new Float32Array(0), samples.length);
+    return merged;
+  });
+}
+
+function trackFrameCount(track: Pick<TrackState, "waveform">): number {
+  return track.waveform[0]?.length ?? 0;
 }
 
 class AudioRuntime {
@@ -283,8 +299,13 @@ class AudioRuntime {
     ) {
       return runtimeTrack.buffer;
     }
-    const buffer = ctx.createBuffer(1, track.waveform.length, track.sampleRate);
-    buffer.copyToChannel(track.waveform as unknown as Float32Array<ArrayBuffer>, 0);
+    const buffer = ctx.createBuffer(track.channels, trackFrameCount(track), track.sampleRate);
+    for (let channel = 0; channel < track.channels; channel += 1) {
+      buffer.copyToChannel(
+        new Float32Array(track.waveform[channel] ?? new Float32Array(0)),
+        channel,
+      );
+    }
     runtimeTrack.buffer = buffer;
     runtimeTrack.bufferWaveform = track.waveform;
     runtimeTrack.bufferSampleRate = track.sampleRate;
@@ -302,7 +323,8 @@ class AudioRuntime {
     switch (op.op) {
       case "add":
         next.sampleRate = op.sampleRate;
-        next.waveform = samplesToFloat32(decodeAudioArray(op.waveform));
+        next.channels = op.waveform.numChannels;
+        next.waveform = decodeAudioWaveform(op.waveform);
         next.volume = op.volume;
         next.startStep = step;
         next.removed = false;
@@ -313,17 +335,15 @@ class AudioRuntime {
         effect = "volume";
         break;
       case "set_waveform":
-        next.waveform = samplesToFloat32(decodeAudioArray(op.waveform));
+        next.channels = op.waveform.numChannels;
+        next.waveform = decodeAudioWaveform(op.waveform);
         next.removed = false;
         effect = "reschedule";
         break;
       case "append": {
-        const head = next.waveform || new Float32Array(0);
-        const tail = samplesToFloat32(decodeAudioArray(op.waveform));
-        const merged = new Float32Array(head.length + tail.length);
-        merged.set(head, 0);
-        merged.set(tail, head.length);
-        next.waveform = merged;
+        const tail = decodeAudioWaveform(op.waveform);
+        next.channels = op.waveform.numChannels;
+        next.waveform = next.waveform ? appendWaveforms(next.waveform, tail) : tail;
         effect = "reschedule";
         break;
       }
@@ -397,7 +417,11 @@ class AudioRuntime {
     if (runtimeTrack.source) {
       try {
         runtimeTrack.source.stop();
-      } catch {}
+      } catch (error) {
+        debugState.push("audio.stop_error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       runtimeTrack.source.disconnect();
       runtimeTrack.source = null;
     }
@@ -414,7 +438,7 @@ class AudioRuntime {
   }
 
   private getClipDurationSteps(track: TrackState): number {
-    return (track.waveform.length / track.sampleRate) * this.baseFps;
+    return (trackFrameCount(track) / track.sampleRate) * this.baseFps;
   }
 
   private isTrackActiveAtStep(track: TrackState, playbackStep: number): boolean {
@@ -438,7 +462,7 @@ class AudioRuntime {
       ctx.resume().catch(() => {});
     }
     const track = this.getEffectiveTrack(name);
-    if (!track || track.removed || !track.waveform.length) {
+    if (!track || track.removed || !trackFrameCount(track)) {
       return;
     }
     const playbackStep = this.getPlaybackStep();
@@ -472,7 +496,7 @@ class AudioRuntime {
         this.playing &&
         effective &&
         !effective.removed &&
-        effective.waveform.length &&
+        trackFrameCount(effective) &&
         this.isTrackActiveAtStep(effective, this.getPlaybackStep())
       ) {
         this.reconcileTrack(name);

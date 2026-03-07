@@ -26,6 +26,8 @@ from ._timeline import (
 
 
 _RUNTIME_MARKER = "/*__VISER4D_RUNTIME__*/"
+_TIMESTEP_SYNC_SMOOTHING_FACTOR = 0.2
+_TIMESTEP_SYNC_SNAP_THRESHOLD_SECONDS = 0.1
 
 if TYPE_CHECKING:
 
@@ -183,7 +185,12 @@ class TimelineController:
                     error = (
                         (error + self._server.num_steps / 2) % self._server.num_steps
                     ) - self._server.num_steps / 2
-                correction = error if abs(error) > 2.0 else error * 0.35
+                error_seconds = abs(error) / self._fps
+                correction = (
+                    error
+                    if error_seconds > _TIMESTEP_SYNC_SNAP_THRESHOLD_SECONDS
+                    else error * _TIMESTEP_SYNC_SMOOTHING_FACTOR
+                )
                 self._set_anchor(predicted + correction)
                 should_sync_buttons = False
             else:

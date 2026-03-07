@@ -18,6 +18,8 @@ type BinaryPayload = {
 export type AudioArrayPayload = {
   data: string;
   dtype: "int16" | "int32" | "float64" | "float32" | "uint8";
+  numChannels: number;
+  numFrames: number;
 };
 
 export function decodeBase64Bytes(base64Text: string): Uint8Array {
@@ -102,4 +104,17 @@ export function samplesToFloat32(samples: ArrayLike<number>): Float32Array {
     return out;
   }
   return Float32Array.from(samples);
+}
+
+export function decodeAudioWaveform(payload: AudioArrayPayload): Float32Array[] {
+  const flat = samplesToFloat32(decodeAudioArray(payload));
+  const channels: Float32Array[] = [];
+  for (let channel = 0; channel < payload.numChannels; channel += 1) {
+    const out = new Float32Array(payload.numFrames);
+    for (let frame = 0; frame < payload.numFrames; frame += 1) {
+      out[frame] = flat[frame * payload.numChannels + channel] ?? 0;
+    }
+    channels.push(out);
+  }
+  return channels;
 }

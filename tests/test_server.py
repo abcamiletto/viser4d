@@ -108,6 +108,8 @@ def test_audio_payload_normalizes_integer_formats() -> None:
         base64.b64decode(int16_payload["data"]), dtype=np.float32
     )
     assert int16_payload["dtype"] == "float32"
+    assert int16_payload["numChannels"] == 1
+    assert int16_payload["numFrames"] == 3
     assert np.allclose(
         int16_values, np.array([-1.0, 0.0, 32767 / 32768], dtype=np.float32)
     )
@@ -119,6 +121,8 @@ def test_audio_payload_normalizes_integer_formats() -> None:
         base64.b64decode(int32_payload["data"]), dtype=np.float32
     )
     assert int32_payload["dtype"] == "float32"
+    assert int32_payload["numChannels"] == 1
+    assert int32_payload["numFrames"] == 3
     assert np.allclose(
         int32_values,
         np.array([-1.0, 0.0, 2147483647 / 2147483648], dtype=np.float32),
@@ -141,5 +145,47 @@ def test_audio_append_keeps_chunked_state_until_waveform_is_read() -> None:
         expected = np.array([1, 2, 3, 4, 5, 6], dtype=np.int16)
         assert np.array_equal(audio.waveform, expected)
         assert np.array_equal(audio._state.waveform, expected)
+    finally:
+        server.stop()
+
+
+def test_audio_rejects_non_mono_or_stereo_shapes() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0):
+            with pytest.raises(ValueError, match="mono or stereo"):
+                server.scene.add_audio(
+                    "/audio",
+                    data=np.zeros((2, 2, 2), dtype=np.float32),
+                    sample_rate=16_000,
+                )
+            with pytest.raises(ValueError, match="mono or stereo"):
+                server.scene.add_audio(
+                    "/audio-3ch",
+                    data=np.zeros((4, 3), dtype=np.float32),
+                    sample_rate=16_000,
+                )
+    finally:
+        server.stop()
+
+
+def test_stereo_audio_append_preserves_channel_layout() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0):
+            audio = server.scene.add_audio(
+                "/audio",
+                data=np.array([[1, 10], [2, 20]], dtype=np.int16),
+                sample_rate=16_000,
+            )
+
+        audio.append(np.array([[3, 30], [4, 40]], dtype=np.int16))
+
+        expected = np.array([[1, 10], [2, 20], [3, 30], [4, 40]], dtype=np.int16)
+        assert np.array_equal(audio.waveform, expected)
+        assert np.array_equal(audio._state.waveform, expected)
+
+        with pytest.raises(ValueError, match="channel count"):
+            audio.append(np.array([5, 6], dtype=np.int16))
     finally:
         server.stop()
