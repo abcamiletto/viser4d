@@ -1,10 +1,3 @@
-from __future__ import annotations
+from ._server import AudioHandle, Viser4dServer
 
-from importlib.metadata import version
-
-from .op import CompressionMode
-from .server import Viser4dServer
-
-__version__ = version("viser4d")
-
-__all__ = ["CompressionMode", "Viser4dServer", "__version__"]
+__all__ = ["AudioHandle", "Viser4dServer"]
