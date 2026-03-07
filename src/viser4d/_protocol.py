@@ -53,11 +53,7 @@ class RemoveAudioOp(TypedDict):
 
 
 AudioOp: TypeAlias = (
-    AddAudioOp
-    | SetAudioVolumeOp
-    | SetAudioWaveformOp
-    | AppendAudioOp
-    | RemoveAudioOp
+    AddAudioOp | SetAudioVolumeOp | SetAudioWaveformOp | AppendAudioOp | RemoveAudioOp
 )
 
 

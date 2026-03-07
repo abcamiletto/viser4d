@@ -25,7 +25,11 @@ class ExportBuilder:
         self, *, start_timestep: int = 0, end_timestep: int | None = None
     ) -> bytes:
         start = int(start_timestep)
-        end = int(end_timestep) if end_timestep is not None else self._server.num_steps - 1
+        end = (
+            int(end_timestep)
+            if end_timestep is not None
+            else self._server.num_steps - 1
+        )
         assert 0 <= start < self._server.num_steps
         assert 0 <= end < self._server.num_steps
         assert start <= end

@@ -230,7 +230,9 @@ class ClientPlaybackHandle:
             with self._lock:
                 self._syncing_timestep_slider = False
 
-    def _send_runtime_call(self, method: RuntimeMethod, payload: RuntimePayload) -> None:
+    def _send_runtime_call(
+        self, method: RuntimeMethod, payload: RuntimePayload
+    ) -> None:
         message = make_runtime_message(method, payload)
         self._client._websock_connection.queue_message(message)
 

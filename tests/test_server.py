@@ -86,9 +86,7 @@ def test_serialize_rejects_invalid_timestep_range(tmp_path: pathlib.Path) -> Non
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
         with pytest.raises(AssertionError):
-            server.serialize(
-                start_timestep=2, end_timestep=1
-            )
+            server.serialize(start_timestep=2, end_timestep=1)
     finally:
         server.stop()
 

@@ -148,7 +148,9 @@ class Viser4dServer(viser.ViserServer):
     def _dispatch_audio_update(self, op: AudioOp) -> None:
         self._recorder.dispatch_audio_update(op)
 
-    def _send_runtime_call(self, method: RuntimeMethod, payload: RuntimePayload) -> None:
+    def _send_runtime_call(
+        self, method: RuntimeMethod, payload: RuntimePayload
+    ) -> None:
         message = make_runtime_message(method, payload)
         self._websock_server.queue_message(message)
 
