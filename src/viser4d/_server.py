@@ -14,7 +14,7 @@ from viser import _messages
 
 from . import _viser_private as impl
 from ._audio import AudioHandle, AudioState, audio_array_payload
-from ._runtime_bundle import ensure_runtime_bundle
+from . import _client_autobuild
 from ._timeline import (
     TimelineRecorder,
     TimelineStore,
@@ -35,13 +35,13 @@ if TYPE_CHECKING:
 
 def _runtime_source() -> str:
     runtime_path = pathlib.Path(__file__).resolve().parent / "runtime.js"
-    ensure_runtime_bundle(runtime_path)
+    _client_autobuild.ensure_client_is_built()
     try:
         return _RUNTIME_MARKER + runtime_path.read_text()
     except FileNotFoundError as exc:
         raise RuntimeError(
             "Missing generated client bundle at src/viser4d/runtime.js. "
-            "Run `pnpm run build:runtime` from the repository root."
+            "viser4d could not rebuild it automatically."
         ) from exc
 
 

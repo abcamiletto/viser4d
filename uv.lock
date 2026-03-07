@@ -1018,6 +1018,7 @@ name = "viser4d"
 version = "0.5.0"
 source = { editable = "." }
 dependencies = [
+    { name = "nodeenv" },
     { name = "numpy" },
     { name = "viser" },
 ]
@@ -1031,6 +1032,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "nodeenv", specifier = ">=1.9.1" },
     { name = "numpy", specifier = ">=2.4.1" },
     { name = "viser", specifier = ">=1.0.19" },
 ]

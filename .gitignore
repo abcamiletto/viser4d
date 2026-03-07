@@ -204,6 +204,7 @@ cython_debug/
 # Node
 node_modules/
 src/viser4d/runtime.js
+src/viser4d/client/.nodeenv/
 
 # Ruff stuff:
 .ruff_cache/

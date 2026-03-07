@@ -17,6 +17,7 @@ classifiers = [
 requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.4.1",
+    "nodeenv>=1.9.1",
     "viser>=1.0.19",
 ]
 
@@ -34,15 +35,21 @@ dev = [
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "build_backend"
-backend-path = ["."]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 include-package-data = false
 
 [tool.setuptools.package-data]
-viser4d = ["py.typed", "runtime.js"]
+viser4d = [
+    "py.typed",
+    "runtime.js",
+    "client/*.ts",
+    "client/*.json",
+    "client/*.mjs",
+    "client/package-lock.json",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

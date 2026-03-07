@@ -4,8 +4,8 @@
   "type": "module",
   "packageManager": "pnpm@10.30.3",
   "scripts": {
-    "build:runtime": "node scripts/build-runtime.mjs",
-    "typecheck:runtime": "tsc --noEmit"
+    "build:runtime": "node src/viser4d/client/build-runtime.mjs",
+    "typecheck:runtime": "tsc -p src/viser4d/client/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "esbuild": "^0.25.10",
