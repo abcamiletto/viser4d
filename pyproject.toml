@@ -1,6 +1,6 @@
 [project]
 name = "viser4d"
-version = "0.4.0"
+version = "0.5.0"
 description = "A viser extension with out-of-the-box support for the time dimension"
 readme = "README.md"
 license = "Apache-2.0"
@@ -16,11 +16,8 @@ classifiers = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "cloudpickle>=3.0.0",
     "numpy>=2.4.1",
-    "objsize>=0.7.0",
     "viser>=1.0.19",
-    "zstandard>=0.23.0",
 ]
 
 [project.urls]
@@ -43,8 +40,7 @@ build-backend = "setuptools.build_meta"
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
-viser4d = ["py.typed"]
-"viser4d.audio" = ["runtime.js"]
+viser4d = ["py.typed", "runtime.js"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
