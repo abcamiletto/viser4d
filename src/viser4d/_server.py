@@ -19,6 +19,11 @@ from ._timeline import (
     serialize_viser_messages,
     to_jsonable,
 )
+from ._viser_private import (
+    broadcast_messages,
+    gui_uuid,
+    scene_recording_interface,
+)
 
 
 _RUNTIME_MARKER = "/*__VISER4D_RUNTIME__*/"
@@ -190,7 +195,7 @@ class TimelineController:
             fps=self._fps,
             base_fps=self._base_fps,
             loop=self._loop,
-            timestep_sync_uuid=self._server._timestep_sync._impl.uuid,
+            timestep_sync_uuid=gui_uuid(self._server._timestep_sync),
         )
 
     def set_current_timestep(self, timestep: int) -> None:
@@ -248,13 +253,11 @@ class SceneRecorder:
     def at(self, t: int) -> Iterator[None]:
         step = self._timeline.validate_step(int(t))
         recorder = TimelineRecorder()
-        original_interface = self._server._live_scene._websock_interface
         self._active_step = step
-        self._server._live_scene._websock_interface = recorder
         try:
-            yield
+            with scene_recording_interface(self._server._live_scene, recorder):
+                yield
         finally:
-            self._server._live_scene._websock_interface = original_interface
             self._active_step = None
 
         if not recorder.messages:
@@ -329,7 +332,7 @@ class SceneRecorder:
     def _collect_live_messages_for_name(self, name: str) -> list[dict[str, Any]]:
         return [
             to_jsonable(message.as_serializable_dict())
-            for message in self._server._websock_server._broadcast_buffer.message_from_id.values()
+            for message in broadcast_messages(self._server)
             if is_scene_message(message) and getattr(message, "name", None) == name
         ]
 
@@ -392,7 +395,7 @@ class ExportBuilder:
 
     def _base_messages(self) -> list[_messages.Message]:
         messages: list[_messages.Message] = []
-        for message in self._server._websock_server._broadcast_buffer.message_from_id.values():
+        for message in broadcast_messages(self._server):
             if (
                 isinstance(message, _messages.RunJavascriptMessage)
                 and message.source.startswith(_RUNTIME_MARKER)
@@ -443,15 +446,15 @@ class ExportBuilder:
         server = self._server
         return [
             _messages.GuiUpdateMessage(
-                server._timestep_sync._impl.uuid,
+                gui_uuid(server._timestep_sync),
                 {"value": export_step, "max": export_num_steps - 1},
             ),
             _messages.GuiUpdateMessage(
-                server._timeline_slider._impl.uuid,
+                gui_uuid(server._timeline_slider),
                 {"value": export_step, "max": export_num_steps - 1},
             ),
-            _messages.GuiUpdateMessage(server._play_button._impl.uuid, {"visible": True}),
-            _messages.GuiUpdateMessage(server._pause_button._impl.uuid, {"visible": False}),
+            _messages.GuiUpdateMessage(gui_uuid(server._play_button), {"visible": True}),
+            _messages.GuiUpdateMessage(gui_uuid(server._pause_button), {"visible": False}),
             _make_runtime_message("seek", {"step": export_step}),
         ]
 
