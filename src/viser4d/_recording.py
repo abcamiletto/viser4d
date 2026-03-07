@@ -48,11 +48,12 @@ class SceneRecorder:
         for node_name in step_store.node_names:
             self._register_timeline_node(node_name)
 
+        messages = [serialize_message(message) for message in recorder.messages]
         self._server._send_runtime_call(
             "preloadSceneStep",
             {
                 "step": step,
-                "messages": [serialize_message(message) for message in recorder.messages],
+                "messages": messages,
                 "nodeNames": sorted(step_store.node_names),
             },
         )
@@ -102,9 +103,10 @@ class SceneRecorder:
         if not baseline:
             return
         self._timeline.baseline_messages_by_name[name] = baseline
+        messages = [serialize_message(message) for message in baseline]
         self._server._send_runtime_call(
             "setBaseline",
-            {"name": name, "messages": [serialize_message(message) for message in baseline]},
+            {"name": name, "messages": messages},
         )
 
     def _collect_live_messages_for_name(self, name: str) -> list[_messages.Message]:

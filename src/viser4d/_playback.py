@@ -231,9 +231,8 @@ class ClientPlaybackHandle:
                 self._syncing_timestep_slider = False
 
     def _send_runtime_call(self, method: RuntimeMethod, payload: RuntimePayload) -> None:
-        self._client._websock_connection.queue_message(
-            make_runtime_message(method, payload)
-        )
+        message = make_runtime_message(method, payload)
+        self._client._websock_connection.queue_message(message)
 
     def _set_fps_slider_value(self, fps: float) -> None:
         if self._fps_slider.value == fps:

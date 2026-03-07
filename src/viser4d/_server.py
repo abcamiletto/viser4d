@@ -149,7 +149,8 @@ class Viser4dServer(viser.ViserServer):
         self._recorder.dispatch_audio_update(op)
 
     def _send_runtime_call(self, method: RuntimeMethod, payload: RuntimePayload) -> None:
-        self._websock_server.queue_message(make_runtime_message(method, payload))
+        message = make_runtime_message(method, payload)
+        self._websock_server.queue_message(message)
 
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:
         with self._client_playbacks_lock:

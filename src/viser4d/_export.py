@@ -25,7 +25,7 @@ class ExportBuilder:
         self, *, start_timestep: int = 0, end_timestep: int | None = None
     ) -> bytes:
         start = int(start_timestep)
-        end = self._server.num_steps - 1 if end_timestep is None else int(end_timestep)
+        end = int(end_timestep) if end_timestep is not None else self._server.num_steps - 1
         assert 0 <= start < self._server.num_steps
         assert 0 <= end < self._server.num_steps
         assert start <= end
@@ -60,8 +60,5 @@ class ExportBuilder:
         start_timestep: int = 0,
         end_timestep: int | None = None,
     ) -> None:
-        blob = self.serialize(
-            start_timestep=start_timestep,
-            end_timestep=end_timestep,
-        )
+        blob = self.serialize(start_timestep=start_timestep, end_timestep=end_timestep)
         pathlib.Path(path).write_bytes(blob)
