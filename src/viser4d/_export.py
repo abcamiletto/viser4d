@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import pathlib
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from . import _viser_private as impl
 from ._protocol import SerializedMessage
 from ._runtime import RUNTIME_MARKER
-from ._timeline import TimelineStore, serialize_viser_recording, to_jsonable
+from ._timeline import (
+    TimelineStore,
+    serialize_message,
+    serialize_viser_recording,
+)
 
 if TYPE_CHECKING:
     from ._server import Viser4dServer
@@ -32,28 +36,14 @@ class ExportBuilder:
                 continue
             if getattr(message, "name", None) in self._timeline.node_names:
                 continue
-            recording.append(
-                (
-                    0.0,
-                    cast(SerializedMessage, to_jsonable(message.as_serializable_dict())),
-                )
-            )
+            recording.append((0.0, serialize_message(message)))
         for baseline in self._timeline.baseline_messages_by_name.values():
-            recording.extend(
-                (
-                    0.0,
-                    cast(SerializedMessage, to_jsonable(message.as_serializable_dict())),
-                )
-                for message in baseline
-            )
+            recording.extend((0.0, serialize_message(message)) for message in baseline)
         fps = max(self._server._base_fps, 1.0)
         for step in range(end + 1):
             time = 0.0 if step <= start else (step - start) / fps
             recording.extend(
-                (
-                    time,
-                    cast(SerializedMessage, to_jsonable(message.as_serializable_dict())),
-                )
+                (time, serialize_message(message))
                 for message in self._timeline.step(step).messages
             )
 

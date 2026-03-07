@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 import viser
 
 from . import _viser_private as impl
-from ._protocol import EmptyPayload, PlayPayload, RuntimeMethod, RuntimePayload, SeekPayload
+from ._protocol import RuntimeMethod, RuntimePayload
 from ._runtime import (
     client_runtime_config_payload,
     make_runtime_message,
@@ -138,7 +138,7 @@ class ClientPlaybackHandle:
             self._fps = float(fps)
             self._loop = bool(loop)
             self._is_playing = True
-            payload = PlayPayload(fps=self._fps, loop=self._loop)
+            payload = {"fps": self._fps, "loop": self._loop}
         self._set_fps_slider_value(payload["fps"])
         self._sync_playback_buttons()
         self._send_runtime_call("play", payload)
@@ -147,18 +147,18 @@ class ClientPlaybackHandle:
         with self._lock:
             self._is_playing = False
         self._sync_playback_buttons()
-        self._send_runtime_call("pause", EmptyPayload())
+        self._send_runtime_call("pause", {})
 
     def seek(self, t: int) -> None:
         timestep = int(t)
         assert 0 <= timestep < self._server.num_steps
         self._set_current_timestep(timestep)
-        self._send_runtime_call("seek", SeekPayload(step=timestep))
+        self._send_runtime_call("seek", {"step": timestep})
 
     def set_fps(self, fps: float) -> None:
         with self._lock:
             self._fps = float(fps)
-            payload = PlayPayload(fps=self._fps, loop=self._loop)
+            payload = {"fps": self._fps, "loop": self._loop}
         self._set_fps_slider_value(payload["fps"])
         self._send_runtime_call("setFps", payload)
 

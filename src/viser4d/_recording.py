@@ -1,26 +1,19 @@
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Iterator, cast
+from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
 from viser import _messages
 
 from . import _viser_private as impl
 from ._audio import AudioHandle, AudioState, audio_array_payload
-from ._protocol import (
-    AddAudioOp,
-    AudioOp,
-    PreloadAudioStepPayload,
-    PreloadSceneStepPayload,
-    SetBaselinePayload,
-    SerializedMessage,
-)
+from ._protocol import AddAudioOp, AudioOp
 from ._timeline import (
     TimelineRecorder,
     TimelineStore,
     is_scene_message,
-    to_jsonable,
+    serialize_message,
 )
 
 if TYPE_CHECKING:
@@ -55,17 +48,13 @@ class SceneRecorder:
         for node_name in step_store.node_names:
             self._register_timeline_node(node_name)
 
-        serializable_messages = [
-            cast(SerializedMessage, to_jsonable(message.as_serializable_dict()))
-            for message in recorder.messages
-        ]
         self._server._send_runtime_call(
             "preloadSceneStep",
-            PreloadSceneStepPayload(
-                step=step,
-                messages=serializable_messages,
-                nodeNames=sorted(step_store.node_names),
-            ),
+            {
+                "step": step,
+                "messages": [serialize_message(message) for message in recorder.messages],
+                "nodeNames": sorted(step_store.node_names),
+            },
         )
 
     def add_audio(
@@ -92,7 +81,7 @@ class SceneRecorder:
         self._timeline.record_audio_ops(self._active_step, [op])
         self._server._send_runtime_call(
             "preloadAudioStep",
-            PreloadAudioStepPayload(step=self._active_step, ops=[op]),
+            {"step": self._active_step, "ops": [op]},
         )
         return handle
 
@@ -101,7 +90,7 @@ class SceneRecorder:
             self._timeline.record_audio_ops(self._active_step, [op])
             self._server._send_runtime_call(
                 "preloadAudioStep",
-                PreloadAudioStepPayload(step=self._active_step, ops=[op]),
+                {"step": self._active_step, "ops": [op]},
             )
             return
         self._server._send_runtime_call("applyAudioUpdate", op)
@@ -113,13 +102,9 @@ class SceneRecorder:
         if not baseline:
             return
         self._timeline.baseline_messages_by_name[name] = baseline
-        serializable_messages = [
-            cast(SerializedMessage, to_jsonable(message.as_serializable_dict()))
-            for message in baseline
-        ]
         self._server._send_runtime_call(
             "setBaseline",
-            SetBaselinePayload(name=name, messages=serializable_messages),
+            {"name": name, "messages": [serialize_message(message) for message in baseline]},
         )
 
     def _collect_live_messages_for_name(self, name: str) -> list[_messages.Message]:

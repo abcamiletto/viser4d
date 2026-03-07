@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Literal, TypeAlias, TypedDict
 
 
@@ -71,35 +72,6 @@ class ClientRuntimeConfig(RuntimeConfig):
     timestepSyncUuid: str
 
 
-class PreloadSceneStepPayload(TypedDict):
-    step: int
-    messages: list[SerializedMessage]
-    nodeNames: list[str]
-
-
-class PreloadAudioStepPayload(TypedDict):
-    step: int
-    ops: list[AudioOp]
-
-
-class SetBaselinePayload(TypedDict):
-    name: str
-    messages: list[SerializedMessage]
-
-
-class PlayPayload(TypedDict):
-    fps: float
-    loop: bool
-
-
-class SeekPayload(TypedDict):
-    step: int
-
-
-class EmptyPayload(TypedDict):
-    pass
-
-
 RuntimeMethod: TypeAlias = Literal[
     "applyAudioUpdate",
     "configure",
@@ -112,14 +84,4 @@ RuntimeMethod: TypeAlias = Literal[
     "setFps",
 ]
 
-RuntimePayload: TypeAlias = (
-    AudioOp
-    | ClientRuntimeConfig
-    | EmptyPayload
-    | PlayPayload
-    | PreloadAudioStepPayload
-    | PreloadSceneStepPayload
-    | RuntimeConfig
-    | SeekPayload
-    | SetBaselinePayload
-)
+RuntimePayload: TypeAlias = AudioOp | Mapping[str, object]

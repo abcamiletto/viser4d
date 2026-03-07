@@ -38,6 +38,10 @@ def to_jsonable(value: Any) -> JSONValue:
     return value
 
 
+def serialize_message(message: _messages.Message) -> SerializedMessage:
+    return cast(SerializedMessage, to_jsonable(message.as_serializable_dict()))
+
+
 def extract_node_names(message: _messages.Message) -> set[str]:
     name = getattr(message, "name", None)
     return {name} if isinstance(name, str) and name else set()
