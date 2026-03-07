@@ -57,7 +57,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build:runtime
-      - run: uv run --group dev pytest -q
+      - run: uv run --group dev pytest -q -m "not e2e"
 
   e2e:
     runs-on: ubuntu-latest
