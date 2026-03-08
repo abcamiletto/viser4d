@@ -78,11 +78,23 @@ def test_timeline_records_scene_and_audio() -> None:
         payload = msgspec.msgpack.decode(decoded)
         assert set(payload) == {"durationSeconds", "messages", "viserVersion"}
         assert payload["durationSeconds"] == pytest.approx(2 / 30.0)
+        assert payload["messages"][0][0] == 0.0
+        assert payload["messages"][0][1]["type"] == "RunJavascriptMessage"
         assert any(
             message["type"] == "AddAudioMessage" for _, message in payload["messages"]
         )
         assert any(
             message["type"] == "SetAudioVolumeMessage"
+            for _, message in payload["messages"]
+        )
+        assert any(
+            message["type"] == "AddAudioMessage"
+            and message["__viserPlaybackTime"] == pytest.approx(0.0)
+            for _, message in payload["messages"]
+        )
+        assert any(
+            message["type"] == "SetAudioVolumeMessage"
+            and message["__viserPlaybackTime"] == pytest.approx(1 / 30.0)
             for _, message in payload["messages"]
         )
         assert any(time > 0.0 for time, _ in payload["messages"])

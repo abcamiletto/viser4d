@@ -47,6 +47,7 @@ export type RuntimeConfig = {
 };
 
 export type ViewerLike = {
+  messageSource?: "websocket" | "file_playback" | "embed";
   mutable: {
     current: {
       messageQueue: RuntimeMessage[];
@@ -60,6 +61,13 @@ export type ViewerLike = {
   useSceneTree: unknown;
 };
 
+export type PlaybackStateRef = {
+  current: {
+    currentIndex: number;
+    currentTime: number;
+  };
+};
+
 type TimelineRuntimeWindow = Window & {
   __VISER4D__?: unknown;
   AudioContext?: typeof AudioContext;
@@ -67,11 +75,18 @@ type TimelineRuntimeWindow = Window & {
 };
 
 type ReactFiberNode = {
+  memoizedState?: ReactHookNode | null;
   memoizedProps?: {
     value?: Partial<ViewerLike> & Record<string, unknown>;
   };
+  type?: unknown;
   child?: ReactFiberNode | null;
   sibling?: ReactFiberNode | null;
+};
+
+type ReactHookNode = {
+  memoizedState?: unknown;
+  next?: ReactHookNode | null;
 };
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -86,11 +101,16 @@ function isViewerLike(value: unknown): value is ViewerLike {
   );
 }
 
-export function getWindow(): TimelineRuntimeWindow {
-  return window as TimelineRuntimeWindow;
+function isPlaybackStateRef(value: unknown): value is PlaybackStateRef {
+  return (
+    isObjectRecord(value) &&
+    isObjectRecord(value.current) &&
+    typeof value.current.currentTime === "number" &&
+    typeof value.current.currentIndex === "number"
+  );
 }
 
-export function findViewer(): ViewerLike {
+function getReactRoot(): ReactFiberNode {
   const root = document.getElementById("root");
   if (!root) {
     throw new Error("[viser4d] Could not find #root while locating the viewer.");
@@ -106,17 +126,22 @@ export function findViewer(): ViewerLike {
   if (!isObjectRecord(reactRoot)) {
     throw new Error("[viser4d] Could not find the React container while locating the viewer.");
   }
+  return reactRoot as ReactFiberNode;
+}
+
+function findFiber(
+  predicate: (fiber: ReactFiberNode) => boolean,
+): ReactFiberNode | null {
   const seen = new Set<unknown>();
-  const stack: ReactFiberNode[] = [reactRoot as ReactFiberNode];
+  const stack: ReactFiberNode[] = [getReactRoot()];
   while (stack.length) {
     const fiber = stack.pop();
     if (!fiber || seen.has(fiber)) {
       continue;
     }
     seen.add(fiber);
-    const candidate = fiber.memoizedProps?.value;
-    if (isViewerLike(candidate)) {
-      return candidate;
+    if (predicate(fiber)) {
+      return fiber;
     }
     if (fiber.child) {
       stack.push(fiber.child);
@@ -125,5 +150,36 @@ export function findViewer(): ViewerLike {
       stack.push(fiber.sibling);
     }
   }
+  return null;
+}
+
+export function getWindow(): TimelineRuntimeWindow {
+  return window as TimelineRuntimeWindow;
+}
+
+export function findViewer(): ViewerLike {
+  const fiber = findFiber((candidate) => isViewerLike(candidate.memoizedProps?.value));
+  if (fiber) {
+    return fiber.memoizedProps!.value as ViewerLike;
+  }
   throw new Error("[viser4d] Could not locate the viewer in the React fiber tree.");
+}
+
+export function findPlaybackStateRef(): PlaybackStateRef | null {
+  const playbackFiber = findFiber((fiber) => {
+    if (typeof fiber.type !== "function") {
+      return false;
+    }
+    const name = fiber.type.name;
+    return name === "PlaybackFromFile" || name === "PlaybackFromEmbedData";
+  });
+  if (!playbackFiber) {
+    return null;
+  }
+  for (let hook = playbackFiber.memoizedState; hook; hook = hook.next ?? null) {
+    if (isPlaybackStateRef(hook.memoizedState)) {
+      return hook.memoizedState;
+    }
+  }
+  return null;
 }

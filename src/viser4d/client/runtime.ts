@@ -1,13 +1,14 @@
 import {
-  reviveMessage,
   type RuntimeMessage,
   type RuntimeValue,
 } from "./binary";
 import { AudioRuntime } from "./audio-runtime";
 import {
+  findPlaybackStateRef,
   findViewer,
   getWindow,
   isAudioMessage,
+  type PlaybackStateRef,
   type RuntimeConfig,
   type ViewerLike,
 } from "./protocol";
@@ -43,6 +44,7 @@ export class TimelineRuntime {
   readonly debug = debugState;
 
   private viewer: ViewerLike | null = null;
+  private playbackStateRef: PlaybackStateRef | null = null;
   private config: RuntimeConfig = {
     numSteps: 1,
     fps: 30,
@@ -64,12 +66,136 @@ export class TimelineRuntime {
     () => this.getTransportStep(),
     (event, payload) => debugState.push(event, payload),
   );
+  private readonly playbackAudio = new AudioRuntime(
+    () => this.playbackTime,
+    (event, payload) => debugState.push(event, payload),
+  );
+  private playbackTime = 0;
+  private playbackPlaying = false;
+  private playbackObserved = false;
+  private playbackLastAppliedMessageTime = -1;
+  private interceptorInstalled = false;
+  private playbackMonitorId: number | null = null;
+
+  constructor() {
+    this.playbackAudio.setBaseFps(1);
+    this.installWhenReady();
+  }
 
   private getViewer(): ViewerLike {
     if (!this.viewer) {
       this.viewer = findViewer();
     }
     return this.viewer;
+  }
+
+  private getPlaybackStateRef(): PlaybackStateRef | null {
+    if (!this.playbackStateRef) {
+      this.playbackStateRef = findPlaybackStateRef();
+    }
+    return this.playbackStateRef;
+  }
+
+  private installWhenReady(): void {
+    if (this.interceptorInstalled) {
+      return;
+    }
+    try {
+      this.installMessageQueueInterceptor();
+      if (this.getViewer().messageSource !== "websocket") {
+        this.startPlaybackMonitor();
+      }
+    } catch {
+      getWindow().requestAnimationFrame(() => this.installWhenReady());
+    }
+  }
+
+  private installMessageQueueInterceptor(): void {
+    if (this.interceptorInstalled) {
+      return;
+    }
+    const queue = this.getViewer().mutable.current.messageQueue;
+    const originalPush = queue.push.bind(queue);
+    queue.push = (...messages: RuntimeMessage[]): number => {
+      const forwarded: RuntimeMessage[] = [];
+      for (const message of messages) {
+        if (this.handleQueuedMessage(message)) {
+          continue;
+        }
+        forwarded.push(message);
+      }
+      return originalPush(...forwarded);
+    };
+    this.interceptorInstalled = true;
+  }
+
+  private handleQueuedMessage(message: RuntimeMessage): boolean {
+    if (!isAudioMessage(message)) {
+      return false;
+    }
+    if (this.getViewer().messageSource === "websocket") {
+      return false;
+    }
+    const playbackTime = getPlaybackMessageTime(message);
+    if (playbackTime !== null && playbackTime < this.playbackLastAppliedMessageTime) {
+      this.resetPlaybackAudio();
+    }
+    if (playbackTime !== null) {
+      this.playbackLastAppliedMessageTime = playbackTime;
+      this.playbackAudio.applyLiveMessages(playbackTime, [message]);
+    } else {
+      this.playbackAudio.applyLiveMessages(this.playbackTime, [message]);
+    }
+    return true;
+  }
+
+  private startPlaybackMonitor(): void {
+    if (this.playbackMonitorId !== null) {
+      return;
+    }
+    const tick = (): void => {
+      this.syncPlaybackState();
+      this.playbackMonitorId = getWindow().requestAnimationFrame(tick);
+    };
+    this.playbackMonitorId = getWindow().requestAnimationFrame(tick);
+  }
+
+  private syncPlaybackState(): void {
+    const playbackStateRef = this.getPlaybackStateRef();
+    if (!playbackStateRef) {
+      return;
+    }
+    const nextTime = playbackStateRef.current.currentTime;
+    const delta = nextTime - this.playbackTime;
+    const jumped = Math.abs(delta) > 0.2;
+    const playing = delta > 1e-4;
+    if (!this.playbackObserved) {
+      this.playbackObserved = true;
+      this.playbackTime = nextTime;
+      this.playbackAudio.seek(nextTime, 1, false);
+      return;
+    }
+    if (delta < -1e-4) {
+      this.resetPlaybackAudio();
+    }
+    if (jumped) {
+      this.playbackAudio.seek(nextTime, 1, playing);
+    } else if (playing !== this.playbackPlaying) {
+      if (playing) {
+        this.playbackAudio.play(nextTime, 1);
+      } else {
+        this.playbackAudio.pause(nextTime, 1);
+      }
+    } else if (!playing && Math.abs(delta) > 1e-4) {
+      this.playbackAudio.seek(nextTime, 1, false);
+    }
+    this.playbackTime = nextTime;
+    this.playbackPlaying = playing;
+  }
+
+  private resetPlaybackAudio(): void {
+    this.playbackAudio.resetTimeline();
+    this.playbackLastAppliedMessageTime = -1;
   }
 
   private pushMessages(messages: RuntimeMessage[]): void {
@@ -146,7 +272,7 @@ export class TimelineRuntime {
   }
 
   setBaseline(payload: { name: string; messages: RuntimeMessage[] }): void {
-    this.baselineByName.set(payload.name, payload.messages.map(reviveMessage));
+    this.baselineByName.set(payload.name, payload.messages);
     this.timelineNodeNames.add(payload.name);
   }
 
@@ -156,7 +282,7 @@ export class TimelineRuntime {
     nodeNames?: string[];
   }): void {
     this.stepMessages[payload.step] = this.ensureStep(payload.step).concat(
-      payload.messages.map(reviveMessage),
+      payload.messages,
     );
     for (const name of payload.nodeNames || []) {
       this.timelineNodeNames.add(name);
@@ -164,18 +290,17 @@ export class TimelineRuntime {
   }
 
   applyMessageUpdate(message: RuntimeMessage): void {
-    const revived = reviveMessage(message);
-    const name = typeof revived.name === "string" ? revived.name : null;
+    const name = typeof message.name === "string" ? message.name : null;
     debugState.push("runtime.apply_message_update", {
-      type: revived.type,
+      type: message.type,
       name,
       step: Math.floor(this.currentStep),
     });
-    if (isAudioMessage(revived)) {
-      this.audio.applyLiveMessages(Math.floor(this.currentStep), [revived]);
+    if (isAudioMessage(message)) {
+      this.audio.applyLiveMessages(Math.floor(this.currentStep), [message]);
       return;
     }
-    this.pushMessages([revived]);
+    this.pushMessages([message]);
   }
 
   private syncTimestepToServer(step: number, force = false): void {
@@ -299,4 +424,9 @@ export class TimelineRuntime {
     this.audio.pause(step, this.config.fps);
     this.syncTimestepToServer(Math.floor(this.currentStep), true);
   }
+}
+
+function getPlaybackMessageTime(message: RuntimeMessage): number | null {
+  const playbackTime = message.__viserPlaybackTime;
+  return typeof playbackTime === "number" ? playbackTime : null;
 }

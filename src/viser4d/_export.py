@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from viser import _messages
+
 from . import _viser_private as impl
+from ._audio_messages import is_audio_message
 from ._protocol import SerializedMessage
-from ._runtime import RUNTIME_MARKER
+from ._runtime import RUNTIME_MARKER, runtime_source
 from ._timeline import (
     TimelineStore,
     serialize_message,
@@ -33,7 +36,12 @@ class ExportBuilder:
         assert 0 <= end < self._server.num_steps
         assert start <= end
 
-        recording: list[tuple[float, SerializedMessage]] = []
+        recording: list[tuple[float, SerializedMessage]] = [
+            (
+                0.0,
+                serialize_message(_messages.RunJavascriptMessage(runtime_source())),
+            )
+        ]
         for message in impl.broadcast_messages(self._server):
             if getattr(message, "source", "").startswith(RUNTIME_MARKER):
                 continue
@@ -46,7 +54,7 @@ class ExportBuilder:
         for step in range(end + 1):
             time = 0.0 if step <= start else (step - start) / fps
             recording.extend(
-                (time, serialize_message(message))
+                (time, _serialize_export_message(message, playback_time=time))
                 for message in self._timeline.step(step).messages
             )
 
@@ -55,3 +63,12 @@ class ExportBuilder:
             duration_seconds=max(end - start, 0) / fps,
         )
         return blob
+
+
+def _serialize_export_message(
+    message: _messages.Message, *, playback_time: float
+) -> SerializedMessage:
+    serialized = serialize_message(message)
+    if is_audio_message(message):
+        serialized["__viserPlaybackTime"] = playback_time
+    return serialized
