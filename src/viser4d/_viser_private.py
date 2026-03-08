@@ -45,9 +45,7 @@ def brand_color(
     return None
 
 
-def queue_server_message(
-    server: viser.ViserServer, message: _messages.Message
-) -> None:
+def queue_server_message(server: viser.ViserServer, message: _messages.Message) -> None:
     server._websock_server.queue_message(message)
 
 
