@@ -1,6 +1,6 @@
 import { decodeAudioWaveform, type RuntimeValue } from "./binary";
 import { getWindow } from "./protocol";
-import type { AudioOp } from "./protocol";
+import type { AudioMessage } from "./protocol";
 
 type TrackState = {
   channels: number;
@@ -20,6 +20,8 @@ type RuntimeTrack = {
   token: number;
 };
 
+type MutableTrackState = TrackState | Partial<TrackState>;
+
 type DebugPush = (event: string, payload: RuntimeValue) => void;
 
 function makeTrackState(step: number, sampleRate = 44100): TrackState {
@@ -33,8 +35,8 @@ function makeTrackState(step: number, sampleRate = 44100): TrackState {
   };
 }
 
-function getOpSampleRate(op: AudioOp): number | undefined {
-  return op.op === "add" ? op.sampleRate : undefined;
+function getMessageSampleRate(message: AudioMessage): number | undefined {
+  return message.type === "AddAudioMessage" ? message.sampleRate : undefined;
 }
 
 function mergeTrackState(
@@ -121,7 +123,9 @@ export class AudioRuntime {
   }
 
   private getEffectiveTrack(name: string): TrackState | null {
-    return mergeTrackState(this.timelineTracks.get(name), this.liveOverrides.get(name));
+    const timelineTrack = this.timelineTracks.get(name);
+    const liveOverride = this.liveOverrides.get(name);
+    return mergeTrackState(timelineTrack, liveOverride);
   }
 
   private getRuntimeTrack(name: string): RuntimeTrack {
@@ -171,41 +175,42 @@ export class AudioRuntime {
   }
 
   private applyOp(
-    target: TrackState | Partial<TrackState> | null,
+    target: MutableTrackState | null,
     step: number,
-    op: AudioOp,
+    message: AudioMessage,
     partial: boolean,
-  ): { track: TrackState | Partial<TrackState>; effect: "volume" | "reschedule" | "none" } {
-    const next = target || (partial ? {} : makeTrackState(step, getOpSampleRate(op)));
+  ): { track: MutableTrackState; effect: "volume" | "reschedule" | "none" } {
+    const next =
+      target ?? (partial ? {} : makeTrackState(step, getMessageSampleRate(message)));
     let effect: "volume" | "reschedule" | "none" = "none";
-    switch (op.op) {
-      case "add":
-        next.sampleRate = op.sampleRate;
-        next.channels = op.waveform.numChannels;
-        next.waveform = decodeAudioWaveform(op.waveform);
-        next.volume = op.volume;
+    switch (message.type) {
+      case "AddAudioMessage":
+        next.sampleRate = message.sampleRate;
+        next.channels = message.waveform.numChannels;
+        next.waveform = decodeAudioWaveform(message.waveform);
+        next.volume = message.volume;
         next.startStep = step;
         next.removed = false;
         effect = "reschedule";
         break;
-      case "set_volume":
-        next.volume = op.volume;
+      case "SetAudioVolumeMessage":
+        next.volume = message.volume;
         effect = "volume";
         break;
-      case "set_waveform":
-        next.channels = op.waveform.numChannels;
-        next.waveform = decodeAudioWaveform(op.waveform);
+      case "SetAudioWaveformMessage":
+        next.channels = message.waveform.numChannels;
+        next.waveform = decodeAudioWaveform(message.waveform);
         next.removed = false;
         effect = "reschedule";
         break;
-      case "append": {
-        const tail = decodeAudioWaveform(op.waveform);
-        next.channels = op.waveform.numChannels;
+      case "AppendAudioMessage": {
+        const tail = decodeAudioWaveform(message.waveform);
+        next.channels = message.waveform.numChannels;
         next.waveform = next.waveform ? appendWaveforms(next.waveform, tail) : tail;
         effect = "reschedule";
         break;
       }
-      case "remove":
+      case "RemoveAudioMessage":
         next.removed = true;
         effect = "reschedule";
         break;
@@ -214,50 +219,51 @@ export class AudioRuntime {
   }
 
   private applyOps(
-    targetMap: Map<string, TrackState | Partial<TrackState>>,
+    targetMap: Map<string, MutableTrackState>,
     step: number,
-    ops: AudioOp[],
+    messages: AudioMessage[],
     eventName: string,
     partial: boolean,
   ): void {
-    for (const op of ops) {
-      const current = targetMap.get(op.name);
+    for (const message of messages) {
+      const current = targetMap.get(message.name);
+      const hasWaveform = current && "waveform" in current && current.waveform;
       const target =
-        partial || (current && "waveform" in current && current.waveform)
+        partial || hasWaveform
           ? current || null
-          : makeTrackState(step, getOpSampleRate(op));
-      const result = this.applyOp(target, step, op, partial);
-      targetMap.set(op.name, result.track);
+          : makeTrackState(step, getMessageSampleRate(message));
+      const result = this.applyOp(target, step, message, partial);
+      targetMap.set(message.name, result.track);
       this.debugPush(eventName, {
-        name: op.name,
+        name: message.name,
         step,
-        op: op.op,
+        type: message.type,
         effect: result.effect,
       });
       if (result.effect === "volume") {
-        this.updateTrackVolume(op.name);
+        this.updateTrackVolume(message.name);
       } else if (result.effect === "reschedule") {
-        this.reconcileTrack(op.name);
+        this.reconcileTrack(message.name);
       }
     }
   }
 
-  applyTimelineOps(step: number, ops: AudioOp[]): void {
+  applyTimelineMessages(step: number, messages: AudioMessage[]): void {
     this.applyOps(
-      this.timelineTracks as Map<string, TrackState | Partial<TrackState>>,
+      this.timelineTracks as Map<string, MutableTrackState>,
       step,
-      ops,
-      "audio.timeline_op",
+      messages,
+      "audio.timeline_message",
       false,
     );
   }
 
-  applyLiveOps(step: number, ops: AudioOp[]): void {
+  applyLiveMessages(step: number, messages: AudioMessage[]): void {
     this.applyOps(
-      this.liveOverrides as Map<string, TrackState | Partial<TrackState>>,
+      this.liveOverrides as Map<string, MutableTrackState>,
       step,
-      ops,
-      "audio.live_op",
+      messages,
+      "audio.live_message",
       true,
     );
   }

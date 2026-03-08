@@ -1,32 +1,42 @@
 import type { AudioArrayPayload, RuntimeMessage, RuntimeValue } from "./binary";
 
-export type AudioOp =
+export type AudioMessage =
   | {
-      op: "add";
+      type: "AddAudioMessage";
       name: string;
       sampleRate: number;
       waveform: AudioArrayPayload;
       volume: number;
     }
   | {
-      op: "set_volume";
+      type: "SetAudioVolumeMessage";
       name: string;
       volume: number;
     }
   | {
-      op: "set_waveform";
+      type: "SetAudioWaveformMessage";
       name: string;
       waveform: AudioArrayPayload;
     }
   | {
-      op: "append";
+      type: "AppendAudioMessage";
       name: string;
       waveform: AudioArrayPayload;
     }
   | {
-      op: "remove";
+      type: "RemoveAudioMessage";
       name: string;
     };
+
+export function isAudioMessage(message: RuntimeMessage): message is AudioMessage {
+  return [
+    "AddAudioMessage",
+    "SetAudioVolumeMessage",
+    "SetAudioWaveformMessage",
+    "AppendAudioMessage",
+    "RemoveAudioMessage",
+  ].includes(message.type);
+}
 
 export type RuntimeConfig = {
   numSteps: number;

@@ -21,42 +21,6 @@ class AudioArrayPayload(TypedDict):
     data: str
 
 
-class AddAudioOp(TypedDict):
-    op: Literal["add"]
-    name: str
-    sampleRate: int
-    waveform: AudioArrayPayload
-    volume: float
-
-
-class SetAudioVolumeOp(TypedDict):
-    op: Literal["set_volume"]
-    name: str
-    volume: float
-
-
-class SetAudioWaveformOp(TypedDict):
-    op: Literal["set_waveform"]
-    name: str
-    waveform: AudioArrayPayload
-
-
-class AppendAudioOp(TypedDict):
-    op: Literal["append"]
-    name: str
-    waveform: AudioArrayPayload
-
-
-class RemoveAudioOp(TypedDict):
-    op: Literal["remove"]
-    name: str
-
-
-AudioOp: TypeAlias = (
-    AddAudioOp | SetAudioVolumeOp | SetAudioWaveformOp | AppendAudioOp | RemoveAudioOp
-)
-
-
 class RuntimeConfig(TypedDict):
     numSteps: int
     fps: float
@@ -69,15 +33,14 @@ class ClientRuntimeConfig(RuntimeConfig):
 
 
 RuntimeMethod: TypeAlias = Literal[
-    "applyAudioUpdate",
+    "applyMessageUpdate",
     "configure",
     "pause",
     "play",
-    "preloadAudioStep",
-    "preloadSceneStep",
+    "preloadStep",
     "seek",
     "setBaseline",
     "setFps",
 ]
 
-RuntimePayload: TypeAlias = AudioOp | Mapping[str, object]
+RuntimePayload: TypeAlias = Mapping[str, object]

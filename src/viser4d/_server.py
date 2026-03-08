@@ -9,12 +9,13 @@ from typing import TYPE_CHECKING, Callable, Iterator, cast
 import numpy as np
 import viser
 from viser import _messages
+from viser.infra import Message
 
 from ._audio import AudioHandle
 from ._controller import TimelineController
 from ._export import ExportBuilder
 from ._playback import ClientPlaybackHandle
-from ._protocol import AudioOp, RuntimeMethod, RuntimePayload
+from ._protocol import RuntimeMethod, RuntimePayload
 from ._recording import SceneRecorder
 from ._runtime import make_runtime_message, runtime_source
 from ._timeline import TimelineStore
@@ -143,8 +144,8 @@ class Viser4dServer(viser.ViserServer):
             raise RuntimeError("add_audio() is only valid inside server.at(t).")
         return self._recorder.add_audio(name, data=data, sample_rate=sample_rate)
 
-    def _dispatch_audio_update(self, op: AudioOp) -> None:
-        self._recorder.dispatch_audio_update(op)
+    def _dispatch_audio_update(self, message: Message) -> None:
+        self._recorder.dispatch_audio_update(message)
 
     def _send_runtime_call(
         self, method: RuntimeMethod, payload: RuntimePayload

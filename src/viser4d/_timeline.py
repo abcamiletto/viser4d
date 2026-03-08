@@ -11,7 +11,8 @@ import zstandard
 from viser import _messages
 from viser.infra import WebsockMessageHandler
 
-from ._protocol import AudioOp, BinaryPayload, JSONValue, SerializedMessage
+from ._audio_messages import is_audio_message
+from ._protocol import BinaryPayload, JSONValue, SerializedMessage
 
 
 def to_jsonable(value: Any) -> JSONValue:
@@ -48,14 +49,13 @@ def extract_node_names(message: _messages.Message) -> set[str]:
 
 
 def is_scene_message(message: Any) -> bool:
-    return "Gui" not in type(message).__name__
+    return "Gui" not in type(message).__name__ and not is_audio_message(message)
 
 
 @dataclass
 class TimelineStep:
     messages: list[_messages.Message] = field(default_factory=list)
     node_names: set[str] = field(default_factory=set)
-    audio_ops: list[AudioOp] = field(default_factory=list)
 
 
 class TimelineStore:
@@ -75,20 +75,15 @@ class TimelineStore:
     def step(self, step: int) -> TimelineStep:
         return self.steps[self.validate_step(step)]
 
-    def record_scene_messages(
-        self, step: int, messages: list[_messages.Message]
-    ) -> TimelineStep:
+    def record_messages(self, step: int, messages: list[_messages.Message]) -> TimelineStep:
         step_state = self.step(step)
         step_state.messages.extend(messages)
         for message in messages:
+            if not is_scene_message(message):
+                continue
             node_names = extract_node_names(message)
             step_state.node_names.update(node_names)
             self.node_names.update(node_names)
-        return step_state
-
-    def record_audio_ops(self, step: int, ops: list[AudioOp]) -> TimelineStep:
-        step_state = self.step(step)
-        step_state.audio_ops.extend(ops)
         return step_state
 
 
