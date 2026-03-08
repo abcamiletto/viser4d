@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import pathlib
-import signal
 import threading
 from types import MethodType
 from typing import TYPE_CHECKING, Callable, Iterator, cast
@@ -45,6 +44,7 @@ class Viser4dServer(viser.ViserServer):
         self._timeline = TimelineStore(self.num_steps)
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
+        self._stop_event = threading.Event()
         setattr(self.scene, "add_audio", MethodType(_scene_add_audio, self.scene))
         self._controller = TimelineController(self, fps=fps)
         self._recorder = SceneRecorder(self, self._timeline)
@@ -97,15 +97,8 @@ class Viser4dServer(viser.ViserServer):
         self._controller.on_timestep_change(callback)
 
     def sleep_forever(self) -> None:
-        if threading.current_thread() is threading.main_thread() and hasattr(
-            signal, "pause"
-        ):
-            while True:
-                signal.pause()
-
-        sleeper = threading.Event()
-        while True:
-            sleeper.wait(3600)
+        while not self._stop_event.wait(3600):
+            pass
 
     def serialize(
         self,
@@ -134,6 +127,7 @@ class Viser4dServer(viser.ViserServer):
         )
 
     def stop(self) -> None:
+        self._stop_event.set()
         self._controller.stop()
         super().stop()
 

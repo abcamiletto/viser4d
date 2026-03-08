@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import pathlib
+import threading
+import time
 
 import msgspec
 import numpy as np
@@ -99,6 +101,22 @@ def test_stop_shuts_down_predictor_thread() -> None:
     server.stop()
 
     assert predictor_thread.is_alive() is False
+
+
+def test_stop_unblocks_sleep_forever() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    sleeper = threading.Thread(target=server.sleep_forever)
+    sleeper.start()
+
+    try:
+        time.sleep(0.05)
+        server.stop()
+        sleeper.join(timeout=1.0)
+        assert sleeper.is_alive() is False
+    finally:
+        if sleeper.is_alive():
+            server.stop()
+            sleeper.join(timeout=1.0)
 
 
 def test_audio_payload_normalizes_integer_formats() -> None:
