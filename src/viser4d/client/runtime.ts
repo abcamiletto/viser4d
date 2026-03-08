@@ -4,11 +4,10 @@ import {
 } from "./binary";
 import { AudioRuntime } from "./audio-runtime";
 import {
-  findPlaybackStateRef,
+  findPlaybackTimeSlider,
   findViewer,
   getWindow,
   isAudioMessage,
-  type PlaybackStateRef,
   type RuntimeConfig,
   type ViewerLike,
 } from "./protocol";
@@ -44,7 +43,7 @@ export class TimelineRuntime {
   readonly debug = debugState;
 
   private viewer: ViewerLike | null = null;
-  private playbackStateRef: PlaybackStateRef | null = null;
+  private playbackTimeSlider: Element | null = null;
   private config: RuntimeConfig = {
     numSteps: 1,
     fps: 30,
@@ -89,11 +88,11 @@ export class TimelineRuntime {
     return this.viewer;
   }
 
-  private getPlaybackStateRef(): PlaybackStateRef | null {
-    if (!this.playbackStateRef) {
-      this.playbackStateRef = findPlaybackStateRef();
+  private getPlaybackTimeSlider(): Element | null {
+    if (!this.playbackTimeSlider || !this.playbackTimeSlider.isConnected) {
+      this.playbackTimeSlider = findPlaybackTimeSlider();
     }
-    return this.playbackStateRef;
+    return this.playbackTimeSlider;
   }
 
   private installWhenReady(): void {
@@ -161,11 +160,10 @@ export class TimelineRuntime {
   }
 
   private syncPlaybackState(): void {
-    const playbackStateRef = this.getPlaybackStateRef();
-    if (!playbackStateRef) {
+    const nextTime = this.readPlaybackTime();
+    if (nextTime === null) {
       return;
     }
-    const nextTime = playbackStateRef.current.currentTime;
     const delta = nextTime - this.playbackTime;
     const jumped = Math.abs(delta) > 0.2;
     const playing = delta > 1e-4;
@@ -196,6 +194,19 @@ export class TimelineRuntime {
   private resetPlaybackAudio(): void {
     this.playbackAudio.resetTimeline();
     this.playbackLastAppliedMessageTime = -1;
+  }
+
+  private readPlaybackTime(): number | null {
+    const slider = this.getPlaybackTimeSlider();
+    if (!slider) {
+      return null;
+    }
+    const value = slider.getAttribute("aria-valuenow");
+    if (value === null) {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
   private pushMessages(messages: RuntimeMessage[]): void {

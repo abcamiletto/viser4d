@@ -61,13 +61,6 @@ export type ViewerLike = {
   useSceneTree: unknown;
 };
 
-export type PlaybackStateRef = {
-  current: {
-    currentIndex: number;
-    currentTime: number;
-  };
-};
-
 type TimelineRuntimeWindow = Window & {
   __VISER4D__?: unknown;
   AudioContext?: typeof AudioContext;
@@ -75,18 +68,11 @@ type TimelineRuntimeWindow = Window & {
 };
 
 type ReactFiberNode = {
-  memoizedState?: ReactHookNode | null;
   memoizedProps?: {
     value?: Partial<ViewerLike> & Record<string, unknown>;
   };
-  type?: unknown;
   child?: ReactFiberNode | null;
   sibling?: ReactFiberNode | null;
-};
-
-type ReactHookNode = {
-  memoizedState?: unknown;
-  next?: ReactHookNode | null;
 };
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -98,15 +84,6 @@ function isViewerLike(value: unknown): value is ViewerLike {
     isObjectRecord(value) &&
     isObjectRecord(value.mutable) &&
     "useSceneTree" in value
-  );
-}
-
-function isPlaybackStateRef(value: unknown): value is PlaybackStateRef {
-  return (
-    isObjectRecord(value) &&
-    isObjectRecord(value.current) &&
-    typeof value.current.currentTime === "number" &&
-    typeof value.current.currentIndex === "number"
   );
 }
 
@@ -165,21 +142,6 @@ export function findViewer(): ViewerLike {
   throw new Error("[viser4d] Could not locate the viewer in the React fiber tree.");
 }
 
-export function findPlaybackStateRef(): PlaybackStateRef | null {
-  const playbackFiber = findFiber((fiber) => {
-    if (typeof fiber.type !== "function") {
-      return false;
-    }
-    const name = fiber.type.name;
-    return name === "PlaybackFromFile" || name === "PlaybackFromEmbedData";
-  });
-  if (!playbackFiber) {
-    return null;
-  }
-  for (let hook = playbackFiber.memoizedState; hook; hook = hook.next ?? null) {
-    if (isPlaybackStateRef(hook.memoizedState)) {
-      return hook.memoizedState;
-    }
-  }
-  return null;
+export function findPlaybackTimeSlider(): Element | null {
+  return document.querySelector("[role='slider'][aria-valuenow]");
 }
