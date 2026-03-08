@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Callable, Iterator, cast
 import numpy as np
 import viser
 from viser import _messages
-from viser.infra import Message
 
 from ._audio import AudioHandle
 from ._controller import TimelineController
@@ -144,7 +143,7 @@ class Viser4dServer(viser.ViserServer):
             raise RuntimeError("add_audio() is only valid inside server.at(t).")
         return self._recorder.add_audio(name, data=data, sample_rate=sample_rate)
 
-    def _dispatch_audio_update(self, message: Message) -> None:
+    def _dispatch_audio_update(self, message: _messages.Message) -> None:
         self._recorder.dispatch_audio_update(message)
 
     def _send_runtime_call(
@@ -158,9 +157,7 @@ class Viser4dServer(viser.ViserServer):
 
         def configure_theme_wrapper(*args, **kwargs) -> None:
             original_configure_theme(*args, **kwargs)
-            self._playback_brand_color = _primary_brand_color(
-                kwargs.get("brand_color")
-            )
+            self._playback_brand_color = _primary_brand_color(kwargs.get("brand_color"))
             for playback in self._client_playback_values():
                 playback.apply_theme_colors(self._playback_brand_color)
 

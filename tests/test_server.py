@@ -84,8 +84,7 @@ def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
         assert set(payload) == {"durationSeconds", "messages", "viserVersion"}
         assert payload["durationSeconds"] == pytest.approx(2 / 30.0)
         assert any(
-            message["type"] == "AddAudioMessage"
-            for _, message in payload["messages"]
+            message["type"] == "AddAudioMessage" for _, message in payload["messages"]
         )
         assert any(
             message["type"] == "SetAudioVolumeMessage"

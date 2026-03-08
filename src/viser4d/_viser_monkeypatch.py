@@ -26,11 +26,11 @@ def _replace(text: str, before: str, after: str) -> str:
     assert before in text
     return text.replace(before, after)
 
+
 FILE_PLAYBACK_REPLACEMENTS = (
     (
         "  function resetScene() {\n",
-        "  function resetScene() {\n"
-        "    ensureViser4dFileAudioRuntime().resetAll();\n",
+        "  function resetScene() {\n    ensureViser4dFileAudioRuntime().resetAll();\n",
     ),
     (
         "      const message = recording.messages[mutable.currentIndex][1];\n",
@@ -69,7 +69,10 @@ def ensure_viser_audio_patch() -> None:
     for before, after in FILE_PLAYBACK_REPLACEMENTS:
         file_playback = _replace(file_playback, before, after)
 
-    if message_handler == original_message_handler and file_playback == original_file_playback:
+    if (
+        message_handler == original_message_handler
+        and file_playback == original_file_playback
+    ):
         return
 
     message_handler_path.write_text(message_handler)

@@ -205,9 +205,7 @@ class ClientPlaybackHandle:
         self._set_fps_slider_value(current_fps)
         self._sync_playback_buttons()
 
-    def apply_theme_colors(
-        self, brand_color: tuple[int, int, int] | None
-    ) -> None:
+    def apply_theme_colors(self, brand_color: tuple[int, int, int] | None) -> None:
         self._play_button.color = None
         self._pause_button.color = _pause_button_color(brand_color)
 
@@ -265,4 +263,8 @@ def _pause_button_color(
     brand_color: tuple[int, int, int] | None,
 ) -> tuple[int, int, int]:
     base_color = _DEFAULT_PRIMARY_COLOR if brand_color is None else brand_color
-    return tuple(int(channel * 0.85) for channel in base_color)
+    return (
+        int(base_color[0] * 0.85),
+        int(base_color[1] * 0.85),
+        int(base_color[2] * 0.85),
+    )

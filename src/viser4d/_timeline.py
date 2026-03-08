@@ -75,7 +75,9 @@ class TimelineStore:
     def step(self, step: int) -> TimelineStep:
         return self.steps[self.validate_step(step)]
 
-    def record_messages(self, step: int, messages: list[_messages.Message]) -> TimelineStep:
+    def record_messages(
+        self, step: int, messages: list[_messages.Message]
+    ) -> TimelineStep:
         step_state = self.step(step)
         step_state.messages.extend(messages)
         for message in messages:
