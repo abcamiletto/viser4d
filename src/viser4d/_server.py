@@ -18,6 +18,7 @@ from ._protocol import AudioOp, RuntimeMethod, RuntimePayload
 from ._recording import SceneRecorder
 from ._runtime import make_runtime_message, runtime_source
 from ._timeline import TimelineStore
+from ._viser_monkeypatch import ensure_viser_audio_patch
 
 if TYPE_CHECKING:
     from viser._viser import ClientHandle
@@ -38,6 +39,7 @@ class Viser4dServer(viser.ViserServer):
         num_steps = int(num_steps)
         if num_steps < 1:
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
+        ensure_viser_audio_patch()
         super().__init__(**kwargs)
 
         self.num_steps = num_steps
