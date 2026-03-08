@@ -12,6 +12,8 @@ from ._runtime import (
     make_runtime_message,
 )
 
+_DEFAULT_PRIMARY_COLOR = (34, 139, 230)
+
 if TYPE_CHECKING:
     from viser._viser import ClientHandle
 
@@ -56,12 +58,11 @@ class ClientPlaybackHandle:
             self._step_buttons = client.gui.add_button_group("Step", ("Prev", "Next"))
             self._play_button = client.gui.add_button(
                 "Play",
-                color="green",
                 icon=viser.Icon.PLAYER_PLAY_FILLED,
             )
             self._pause_button = client.gui.add_button(
                 "Pause",
-                color="yellow",
+                color=_pause_button_color(None),
                 icon=viser.Icon.PLAYER_PAUSE_FILLED,
                 visible=False,
             )
@@ -204,6 +205,12 @@ class ClientPlaybackHandle:
         self._set_fps_slider_value(current_fps)
         self._sync_playback_buttons()
 
+    def apply_theme_colors(
+        self, brand_color: tuple[int, int, int] | None
+    ) -> None:
+        self._play_button.color = None
+        self._pause_button.color = _pause_button_color(brand_color)
+
     def _sync_from_client(self, timestep: int) -> None:
         self._set_current_timestep(timestep)
         should_sync_buttons = False
@@ -252,3 +259,10 @@ class ClientPlaybackHandle:
             is_playing = self._is_playing
         self._play_button.visible = not is_playing
         self._pause_button.visible = is_playing
+
+
+def _pause_button_color(
+    brand_color: tuple[int, int, int] | None,
+) -> tuple[int, int, int]:
+    base_color = _DEFAULT_PRIMARY_COLOR if brand_color is None else brand_color
+    return tuple(int(channel * 0.85) for channel in base_color)

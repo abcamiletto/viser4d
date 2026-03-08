@@ -12,6 +12,8 @@ import zstandard
 
 import viser4d
 from viser4d._audio import audio_array_payload
+from viser4d._playback import _pause_button_color
+from viser4d._server import _primary_brand_color
 
 
 def test_audio_requires_timestep_context() -> None:
@@ -117,6 +119,28 @@ def test_stop_unblocks_sleep_forever() -> None:
         if sleeper.is_alive():
             server.stop()
             sleeper.join(timeout=1.0)
+
+
+def test_primary_brand_color_selects_theme_primary_swatch() -> None:
+    assert _primary_brand_color((1, 2, 3)) == (1, 2, 3)
+    assert _primary_brand_color(
+        (
+            "#000000",
+            "#111111",
+            "#222222",
+            "#333333",
+            "#444444",
+            "#555555",
+            "#666666",
+            "#777777",
+            "#abcdef",
+            "#999999",
+        )
+    ) == (171, 205, 239)
+
+
+def test_pause_button_color_uses_darker_brand_variant() -> None:
+    assert _pause_button_color((100, 200, 50)) == (85, 170, 42)
 
 
 def test_audio_payload_normalizes_integer_formats() -> None:

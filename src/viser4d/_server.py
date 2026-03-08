@@ -44,8 +44,10 @@ class Viser4dServer(viser.ViserServer):
         self._timeline = TimelineStore(self.num_steps)
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
+        self._playback_brand_color: tuple[int, int, int] | None = None
         self._stop_event = threading.Event()
         setattr(self.scene, "add_audio", MethodType(_scene_add_audio, self.scene))
+        self._install_theme_tracking()
         self._controller = TimelineController(self, fps=fps)
         self._recorder = SceneRecorder(self, self._timeline)
         self._export_builder = ExportBuilder(self, self._timeline)
@@ -59,6 +61,7 @@ class Viser4dServer(viser.ViserServer):
             playback = ClientPlaybackHandle(self, client)
             with self._client_playbacks_lock:
                 self._client_playbacks[client.client_id] = playback
+            playback.apply_theme_colors(self._playback_brand_color)
 
         @self.on_client_disconnect
         def _detach_playback(client: ClientHandle) -> None:
@@ -147,6 +150,19 @@ class Viser4dServer(viser.ViserServer):
         message = make_runtime_message(method, payload)
         self._websock_server.queue_message(message)
 
+    def _install_theme_tracking(self) -> None:
+        original_configure_theme = self.gui.configure_theme
+
+        def configure_theme_wrapper(*args, **kwargs) -> None:
+            original_configure_theme(*args, **kwargs)
+            self._playback_brand_color = _primary_brand_color(
+                kwargs.get("brand_color")
+            )
+            for playback in self._client_playback_values():
+                playback.apply_theme_colors(self._playback_brand_color)
+
+        setattr(self.gui, "configure_theme", configure_theme_wrapper)
+
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:
         with self._client_playbacks_lock:
             return list(self._client_playbacks.values())
@@ -197,3 +213,21 @@ def _scene_add_audio(
 ) -> AudioHandle:
     server = cast(Viser4dServer, scene._owner)
     return server._add_audio(name, data=data, sample_rate=sample_rate)
+
+
+def _primary_brand_color(
+    brand_color: tuple[int, int, int] | tuple[str, ...] | None,
+) -> tuple[int, int, int] | None:
+    if brand_color is None:
+        return None
+    if len(brand_color) == 3:
+        return cast(tuple[int, int, int], brand_color)
+    if len(brand_color) == 10:
+        return _hex_to_rgb(cast(tuple[str, ...], brand_color)[8])
+    return None
+
+
+def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+    color = color.lstrip("#")
+    assert len(color) == 6
+    return (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16))
