@@ -93,7 +93,7 @@ callbacks.
 
 ## Serialize `.viser` recordings
 
-To serialize across timesteps in memory, use `server.serialize()`:
+To serialize the full viser4d timeline, including audio, use `server.serialize()`:
 
 ```python
 import viser4d
