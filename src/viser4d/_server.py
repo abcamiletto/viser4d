@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import pathlib
 import threading
 from types import MethodType
 from typing import TYPE_CHECKING, Callable, Iterator, cast
@@ -113,20 +112,6 @@ class Viser4dServer(viser.ViserServer):
     ) -> bytes:
         """Serialize the recorded timeline to bytes."""
         return self._export_builder.serialize(
-            start_timestep=start_timestep,
-            end_timestep=end_timestep,
-        )
-
-    def write_recording(
-        self,
-        path: str | pathlib.Path,
-        *,
-        start_timestep: int = 0,
-        end_timestep: int | None = None,
-    ) -> None:
-        """Write the recorded timeline to ``path``."""
-        self._export_builder.write(
-            path,
             start_timestep=start_timestep,
             end_timestep=end_timestep,
         )

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import base64
 import pathlib
 import threading
@@ -32,7 +30,7 @@ def test_num_steps_must_be_positive() -> None:
         viser4d.Viser4dServer(num_steps=0, port=0, verbose=False)
 
 
-def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
+def test_timeline_records_scene_and_audio() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
         seen_timesteps: list[int] = []
@@ -74,9 +72,6 @@ def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
 
         blob = server.serialize()
         assert blob
-        out_path = tmp_path / "scene.viser4d"
-        server.write_recording(out_path)
-        assert out_path.read_bytes() == blob
 
         size = int.from_bytes(blob[:8], "little")
         decoded = zstandard.ZstdDecompressor().decompress(blob[8:], size)

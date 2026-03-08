@@ -103,15 +103,7 @@ server = viser4d.Viser4dServer(num_steps=100)
 blob = server.serialize(start_timestep=0, end_timestep=None)
 ```
 
-To write the recording to disk, use `server.write_recording(...)`:
-
-```python
-server.write_recording(
-    "recording.viser",
-    start_timestep=0,
-    end_timestep=None,
-)
-```
+Write the returned bytes to disk yourself if needed.
 
 ## Streaming audio append
 

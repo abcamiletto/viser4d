@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pathlib
 from typing import TYPE_CHECKING
 
 from . import _viser_private as impl
@@ -56,13 +55,3 @@ class ExportBuilder:
             duration_seconds=max(end - start, 0) / fps,
         )
         return blob
-
-    def write(
-        self,
-        path: str | pathlib.Path,
-        *,
-        start_timestep: int = 0,
-        end_timestep: int | None = None,
-    ) -> None:
-        blob = self.serialize(start_timestep=start_timestep, end_timestep=end_timestep)
-        pathlib.Path(path).write_bytes(blob)
