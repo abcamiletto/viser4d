@@ -7,8 +7,8 @@ import numpy as np
 from viser import _messages
 
 from . import _viser_private as impl
+from ._audio_messages import AddAudioMessage
 from ._audio import AudioHandle, AudioState, audio_array_payload
-from ._protocol import AddAudioOp, AudioOp
 from ._timeline import (
     TimelineRecorder,
     TimelineStore,
@@ -44,13 +44,13 @@ class SceneRecorder:
         if not recorder.messages:
             return
 
-        step_store = self._timeline.record_scene_messages(step, recorder.messages)
+        step_store = self._timeline.record_messages(step, recorder.messages)
         for node_name in step_store.node_names:
             self._register_timeline_node(node_name)
 
         messages = [serialize_message(message) for message in recorder.messages]
         self._server._send_runtime_call(
-            "preloadSceneStep",
+            "preloadStep",
             {
                 "step": step,
                 "messages": messages,
@@ -72,29 +72,33 @@ class SceneRecorder:
         )
         handle = AudioHandle(self._server, state)
         assert self._active_step is not None
-        op = AddAudioOp(
-            op="add",
+        message = AddAudioMessage(
             name=name,
             sampleRate=state.sample_rate,
             waveform=audio_array_payload(state.waveform),
             volume=state.volume,
         )
-        self._timeline.record_audio_ops(self._active_step, [op])
+        self._timeline.record_messages(self._active_step, [message])
         self._server._send_runtime_call(
-            "preloadAudioStep",
-            {"step": self._active_step, "ops": [op]},
+            "preloadStep",
+            {"step": self._active_step, "messages": [serialize_message(message)]},
         )
         return handle
 
-    def dispatch_audio_update(self, op: AudioOp) -> None:
+    def dispatch_audio_update(self, message: _messages.Message) -> None:
         if self._active_step is not None:
-            self._timeline.record_audio_ops(self._active_step, [op])
+            self._timeline.record_messages(self._active_step, [message])
             self._server._send_runtime_call(
-                "preloadAudioStep",
-                {"step": self._active_step, "ops": [op]},
+                "preloadStep",
+                {
+                    "step": self._active_step,
+                    "messages": [serialize_message(message)],
+                },
             )
             return
-        self._server._send_runtime_call("applyAudioUpdate", op)
+        self._server._send_runtime_call(
+            "applyMessageUpdate", serialize_message(message)
+        )
 
     def _register_timeline_node(self, name: str) -> None:
         if name in self._timeline.baseline_messages_by_name:

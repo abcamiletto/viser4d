@@ -5,12 +5,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ._audio_messages import (
+    AppendAudioMessage,
+    RemoveAudioMessage,
+    SetAudioVolumeMessage,
+    SetAudioWaveformMessage,
+)
 from ._protocol import (
-    AppendAudioOp,
     AudioArrayPayload,
-    RemoveAudioOp,
-    SetAudioVolumeOp,
-    SetAudioWaveformOp,
 )
 
 if TYPE_CHECKING:
@@ -113,11 +115,7 @@ class AudioHandle:
     def volume(self, value: float) -> None:
         self._state.volume = float(value)
         self._server._dispatch_audio_update(
-            SetAudioVolumeOp(
-                op="set_volume",
-                name=self._state.name,
-                volume=self._state.volume,
-            )
+            SetAudioVolumeMessage(name=self._state.name, volume=self._state.volume)
         )
 
     @property
@@ -128,8 +126,7 @@ class AudioHandle:
     def waveform(self, value: np.ndarray) -> None:
         self._state.waveform = value
         self._server._dispatch_audio_update(
-            SetAudioWaveformOp(
-                op="set_waveform",
+            SetAudioWaveformMessage(
                 name=self._state.name,
                 waveform=audio_array_payload(self._state.waveform),
             )
@@ -138,14 +135,11 @@ class AudioHandle:
     def append(self, data: np.ndarray) -> None:
         append_data = self._state.append_chunk(data)
         self._server._dispatch_audio_update(
-            AppendAudioOp(
-                op="append",
+            AppendAudioMessage(
                 name=self._state.name,
                 waveform=audio_array_payload(append_data),
             )
         )
 
     def remove(self) -> None:
-        self._server._dispatch_audio_update(
-            RemoveAudioOp(op="remove", name=self._state.name)
-        )
+        self._server._dispatch_audio_update(RemoveAudioMessage(name=self._state.name))

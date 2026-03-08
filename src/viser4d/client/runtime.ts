@@ -7,9 +7,10 @@ import { AudioRuntime } from "./audio-runtime";
 import {
   findViewer,
   getWindow,
+  isAudioMessage,
+  type RuntimeConfig,
   type ViewerLike,
 } from "./protocol";
-import type { AudioOp, RuntimeConfig } from "./protocol";
 
 const debugState = {
   enabled: false,
@@ -37,7 +38,7 @@ const debugState = {
 };
 
 export class TimelineRuntime {
-  sceneSteps: RuntimeMessage[][] = [];
+  stepMessages: RuntimeMessage[][] = [];
   appliedStep = -1;
   readonly debug = debugState;
 
@@ -49,7 +50,6 @@ export class TimelineRuntime {
     loop: false,
     timestepSyncUuid: null,
   };
-  private audioSteps: AudioOp[][] = [];
   private timelineNodeNames = new Set<string>();
   private baselineByName = new Map<string, RuntimeMessage[]>();
   private currentStep = 0;
@@ -84,23 +84,13 @@ export class TimelineRuntime {
     });
   }
 
-  private ensureSceneStep(step: number): RuntimeMessage[] {
-    const bucket = this.sceneSteps[step];
+  private ensureStep(step: number): RuntimeMessage[] {
+    const bucket = this.stepMessages[step];
     if (bucket) {
       return bucket;
     }
     const created: RuntimeMessage[] = [];
-    this.sceneSteps[step] = created;
-    return created;
-  }
-
-  private ensureAudioStep(step: number): AudioOp[] {
-    const bucket = this.audioSteps[step];
-    if (bucket) {
-      return bucket;
-    }
-    const created: AudioOp[] = [];
-    this.audioSteps[step] = created;
+    this.stepMessages[step] = created;
     return created;
   }
 
@@ -112,6 +102,24 @@ export class TimelineRuntime {
 
   private syncAudioTransport(): void {
     this.audio.seek(this.currentStep, this.config.fps, this.playing);
+  }
+
+  private applyStepMessages(step: number, messages: RuntimeMessage[]): void {
+    const sceneMessages: RuntimeMessage[] = [];
+    const audioMessages = [];
+    for (const message of messages) {
+      if (isAudioMessage(message)) {
+        audioMessages.push(message);
+      } else {
+        sceneMessages.push(message);
+      }
+    }
+    if (sceneMessages.length) {
+      this.pushMessages(sceneMessages);
+    }
+    if (audioMessages.length) {
+      this.audio.applyTimelineMessages(step, audioMessages);
+    }
   }
 
   getTransportStep(timestamp = performance.now()): number {
@@ -130,11 +138,8 @@ export class TimelineRuntime {
       this.config.baseFps = this.config.fps;
     }
     this.audio.setBaseFps(this.config.baseFps);
-    while (this.sceneSteps.length < this.config.numSteps) {
-      this.sceneSteps.push([]);
-    }
-    while (this.audioSteps.length < this.config.numSteps) {
-      this.audioSteps.push([]);
+    while (this.stepMessages.length < this.config.numSteps) {
+      this.stepMessages.push([]);
     }
     debugState.push("runtime.configure", this.config);
     this.syncAudioTransport();
@@ -145,12 +150,12 @@ export class TimelineRuntime {
     this.timelineNodeNames.add(payload.name);
   }
 
-  preloadSceneStep(payload: {
+  preloadStep(payload: {
     step: number;
     messages: RuntimeMessage[];
     nodeNames?: string[];
   }): void {
-    this.sceneSteps[payload.step] = this.ensureSceneStep(payload.step).concat(
+    this.stepMessages[payload.step] = this.ensureStep(payload.step).concat(
       payload.messages.map(reviveMessage),
     );
     for (const name of payload.nodeNames || []) {
@@ -158,17 +163,19 @@ export class TimelineRuntime {
     }
   }
 
-  preloadAudioStep(payload: { step: number; ops: AudioOp[] }): void {
-    this.audioSteps[payload.step] = this.ensureAudioStep(payload.step).concat(payload.ops);
-  }
-
-  applyAudioUpdate(op: AudioOp): void {
-    debugState.push("runtime.apply_audio_update", {
-      op: op.op,
-      name: op.name,
+  applyMessageUpdate(message: RuntimeMessage): void {
+    const revived = reviveMessage(message);
+    const name = typeof revived.name === "string" ? revived.name : null;
+    debugState.push("runtime.apply_message_update", {
+      type: revived.type,
+      name,
       step: Math.floor(this.currentStep),
     });
-    this.audio.applyLiveOps(Math.floor(this.currentStep), [op]);
+    if (isAudioMessage(revived)) {
+      this.audio.applyLiveMessages(Math.floor(this.currentStep), [revived]);
+      return;
+    }
+    this.pushMessages([revived]);
   }
 
   private syncTimestepToServer(step: number, force = false): void {
@@ -212,13 +219,9 @@ export class TimelineRuntime {
       this.resetTimelineState();
     }
     for (let index = this.appliedStep + 1; index <= step; index += 1) {
-      const sceneMessages = this.sceneSteps[index];
-      if (sceneMessages?.length) {
-        this.pushMessages(sceneMessages);
-      }
-      const audioOps = this.audioSteps[index];
-      if (audioOps?.length) {
-        this.audio.applyTimelineOps(index, audioOps);
+      const messages = this.stepMessages[index];
+      if (messages?.length) {
+        this.applyStepMessages(index, messages);
       }
     }
     this.appliedStep = step;
@@ -257,7 +260,9 @@ export class TimelineRuntime {
       this.applyThrough(Math.floor(this.currentStep));
     }
     this.syncTimestepToServer(Math.floor(this.currentStep));
-    this.rafId = getWindow().requestAnimationFrame((nextTimestamp) => this.tick(nextTimestamp));
+    this.rafId = getWindow().requestAnimationFrame((nextTimestamp) =>
+      this.tick(nextTimestamp),
+    );
   }
 
   play(payload: { fps: number; loop: boolean }): void {
@@ -270,7 +275,9 @@ export class TimelineRuntime {
     if (this.rafId !== null) {
       getWindow().cancelAnimationFrame(this.rafId);
     }
-    this.rafId = getWindow().requestAnimationFrame((timestamp) => this.tick(timestamp));
+    this.rafId = getWindow().requestAnimationFrame((timestamp) =>
+      this.tick(timestamp),
+    );
   }
 
   setFps(payload: { fps: number; loop: boolean }): void {

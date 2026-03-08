@@ -50,9 +50,15 @@ def test_timeline_records_scene_and_audio(tmp_path: pathlib.Path) -> None:
             audio.volume = 0.25
 
         assert server._timeline.step(0).messages
-        assert server._timeline.step(0).audio_ops
+        assert any(
+            type(message).__name__ == "AddAudioMessage"
+            for message in server._timeline.step(0).messages
+        )
         assert server._timeline.step(1).messages
-        assert server._timeline.step(1).audio_ops
+        assert any(
+            type(message).__name__ == "SetAudioVolumeMessage"
+            for message in server._timeline.step(1).messages
+        )
 
         server.set_fps(24.0)
         assert server._fps == 24.0
