@@ -4,14 +4,7 @@ import pathlib
 from typing import TYPE_CHECKING
 
 from . import _viser_private as impl
-from ._audio_messages import (
-    AddAudioMessage,
-    AppendAudioMessage,
-    RemoveAudioMessage,
-    SetAudioVolumeMessage,
-    SetAudioWaveformMessage,
-)
-from ._protocol import AudioOp, SerializedMessage
+from ._protocol import SerializedMessage
 from ._runtime import RUNTIME_MARKER
 from ._timeline import (
     TimelineStore,
@@ -21,25 +14,6 @@ from ._timeline import (
 
 if TYPE_CHECKING:
     from ._server import Viser4dServer
-
-
-def _audio_message_from_op(op: AudioOp):
-    match op["op"]:
-        case "add":
-            return AddAudioMessage(
-                name=op["name"],
-                sampleRate=op["sampleRate"],
-                waveform=op["waveform"],
-                volume=op["volume"],
-            )
-        case "set_volume":
-            return SetAudioVolumeMessage(name=op["name"], volume=op["volume"])
-        case "set_waveform":
-            return SetAudioWaveformMessage(name=op["name"], waveform=op["waveform"])
-        case "append":
-            return AppendAudioMessage(name=op["name"], waveform=op["waveform"])
-        case "remove":
-            return RemoveAudioMessage(name=op["name"])
 
 
 class ExportBuilder:
@@ -76,15 +50,12 @@ class ExportBuilder:
                 (time, serialize_message(message))
                 for message in self._timeline.step(step).messages
             )
-            recording.extend(
-                (time, serialize_message(_audio_message_from_op(op)))
-                for op in self._timeline.step(step).audio_ops
-            )
 
-        return serialize_viser_recording(
+        blob = serialize_viser_recording(
             recording,
             duration_seconds=max(end - start, 0) / fps,
         )
+        return blob
 
     def write(
         self,

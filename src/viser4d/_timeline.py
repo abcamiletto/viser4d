@@ -105,21 +105,17 @@ class TimelineRecorder(WebsockMessageHandler):
         return
 
 
-def serialize_recording(payload: Any) -> bytes:
-    packed = msgspec.msgpack.encode(payload)
-    compressed = zstandard.ZstdCompressor(level=12).compress(packed)
-    return len(packed).to_bytes(8, "little") + compressed
-
-
 def serialize_viser_recording(
     messages: list[tuple[float, SerializedMessage]],
     *,
     duration_seconds: float = 0.0,
 ) -> bytes:
-    return serialize_recording(
+    packed = msgspec.msgpack.encode(
         {
             "durationSeconds": duration_seconds,
             "messages": messages,
             "viserVersion": viser.__version__,
         }
     )
+    compressed = zstandard.ZstdCompressor(level=12).compress(packed)
+    return len(packed).to_bytes(8, "little") + compressed
