@@ -59,7 +59,6 @@ class Viser4dServer(viser.ViserServer):
             playback = ClientPlaybackHandle(self, client)
             with self._client_playbacks_lock:
                 self._client_playbacks[client.client_id] = playback
-            setattr(client, "playback", playback)
 
         @self.on_client_disconnect
         def _detach_playback(client: ClientHandle) -> None:
