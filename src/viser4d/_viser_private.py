@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Iterator, cast
 
 import viser
 from viser import _messages
@@ -12,7 +12,7 @@ def gui_uuid(handle: Any) -> str:
 
 
 def scene_owner(scene: viser.SceneApi) -> viser.ViserServer:
-    return scene._owner
+    return cast(viser.ViserServer, scene._owner)
 
 
 @contextmanager
