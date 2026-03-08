@@ -9,6 +9,7 @@ import numpy as np
 import viser
 from viser import _messages
 
+from . import _viser_private as impl
 from ._audio import AudioHandle
 from ._controller import TimelineController
 from ._export import ExportBuilder
@@ -43,16 +44,14 @@ class Viser4dServer(viser.ViserServer):
         self._timeline = TimelineStore(self.num_steps)
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
-        self._playback_brand_color: tuple[int, int, int] | None = None
         self._stop_event = threading.Event()
         setattr(self.scene, "add_audio", MethodType(_scene_add_audio, self.scene))
-        self._install_theme_tracking()
         self._controller = TimelineController(self, fps=fps)
         self._recorder = SceneRecorder(self, self._timeline)
         self._export_builder = ExportBuilder(self, self._timeline)
 
-        self._websock_server.queue_message(
-            _messages.RunJavascriptMessage(runtime_source())
+        impl.queue_server_message(
+            self, _messages.RunJavascriptMessage(runtime_source())
         )
 
         @self.on_client_connect
@@ -60,7 +59,7 @@ class Viser4dServer(viser.ViserServer):
             playback = ClientPlaybackHandle(self, client)
             with self._client_playbacks_lock:
                 self._client_playbacks[client.client_id] = playback
-            playback.apply_theme_colors(self._playback_brand_color)
+            playback.apply_theme_colors(_primary_brand_color(impl.brand_color(self)))
 
         @self.on_client_disconnect
         def _detach_playback(client: ClientHandle) -> None:
@@ -133,18 +132,7 @@ class Viser4dServer(viser.ViserServer):
         self, method: RuntimeMethod, payload: RuntimePayload
     ) -> None:
         message = make_runtime_message(method, payload)
-        self._websock_server.queue_message(message)
-
-    def _install_theme_tracking(self) -> None:
-        original_configure_theme = self.gui.configure_theme
-
-        def configure_theme_wrapper(*args, **kwargs) -> None:
-            original_configure_theme(*args, **kwargs)
-            self._playback_brand_color = _primary_brand_color(kwargs.get("brand_color"))
-            for playback in self._client_playback_values():
-                playback.apply_theme_colors(self._playback_brand_color)
-
-        setattr(self.gui, "configure_theme", configure_theme_wrapper)
+        impl.queue_server_message(self, message)
 
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:
         with self._client_playbacks_lock:
@@ -194,7 +182,7 @@ def _scene_add_audio(
     data: np.ndarray,
     sample_rate: int,
 ) -> AudioHandle:
-    server = cast(Viser4dServer, scene._owner)
+    server = cast(Viser4dServer, impl.scene_owner(scene))
     return server._add_audio(name, data=data, sample_rate=sample_rate)
 
 

@@ -239,7 +239,7 @@ class ClientPlaybackHandle:
         self, method: RuntimeMethod, payload: RuntimePayload
     ) -> None:
         message = make_runtime_message(method, payload)
-        self._client._websock_connection.queue_message(message)
+        impl.queue_client_message(self._client, message)
 
     def _set_fps_slider_value(self, fps: float) -> None:
         if self._fps_slider.value == fps:
