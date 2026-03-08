@@ -15,16 +15,27 @@ type AudioContextWindow = Window & {
   webkitAudioContext?: typeof AudioContext;
 };
 
+interface FileAudioTrack {
+  sampleRate: number;
+  waveform: Float32Array[];
+  volume: number;
+  startTime: number;
+  removed: boolean;
+  source: AudioBufferSourceNode | null;
+  gain: GainNode | null;
+}
+
 function isViser4dAudioMessage(
   message: Message | Record<string, unknown>,
 ): message is Viser4dAudioMessage {
-  return [
-    "AddAudioMessage",
-    "SetAudioVolumeMessage",
-    "SetAudioWaveformMessage",
-    "AppendAudioMessage",
-    "RemoveAudioMessage",
-  ].includes((message as { type?: string }).type ?? "");
+  const type = (message as { type?: string }).type;
+  return (
+    type === "AddAudioMessage" ||
+    type === "SetAudioVolumeMessage" ||
+    type === "SetAudioWaveformMessage" ||
+    type === "AppendAudioMessage" ||
+    type === "RemoveAudioMessage"
+  );
 }
 
 function getAudioContextClass(): typeof AudioContext | undefined {
@@ -66,7 +77,7 @@ function ensureViser4dFileAudioRuntime() {
 
   class FileAudioRuntime {
     ctx: AudioContext | null = null;
-    tracks = new Map<string, any>();
+    tracks = new Map<string, FileAudioTrack>();
     currentTime = 0;
     playing = false;
 
@@ -78,7 +89,7 @@ function ensureViser4dFileAudioRuntime() {
       return this.ctx;
     }
 
-    stopTrack(track: any) {
+    stopTrack(track: FileAudioTrack) {
       if (track.source) {
         try {
           track.source.stop();

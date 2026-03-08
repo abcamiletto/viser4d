@@ -29,13 +29,13 @@ export type AudioMessage =
     };
 
 export function isAudioMessage(message: RuntimeMessage): message is AudioMessage {
-  return [
-    "AddAudioMessage",
-    "SetAudioVolumeMessage",
-    "SetAudioWaveformMessage",
-    "AppendAudioMessage",
-    "RemoveAudioMessage",
-  ].includes(message.type);
+  return (
+    message.type === "AddAudioMessage" ||
+    message.type === "SetAudioVolumeMessage" ||
+    message.type === "SetAudioWaveformMessage" ||
+    message.type === "AppendAudioMessage" ||
+    message.type === "RemoveAudioMessage"
+  );
 }
 
 export type RuntimeConfig = {

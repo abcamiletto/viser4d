@@ -165,9 +165,10 @@ export class TimelineRuntime {
 
   applyMessageUpdate(message: RuntimeMessage): void {
     const revived = reviveMessage(message);
+    const name = typeof revived.name === "string" ? revived.name : null;
     debugState.push("runtime.apply_message_update", {
       type: revived.type,
-      name: revived.name ?? null,
+      name,
       step: Math.floor(this.currentStep),
     });
     if (isAudioMessage(revived)) {

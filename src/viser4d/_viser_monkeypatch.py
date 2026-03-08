@@ -16,33 +16,34 @@ def _snippet(name: str) -> str:
 def _insert_once(text: str, marker: str, anchor: str, snippet: str) -> str:
     if marker in text:
         return text
+    assert anchor in text
     return text.replace(anchor, snippet + "\n" + anchor, 1)
 
 
-def _replace_once(text: str, before: str, after: str) -> str:
-    return text if after in text else text.replace(before, after, 1)
-
+def _replace(text: str, before: str, after: str) -> str:
+    if after in text:
+        return text
+    assert before in text
+    return text.replace(before, after)
 
 FILE_PLAYBACK_REPLACEMENTS = (
     (
-        "    // Instead of removing all of the existing scene nodes, we're just going to hide them.\n",
-        "    // Instead of removing all of the existing scene nodes, we're just going to hide them.\n"
+        "  function resetScene() {\n",
+        "  function resetScene() {\n"
         "    ensureViser4dFileAudioRuntime().resetAll();\n",
     ),
     (
-        "      const message = recording.messages[mutable.currentIndex][1];\n      viewerMutable.messageQueue.push(message);\n",
+        "      const message = recording.messages[mutable.currentIndex][1];\n",
         "      const message = recording.messages[mutable.currentIndex][1];\n"
         "      if (isViser4dAudioMessage(message)) {\n"
         "        (message as Message & { __viserPlaybackTime?: number }).__viserPlaybackTime =\n"
         "          recording.messages[mutable.currentIndex][0];\n"
-        "      }\n"
-        "      viewerMutable.messageQueue.push(message);\n",
+        "      }\n",
     ),
     (
-        "    setCurrentTime(mutable.currentTime);\n  }, [recording]);\n",
+        "    setCurrentTime(mutable.currentTime);\n",
         "    setCurrentTime(mutable.currentTime);\n"
-        "    ensureViser4dFileAudioRuntime().seek(mutable.currentTime, !paused);\n"
-        "  }, [recording, paused]);\n",
+        "    ensureViser4dFileAudioRuntime().seek(mutable.currentTime, !paused);\n",
     ),
 )
 
@@ -66,7 +67,7 @@ def ensure_viser_audio_patch() -> None:
         _snippet("file-playback.ts"),
     )
     for before, after in FILE_PLAYBACK_REPLACEMENTS:
-        file_playback = _replace_once(file_playback, before, after)
+        file_playback = _replace(file_playback, before, after)
 
     if message_handler == original_message_handler and file_playback == original_file_playback:
         return
