@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Iterator, cast
+from typing import Any, Iterator
 
 import viser
 from viser import _messages
@@ -9,10 +9,6 @@ from viser import _messages
 
 def gui_uuid(handle: Any) -> str:
     return handle._impl.uuid
-
-
-def scene_owner(scene: viser.SceneApi) -> viser.ViserServer:
-    return cast(viser.ViserServer, scene._owner)
 
 
 @contextmanager
@@ -36,12 +32,15 @@ def broadcast_messages(server: viser.ViserServer) -> list[_messages.Message]:
     ]
 
 
-def brand_color(
+def playback_brand_color(
     server: viser.ViserServer,
-) -> tuple[int, int, int] | tuple[str, ...] | None:
+) -> tuple[int, int, int] | None:
     for message in reversed(broadcast_messages(server)):
         if isinstance(message, _messages.ThemeConfigurationMessage):
-            return message.colors
+            colors = message.colors
+            if colors is None:
+                return None
+            return _hex_to_rgb(colors[8])
     return None
 
 
@@ -51,3 +50,8 @@ def queue_server_message(server: viser.ViserServer, message: _messages.Message) 
 
 def queue_client_message(client: Any, message: _messages.Message) -> None:
     client._websock_connection.queue_message(message)
+
+
+def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+    color = color.removeprefix("#")
+    return (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16))

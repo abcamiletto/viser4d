@@ -1,4 +1,4 @@
-import { TimelineRuntime } from "./runtime";
+import { TimelineRuntime } from "./bridge/runtime";
 
 const windowRef = window as Window & { __VISER4D__?: TimelineRuntime };
 

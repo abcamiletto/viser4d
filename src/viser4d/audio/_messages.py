@@ -6,7 +6,7 @@ import uuid
 from viser import _messages
 from typing_extensions import override
 
-from ._protocol import AudioArrayPayload
+from .._types import AudioArrayPayload
 
 
 class _AudioMessage(_messages.Message):

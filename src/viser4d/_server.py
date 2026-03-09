@@ -2,40 +2,32 @@ from __future__ import annotations
 
 import contextlib
 import threading
-from types import MethodType
-from typing import TYPE_CHECKING, Callable, Iterator, cast
+from typing import TYPE_CHECKING, Callable, Iterator
 
-import numpy as np
 import viser
 from viser import _messages
 
 from . import _viser_private as impl
-from ._audio import AudioHandle
-from ._controller import TimelineController
+from .audio import AudioApi
 from ._export import ExportBuilder
-from ._playback import ClientPlaybackHandle
-from ._protocol import RuntimeMethod, RuntimePayload
-from ._recording import SceneRecorder
+from ._types import RuntimeMethod, RuntimePayload
 from ._runtime import make_runtime_message, runtime_source
-from ._timeline import TimelineStore
+from .timeline import (
+    ClientPlaybackHandle,
+    SceneRecorder,
+    TimelineController,
+    TimelineStore,
+)
 
 if TYPE_CHECKING:
     from viser._viser import ClientHandle
-
-    class Viser4dSceneApi(viser.SceneApi):
-        def add_audio(
-            self, name: str, *, data: np.ndarray, sample_rate: int
-        ) -> AudioHandle: ...
 
 
 class Viser4dServer(viser.ViserServer):
     """Viser server with timestep recording, playback, and synced audio."""
 
-    if TYPE_CHECKING:
-        scene: Viser4dSceneApi
-
     def __init__(self, num_steps: int, fps: float = 30.0, **kwargs) -> None:
-        num_steps = int(num_steps)
+        """Initialize the timeline runtime and client playback state."""
         if num_steps < 1:
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
         super().__init__(**kwargs)
@@ -45,11 +37,12 @@ class Viser4dServer(viser.ViserServer):
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
         self._stop_event = threading.Event()
-        setattr(self.scene, "add_audio", MethodType(_scene_add_audio, self.scene))
         self._controller = TimelineController(self, fps=fps)
         self._recorder = SceneRecorder(self, self._timeline)
         self._export_builder = ExportBuilder(self, self._timeline)
+        self.audio = AudioApi(self)
 
+        # Load the browser runtime once so live clients can handle timeline/audio messages.
         impl.queue_server_message(
             self, _messages.RunJavascriptMessage(runtime_source())
         )
@@ -59,7 +52,7 @@ class Viser4dServer(viser.ViserServer):
             playback = ClientPlaybackHandle(self, client)
             with self._client_playbacks_lock:
                 self._client_playbacks[client.client_id] = playback
-            playback.apply_theme_colors(_primary_brand_color(impl.brand_color(self)))
+            playback.apply_theme_colors(impl.playback_brand_color(self))
 
         @self.on_client_disconnect
         def _detach_playback(client: ClientHandle) -> None:
@@ -79,25 +72,30 @@ class Viser4dServer(viser.ViserServer):
             playback.play(fps, loop=loop)
 
     def pause(self) -> None:
+        """Pause timeline playback for all connected clients."""
         self._controller.pause()
         for playback in self._client_playback_values():
             playback.pause()
 
     def seek(self, t: int) -> None:
+        """Jump the timeline to timestep ``t``."""
         self._controller.seek(t)
         timestep = self._controller.current_timestep
         for playback in self._client_playback_values():
             playback.seek(timestep)
 
     def set_fps(self, fps: float) -> None:
+        """Update playback speed without changing the current timestep."""
         self._controller.set_fps(fps)
         for playback in self._client_playback_values():
             playback.set_fps(self._controller.fps)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
+        """Register a callback for committed timestep changes."""
         self._controller.on_timestep_change(callback)
 
     def sleep_forever(self) -> None:
+        """Block until the server is stopped."""
         while not self._stop_event.wait(3600):
             pass
 
@@ -114,16 +112,10 @@ class Viser4dServer(viser.ViserServer):
         )
 
     def stop(self) -> None:
+        """Stop the predictor thread and shut down the underlying viser server."""
         self._stop_event.set()
         self._controller.stop()
         super().stop()
-
-    def _add_audio(
-        self, name: str, *, data: np.ndarray, sample_rate: int
-    ) -> AudioHandle:
-        if self._recorder.active_step is None:
-            raise RuntimeError("add_audio() is only valid inside server.at(t).")
-        return self._recorder.add_audio(name, data=data, sample_rate=sample_rate)
 
     def _dispatch_audio_update(self, message: _messages.Message) -> None:
         self._recorder.dispatch_audio_update(message)
@@ -173,32 +165,3 @@ class Viser4dServer(viser.ViserServer):
     @property
     def _current_timestep(self) -> int:
         return self._controller.current_timestep
-
-
-def _scene_add_audio(
-    scene: viser.SceneApi,
-    name: str,
-    *,
-    data: np.ndarray,
-    sample_rate: int,
-) -> AudioHandle:
-    server = cast(Viser4dServer, impl.scene_owner(scene))
-    return server._add_audio(name, data=data, sample_rate=sample_rate)
-
-
-def _primary_brand_color(
-    brand_color: tuple[int, int, int] | tuple[str, ...] | None,
-) -> tuple[int, int, int] | None:
-    if brand_color is None:
-        return None
-    if len(brand_color) == 3:
-        return cast(tuple[int, int, int], brand_color)
-    if len(brand_color) == 10:
-        return _hex_to_rgb(cast(tuple[str, ...], brand_color)[8])
-    return None
-
-
-def _hex_to_rgb(color: str) -> tuple[int, int, int]:
-    color = color.lstrip("#")
-    assert len(color) == 6
-    return (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16))

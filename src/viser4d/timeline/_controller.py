@@ -5,10 +5,12 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from ._server import Viser4dServer
+    from .._server import Viser4dServer
 
 
 class TimelineController:
+    """Server-side transport state for the shared timeline."""
+
     def __init__(self, server: Viser4dServer, *, fps: float) -> None:
         self._server = server
         self._fps = float(fps)
@@ -49,6 +51,7 @@ class TimelineController:
         return self._current_timestep
 
     def play(self, fps: float, loop: bool = False) -> None:
+        """Start advancing the transport from the current fractional step."""
         with self._lock:
             current_step = self._transport_step()
             self._fps = float(fps)
@@ -57,31 +60,36 @@ class TimelineController:
             self._set_anchor(current_step)
 
     def pause(self) -> None:
+        """Freeze the transport at its current fractional step."""
         with self._lock:
             self._set_anchor(self._transport_step())
             self._is_playing = False
 
     def seek(self, t: int) -> None:
-        timestep = int(t)
-        assert 0 <= timestep < self._server.num_steps
+        """Move the transport to timestep ``t``."""
+        assert 0 <= t < self._server.num_steps
         with self._lock:
-            self._set_anchor(float(timestep))
-        self.set_current_timestep(timestep)
+            self._set_anchor(float(t))
+        self.set_current_timestep(t)
 
     def on_timestep_change(self, callback: Callable[[int], None]) -> None:
+        """Register a callback for discrete timestep updates."""
         self._callbacks.append(callback)
 
     def stop(self) -> None:
+        """Terminate the background predictor thread."""
         self._stop_event.set()
         self._predictor_thread.join()
 
     def set_fps(self, fps: float) -> None:
+        """Change playback speed while preserving the current transport position."""
         with self._lock:
             current_step = self._transport_step()
             self._fps = float(fps)
             self._set_anchor(current_step)
 
     def set_current_timestep(self, timestep: int) -> None:
+        """Commit a new discrete timestep and notify listeners."""
         assert 0 <= timestep < self._server.num_steps
         if timestep == self._current_timestep:
             return
@@ -120,6 +128,7 @@ class TimelineController:
                     should_sync_buttons = True
             if not is_playing and not should_sync_buttons:
                 continue
+            # Push the stopped state out once when non-looping playback hits the end.
             if should_sync_buttons:
                 self._server._sync_client_playback_state(
                     timestep=timestep,

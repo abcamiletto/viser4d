@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING, Any
 
 import viser
 
-from . import _viser_private as impl
-from ._protocol import RuntimeMethod, RuntimePayload
-from ._runtime import (
+from .. import _viser_private as impl
+from .._types import RuntimeMethod, RuntimePayload
+from .._runtime import (
     client_runtime_config_payload,
     make_runtime_message,
 )
@@ -17,10 +17,12 @@ _DEFAULT_PRIMARY_COLOR = (34, 139, 230)
 if TYPE_CHECKING:
     from viser._viser import ClientHandle
 
-    from ._server import Viser4dServer
+    from .._server import Viser4dServer
 
 
 class ClientPlaybackHandle:
+    """Per-client playback controls backed by the injected browser runtime."""
+
     def __init__(self, server: Viser4dServer, client: ClientHandle) -> None:
         self._server = server
         self._client = client
@@ -32,6 +34,7 @@ class ClientPlaybackHandle:
         self._syncing_timestep_slider = False
         self._lock = threading.RLock()
 
+        # Hidden control used by the browser runtime to report the active timestep back.
         self._timestep_sync = client.gui.add_number(
             "__viser4d_timestep_sync__",
             self._current_timestep,
@@ -109,10 +112,11 @@ class ClientPlaybackHandle:
 
         self.sync_runtime_config()
         self._sync_playback_buttons()
+        # Late-joining clients need the current scene state before playback starts.
+        if self._current_timestep != 0:
+            self.seek(self._current_timestep)
         if self._is_playing:
             self.play(self._fps, loop=self._loop)
-        elif self._current_timestep != 0:
-            self.seek(self._current_timestep)
 
     @property
     def fps(self) -> float:
@@ -135,6 +139,7 @@ class ClientPlaybackHandle:
             return self._current_timestep
 
     def play(self, fps: float, loop: bool = False) -> None:
+        """Start playback on this client."""
         with self._lock:
             self._fps = float(fps)
             self._loop = bool(loop)
@@ -145,18 +150,20 @@ class ClientPlaybackHandle:
         self._send_runtime_call("play", payload)
 
     def pause(self) -> None:
+        """Pause playback on this client."""
         with self._lock:
             self._is_playing = False
         self._sync_playback_buttons()
         self._send_runtime_call("pause", {})
 
     def seek(self, t: int) -> None:
-        timestep = int(t)
-        assert 0 <= timestep < self._server.num_steps
-        self._set_current_timestep(timestep)
-        self._send_runtime_call("seek", {"step": timestep})
+        """Seek this client to timestep ``t``."""
+        assert 0 <= t < self._server.num_steps
+        self._set_current_timestep(t)
+        self._send_runtime_call("seek", {"step": t})
 
     def set_fps(self, fps: float) -> None:
+        """Update playback speed on this client."""
         with self._lock:
             self._fps = float(fps)
             payload = {"fps": self._fps, "loop": self._loop}
@@ -164,6 +171,7 @@ class ClientPlaybackHandle:
         self._send_runtime_call("setFps", payload)
 
     def sync_runtime_config(self) -> None:
+        """Send the current runtime configuration to the browser."""
         with self._lock:
             fps = self._fps
             loop = self._loop
@@ -188,9 +196,9 @@ class ClientPlaybackHandle:
         loop: bool | None = None,
         is_playing: bool | None = None,
     ) -> None:
+        """Mirror server-side transport state into this client's controls."""
         with self._lock:
             if timestep is not None:
-                timestep = int(timestep)
                 assert 0 <= timestep < self._server.num_steps
                 self._current_timestep = timestep
             if fps is not None:
@@ -206,6 +214,7 @@ class ClientPlaybackHandle:
         self._sync_playback_buttons()
 
     def apply_theme_colors(self, brand_color: tuple[int, int, int] | None) -> None:
+        """Apply the current theme color to the playback buttons."""
         self._play_button.color = None
         self._pause_button.color = _pause_button_color(brand_color)
 
@@ -224,7 +233,6 @@ class ClientPlaybackHandle:
             self._sync_playback_buttons()
 
     def _set_current_timestep(self, timestep: int) -> None:
-        timestep = int(timestep)
         assert 0 <= timestep < self._server.num_steps
         with self._lock:
             self._current_timestep = timestep

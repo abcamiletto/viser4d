@@ -1,13 +1,13 @@
 import {
   type RuntimeMessage,
   type RuntimeValue,
-} from "./binary";
-import { AudioRuntime } from "./audio-runtime";
+} from "../binary";
+import { AudioRuntime } from "../audio/runtime";
+import { isAudioMessage } from "../audio/messages";
 import {
   findPlaybackTimeSlider,
   findViewer,
   getWindow,
-  isAudioMessage,
   type RuntimeConfig,
   type ViewerLike,
 } from "./protocol";
@@ -77,7 +77,7 @@ export class TimelineRuntime {
   private playbackMonitorId: number | null = null;
 
   constructor() {
-    this.playbackAudio.setBaseFps(1);
+    this.playbackAudio.setStepRate(1);
     this.installWhenReady();
   }
 
@@ -274,7 +274,7 @@ export class TimelineRuntime {
     if (!this.config.baseFps) {
       this.config.baseFps = this.config.fps;
     }
-    this.audio.setBaseFps(this.config.baseFps);
+    this.audio.setStepRate(this.config.baseFps);
     while (this.stepMessages.length < this.config.numSteps) {
       this.stepMessages.push([]);
     }

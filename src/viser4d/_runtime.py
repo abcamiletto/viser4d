@@ -6,7 +6,7 @@ import pathlib
 from viser import _messages
 
 from . import _client_autobuild
-from ._protocol import ClientRuntimeConfig, RuntimeMethod, RuntimePayload
+from ._types import ClientRuntimeConfig, RuntimeMethod, RuntimePayload
 
 
 RUNTIME_MARKER = "/*__VISER4D_RUNTIME__*/"

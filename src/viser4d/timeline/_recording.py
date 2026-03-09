@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import contextlib
+from functools import partial
 from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
 from viser import _messages
 
-from . import _viser_private as impl
-from ._audio_messages import AddAudioMessage
-from ._audio import AudioHandle, AudioState, audio_array_payload
-from ._timeline import (
+from .. import _viser_private as impl
+from ..audio._api import AudioHandle, AudioState, audio_array_payload
+from ..audio._messages import AddAudioMessage
+from ._store import (
     TimelineRecorder,
     TimelineStore,
     is_scene_message,
@@ -17,10 +18,12 @@ from ._timeline import (
 )
 
 if TYPE_CHECKING:
-    from ._server import Viser4dServer
+    from .._server import Viser4dServer
 
 
 class SceneRecorder:
+    """Capture per-timestep scene and audio edits from the live viser API."""
+
     def __init__(self, server: Viser4dServer, timeline: TimelineStore) -> None:
         self._server = server
         self._timeline = timeline
@@ -32,8 +35,15 @@ class SceneRecorder:
 
     @contextlib.contextmanager
     def at(self, t: int) -> Iterator[None]:
-        step = self._timeline.validate_step(int(t))
+        """Record scene changes performed inside the context for timestep ``t``."""
+        step = self._timeline.validate_step(t)
         recorder = TimelineRecorder()
+
+        # Static scene nodes should stay outside the timeline model.
+        timeline_names = set(self._timeline.node_names)
+        validate_message = partial(_validate_msg, timeline_names=timeline_names)
+        recorder.register_callback(validate_message)
+
         self._active_step = step
         try:
             with impl.scene_recording_interface(self._server.scene, recorder):
@@ -48,6 +58,7 @@ class SceneRecorder:
         for node_name in step_store.node_names:
             self._register_timeline_node(node_name)
 
+        # Preload step data into connected runtimes so playback stays in sync live.
         messages = [serialize_message(message) for message in recorder.messages]
         self._server._send_runtime_call(
             "preloadStep",
@@ -65,9 +76,10 @@ class SceneRecorder:
         data: np.ndarray,
         sample_rate: int,
     ) -> AudioHandle:
+        """Create a timeline-owned audio track for the active timestep."""
         state = AudioState(
             name=name,
-            sample_rate=int(sample_rate),
+            sample_rate=sample_rate,
             waveform=np.ascontiguousarray(data),
         )
         handle = AudioHandle(self._server, state)
@@ -86,6 +98,7 @@ class SceneRecorder:
         return handle
 
     def dispatch_audio_update(self, message: _messages.Message) -> None:
+        """Route audio updates either into the active step or directly to clients."""
         if self._active_step is not None:
             self._timeline.record_messages(self._active_step, [message])
             self._server._send_runtime_call(
@@ -106,6 +119,7 @@ class SceneRecorder:
         baseline = self._collect_live_messages_for_name(name)
         if not baseline:
             return
+        # Baseline messages rebuild the node before step-local diffs are replayed.
         self._timeline.baseline_messages_by_name[name] = baseline
         messages = [serialize_message(message) for message in baseline]
         self._server._send_runtime_call(
@@ -119,3 +133,23 @@ class SceneRecorder:
             for message in impl.broadcast_messages(self._server)
             if is_scene_message(message) and getattr(message, "name", None) == name
         ]
+
+
+def _validate_msg(
+    message: _messages.Message,
+    timeline_names: set[str],
+) -> None:
+    """Make sure that the message only modifies nodes that are part of the timeline."""
+    if not is_scene_message(message):
+        return
+    name = getattr(message, "name", None)
+    if not isinstance(name, str) or not name:
+        return
+    # `viser` uses one family of message classes for node creation and another
+    # for later transform/property updates, so we distinguish them explicitly.
+    if isinstance(message, _messages._CreateSceneNodeMessage):
+        timeline_names.add(name)
+        return
+    if name in timeline_names:
+        return
+    raise RuntimeError(f"Cannot modify static scene node {name!r} inside server.at(t).")

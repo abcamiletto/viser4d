@@ -117,7 +117,7 @@ import viser4d
 server = viser4d.Viser4dServer(num_steps=300, fps=30)
 
 with server.at(0):
-    audio = server.scene.add_audio(
+    audio = server.audio.add_track(
         "/stream/audio",
         data=np.zeros(1600, dtype=np.float32),
         sample_rate=16000,
@@ -148,7 +148,7 @@ scene.add_frame(...)                   scene.add_frame(...)
 - **Inside `at(t)`**: Operations are recorded to a timeline, not executed.
 - **Outside `at(t)`**: Operations forward directly to viser's live scene.
 - **Playback**: `seek(t)` or `play()` applies recorded state to the live scene.
-- **Audio**: Add timeline-synced tracks with `server.scene.add_audio(...)`.
+- **Audio**: Add timeline-synced tracks with `server.audio.add_track(...)`.
 
 See `examples/` for more.
 

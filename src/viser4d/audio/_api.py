@@ -5,18 +5,18 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ._audio_messages import (
+from ._messages import (
     AppendAudioMessage,
     RemoveAudioMessage,
     SetAudioVolumeMessage,
     SetAudioWaveformMessage,
 )
-from ._protocol import (
+from .._types import (
     AudioArrayPayload,
 )
 
 if TYPE_CHECKING:
-    from ._server import Viser4dServer
+    from .._server import Viser4dServer
 
 
 def _normalize_audio_array(array: np.ndarray) -> np.ndarray:
@@ -61,6 +61,8 @@ def audio_array_payload(array: np.ndarray) -> AudioArrayPayload:
 
 
 class AudioState:
+    """Mutable waveform state backing one timeline audio track."""
+
     def __init__(
         self,
         *,
@@ -133,6 +135,7 @@ class AudioHandle:
         )
 
     def append(self, data: np.ndarray) -> None:
+        """Append samples and broadcast the incremental chunk update."""
         append_data = self._state.append_chunk(data)
         self._server._dispatch_audio_update(
             AppendAudioMessage(
@@ -143,3 +146,24 @@ class AudioHandle:
 
     def remove(self) -> None:
         self._server._dispatch_audio_update(RemoveAudioMessage(name=self._state.name))
+
+
+class AudioApi:
+    """Entry point for timeline-aware audio creation."""
+
+    def __init__(self, server: Viser4dServer) -> None:
+        self._server = server
+
+    def add_track(
+        self,
+        name: str,
+        *,
+        data: np.ndarray,
+        sample_rate: int,
+    ) -> AudioHandle:
+        """Create an audio track for the current ``server.at(t)`` block."""
+        if self._server._recorder.active_step is None:
+            raise RuntimeError("audio.add_track() is only valid inside server.at(t).")
+        return self._server._recorder.add_audio(
+            name, data=data, sample_rate=sample_rate
+        )

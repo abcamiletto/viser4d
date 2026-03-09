@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import msgspec
 import numpy as np
@@ -11,8 +11,8 @@ import zstandard
 from viser import _messages
 from viser.infra import WebsockMessageHandler
 
-from ._audio_messages import is_audio_message
-from ._protocol import BinaryPayload, JSONValue, SerializedMessage
+from ..audio._messages import is_audio_message
+from .._types import BinaryPayload, JSONValue, SerializedMessage
 
 
 def to_jsonable(value: Any) -> JSONValue:
@@ -54,11 +54,15 @@ def is_scene_message(message: Any) -> bool:
 
 @dataclass
 class TimelineStep:
+    """Recorded messages and touched node names for one timestep."""
+
     messages: list[_messages.Message] = field(default_factory=list)
     node_names: set[str] = field(default_factory=set)
 
 
 class TimelineStore:
+    """In-memory storage for timestep messages and baseline scene state."""
+
     def __init__(self, num_steps: int) -> None:
         self.num_steps = num_steps
         self.steps = [TimelineStep() for _ in range(num_steps)]
@@ -66,6 +70,7 @@ class TimelineStore:
         self.baseline_messages_by_name: dict[str, list[_messages.Message]] = {}
 
     def validate_step(self, step: int) -> int:
+        """Return ``step`` if it is in range, else raise ``IndexError``."""
         if step < 0 or step >= self.num_steps:
             raise IndexError(
                 f"Timestep {step} is out of range for {self.num_steps} steps."
@@ -73,11 +78,13 @@ class TimelineStore:
         return step
 
     def step(self, step: int) -> TimelineStep:
+        """Return the storage bucket for one timestep."""
         return self.steps[self.validate_step(step)]
 
     def record_messages(
         self, step: int, messages: list[_messages.Message]
     ) -> TimelineStep:
+        """Append messages to a timestep and update the touched-node index."""
         step_state = self.step(step)
         step_state.messages.extend(messages)
         for message in messages:
@@ -90,14 +97,23 @@ class TimelineStore:
 
 
 class TimelineRecorder(WebsockMessageHandler):
+    """Temporary websocket sink used while recording a timestep."""
+
     def __init__(self) -> None:
         super().__init__()
         self.messages: list[_messages.Message] = []
+        self._callback: Callable[[_messages.Message], None] | None = None
 
     def get_message_buffer(self) -> Any:
         return self
 
+    def register_callback(self, callback: Callable[[_messages.Message], None]) -> None:
+        """Register a hook that runs for every recorded message."""
+        self._callback = callback
+
     def push(self, message: _messages.Message) -> None:
+        if self._callback is not None:
+            self._callback(message)
         self.messages.append(message)
 
     def atomic_start(self) -> None:

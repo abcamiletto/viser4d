@@ -37,7 +37,7 @@ AUDIO_START_STEP = 0
 server = viser4d.Viser4dServer(num_steps=NUM_STEPS, port=args.port)
 
 with server.at(AUDIO_START_STEP):
-    audio_handle = server.scene.add_audio(
+    audio_handle = server.audio.add_track(
         "/speech", data=samples, sample_rate=sample_rate
     )
 

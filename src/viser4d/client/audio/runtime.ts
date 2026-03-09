@@ -1,6 +1,6 @@
-import { decodeAudioWaveform, type RuntimeValue } from "./binary";
-import { getWindow } from "./protocol";
-import type { AudioMessage } from "./protocol";
+import { decodeAudioWaveform, type RuntimeValue } from "../binary";
+import { getWindow } from "../bridge/protocol";
+import type { AudioMessage } from "./messages";
 
 type TrackState = {
   channels: number;
@@ -93,7 +93,7 @@ export class AudioRuntime {
   private playing = false;
   private currentStep = 0;
   private fps = 30;
-  private baseFps = 30;
+  private stepRate = 30;
   private nextSourceToken = 1;
 
   constructor(
@@ -145,8 +145,8 @@ export class AudioRuntime {
     return created;
   }
 
-  setBaseFps(baseFps: number): void {
-    this.baseFps = Math.max(1e-6, baseFps || this.baseFps || 30);
+  setStepRate(stepRate: number): void {
+    this.stepRate = Math.max(1e-6, stepRate || this.stepRate || 30);
   }
 
   private buildBuffer(track: TrackState, runtimeTrack: RuntimeTrack): AudioBuffer | null {
@@ -302,7 +302,7 @@ export class AudioRuntime {
   }
 
   private getClipDurationSteps(track: TrackState): number {
-    return (trackFrameCount(track) / track.sampleRate) * this.baseFps;
+    return (trackFrameCount(track) / track.sampleRate) * this.stepRate;
   }
 
   private isTrackActiveAtStep(track: TrackState, playbackStep: number): boolean {
@@ -341,7 +341,7 @@ export class AudioRuntime {
       return;
     }
     gain.gain.value = track.volume;
-    source.playbackRate.value = this.fps / this.baseFps;
+    source.playbackRate.value = this.fps / this.stepRate;
     source.connect(gain);
     gain.connect(ctx.destination);
     const token = ++this.nextSourceToken;
@@ -368,7 +368,7 @@ export class AudioRuntime {
     };
     source.start(
       ctx.currentTime + Math.max(0, (track.startStep - playbackStep) / this.fps),
-      Math.max(0, (playbackStep - track.startStep) / this.baseFps),
+      Math.max(0, (playbackStep - track.startStep) / this.stepRate),
     );
     runtimeTrack.source = source;
     runtimeTrack.gain = gain;
