@@ -42,6 +42,9 @@ export function revive(value: RuntimeValue): RuntimeValue {
   if (!value || typeof value !== "object") {
     return value;
   }
+  if (value instanceof Uint8Array) {
+    return value;
+  }
   const record = value as Record<string, unknown>;
   if (isBinaryPayload(record)) {
     return decodeBase64Bytes(record.__viser4d_binary__);

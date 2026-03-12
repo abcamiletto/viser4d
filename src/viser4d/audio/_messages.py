@@ -13,8 +13,23 @@ class _AudioMessage(_messages.Message):
     name: str
 
 
+AUDIO_MESSAGE_TYPES = frozenset(
+    {
+        "AddAudioMessage",
+        "SetAudioVolumeMessage",
+        "SetAudioWaveformMessage",
+        "AppendAudioMessage",
+        "RemoveAudioMessage",
+    }
+)
+
+
 def is_audio_message(message: object) -> bool:
     return isinstance(message, _AudioMessage)
+
+
+def is_audio_message_type(message_type: object) -> bool:
+    return isinstance(message_type, str) and message_type in AUDIO_MESSAGE_TYPES
 
 
 @dataclasses.dataclass

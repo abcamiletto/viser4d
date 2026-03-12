@@ -1,8 +1,10 @@
 import threading
 import time
 
+import msgspec
 import numpy as np
 import pytest
+import zstandard
 
 import viser4d
 
@@ -144,5 +146,36 @@ def test_stereo_audio_append_preserves_channel_layout() -> None:
 
         with pytest.raises(ValueError, match="channel count"):
             audio.append(np.array([5, 6], dtype=np.int16))
+    finally:
+        server.stop()
+
+
+def test_serialize_preserves_binary_mesh_payloads() -> None:
+    server = viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
+    try:
+        vertices = np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=np.float32,
+        )
+        faces = np.array([[0, 1, 2]], dtype=np.uint32)
+        with server.at(0):
+            server.scene.add_mesh_simple(
+                "/mesh",
+                vertices=vertices,
+                faces=faces,
+            )
+
+        recording = server.serialize()
+        size = int.from_bytes(recording[:8], "little")
+        packed = zstandard.ZstdDecompressor().decompress(recording[8:], size)
+        decoded = msgspec.msgpack.decode(packed)
+        mesh_message = next(
+            message
+            for _, message in decoded["messages"]
+            if message.get("type") == "MeshMessage"
+        )
+
+        assert isinstance(mesh_message["props"]["vertices"], bytes)
+        assert isinstance(mesh_message["props"]["faces"], bytes)
     finally:
         server.stop()

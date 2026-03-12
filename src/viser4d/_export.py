@@ -5,13 +5,14 @@ from typing import TYPE_CHECKING
 from viser import _messages
 
 from . import _viser_private as impl
-from .audio._messages import is_audio_message
-from ._types import SerializedMessage
+from .audio._messages import is_audio_message_type
+from ._types import StoredMessage
 from ._runtime import RUNTIME_MARKER, runtime_source
 from .timeline import (
     TimelineStore,
-    serialize_message,
     serialize_viser_recording,
+    store_raw_message,
+    store_raw_messages,
 )
 
 if TYPE_CHECKING:
@@ -36,27 +37,30 @@ class ExportBuilder:
         assert start <= end
 
         # Bootstrap playback with the injected runtime before any timeline messages arrive.
-        recording: list[tuple[float, SerializedMessage]] = [
-            (
-                0.0,
-                serialize_message(_messages.RunJavascriptMessage(runtime_source())),
-            )
-        ]
-        for message in impl.broadcast_messages(self._server):
-            if getattr(message, "source", "").startswith(RUNTIME_MARKER):
+        runtime_source_message = _messages.RunJavascriptMessage(runtime_source())
+        runtime_message = store_raw_message(runtime_source_message)
+        recording: list[tuple[float, StoredMessage]] = [(0.0, runtime_message)]
+        for message in store_raw_messages(impl.broadcast_messages(self._server)):
+            source = message.get("source")
+            if isinstance(source, str) and source.startswith(RUNTIME_MARKER):
                 continue
-            if getattr(message, "name", None) in self._timeline.node_names:
+            name = message.get("name")
+            if isinstance(name, str) and self._timeline.has_node(name):
                 continue
-            recording.append((0.0, serialize_message(message)))
+            recording.append((0.0, message))
         # Timeline-managed nodes are reconstructed from their saved baseline plus step diffs.
-        for baseline in self._timeline.baseline_messages_by_name.values():
-            recording.extend((0.0, serialize_message(message)) for message in baseline)
+        for baseline in self._timeline.iter_baselines():
+            recording.extend((0.0, message) for message in baseline)
         fps = max(self._server._base_fps, 1.0)
         for step in range(end + 1):
             time = 0.0 if step <= start else (step - start) / fps
+            step_state = self._timeline.step(step)
             recording.extend(
-                (time, _serialize_export_message(message, playback_time=time))
-                for message in self._timeline.step(step).messages
+                (time, update.message) for update in step_state.scene_updates
+            )
+            recording.extend(
+                (time, _with_playback_time(update.message, playback_time=time))
+                for update in step_state.audio_updates
             )
 
         blob = serialize_viser_recording(
@@ -66,10 +70,7 @@ class ExportBuilder:
         return blob
 
 
-def _serialize_export_message(
-    message: _messages.Message, *, playback_time: float
-) -> SerializedMessage:
-    serialized = serialize_message(message)
-    if is_audio_message(message):
-        serialized["__viserPlaybackTime"] = playback_time
-    return serialized
+def _with_playback_time(message: StoredMessage, *, playback_time: float) -> StoredMessage:
+    if not is_audio_message_type(message.get("type")):
+        return message
+    return {**message, "__viserPlaybackTime": playback_time}

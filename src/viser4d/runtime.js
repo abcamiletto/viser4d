@@ -9,6 +9,32 @@
     }
     return bytes;
   }
+  function isBinaryPayload(value) {
+    return typeof value.__viser4d_binary__ === "string";
+  }
+  function revive(value) {
+    if (Array.isArray(value)) {
+      return value.map((item) => revive(item));
+    }
+    if (!value || typeof value !== "object") {
+      return value;
+    }
+    if (value instanceof Uint8Array) {
+      return value;
+    }
+    const record = value;
+    if (isBinaryPayload(record)) {
+      return decodeBase64Bytes(record.__viser4d_binary__);
+    }
+    const out = {};
+    for (const [key, inner] of Object.entries(record)) {
+      out[key] = inner === void 0 ? void 0 : revive(inner);
+    }
+    return out;
+  }
+  function reviveMessage(message) {
+    return revive(message);
+  }
   function decodeAudioArray(payload) {
     const buffer = decodeBase64Bytes(payload.data).buffer;
     switch (payload.dtype) {
@@ -723,18 +749,21 @@
       this.syncAudioTransport();
     }
     setBaseline(payload) {
-      this.baselineByName.set(payload.name, payload.messages);
+      const messages = payload.messages.map((message) => reviveMessage(message));
+      this.baselineByName.set(payload.name, messages);
       this.timelineNodeNames.add(payload.name);
     }
     preloadStep(payload) {
+      const messages = payload.messages.map((message) => reviveMessage(message));
       this.stepMessages[payload.step] = this.ensureStep(payload.step).concat(
-        payload.messages
+        messages
       );
       for (const name of payload.nodeNames || []) {
         this.timelineNodeNames.add(name);
       }
     }
-    applyMessageUpdate(message) {
+    applyMessageUpdate(rawMessage) {
+      const message = reviveMessage(rawMessage);
       const name = typeof message.name === "string" ? message.name : null;
       debugState.push("runtime.apply_message_update", {
         type: message.type,
