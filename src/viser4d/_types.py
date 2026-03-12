@@ -8,6 +8,17 @@ JSONValue: TypeAlias = (
     None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 )
 SerializedMessage: TypeAlias = dict[str, JSONValue]
+StoredValue: TypeAlias = (
+    None
+    | bool
+    | int
+    | float
+    | str
+    | bytes
+    | list["StoredValue"]
+    | dict[str, "StoredValue"]
+)
+StoredMessage: TypeAlias = dict[str, StoredValue]
 
 
 class BinaryPayload(TypedDict):

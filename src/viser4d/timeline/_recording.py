@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-from functools import partial
 from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
@@ -10,11 +9,18 @@ from viser import _messages
 from .. import _viser_private as impl
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
+from .._types import StoredMessage
 from ._store import (
     TimelineRecorder,
+    TimelineStep,
     TimelineStore,
+    extract_message_name,
+    is_create_scene_message,
     is_scene_message,
-    serialize_message,
+    serialize_stored_message,
+    serialize_stored_messages,
+    store_raw_message,
+    store_raw_messages,
 )
 
 if TYPE_CHECKING:
@@ -40,9 +46,7 @@ class SceneRecorder:
         recorder = TimelineRecorder()
 
         # Static scene nodes should stay outside the timeline model.
-        timeline_names = set(self._timeline.node_names)
-        validate_message = partial(_validate_msg, timeline_names=timeline_names)
-        recorder.register_callback(validate_message)
+        timeline_names = set(self._timeline.iter_node_names())
 
         self._active_step = step
         try:
@@ -54,20 +58,11 @@ class SceneRecorder:
         if not recorder.messages:
             return
 
-        step_store = self._timeline.record_messages(step, recorder.messages)
+        stored_messages = store_raw_messages(recorder.messages)
+        _validate_messages(stored_messages, timeline_names)
+        step_store = self._record_and_preload(step, stored_messages)
         for node_name in step_store.node_names:
             self._register_timeline_node(node_name)
-
-        # Preload step data into connected runtimes so playback stays in sync live.
-        messages = [serialize_message(message) for message in recorder.messages]
-        self._server._send_runtime_call(
-            "preloadStep",
-            {
-                "step": step,
-                "messages": messages,
-                "nodeNames": sorted(step_store.node_names),
-            },
-        )
 
     def add_audio(
         self,
@@ -90,66 +85,72 @@ class SceneRecorder:
             waveform=audio_array_payload(state.waveform),
             volume=state.volume,
         )
-        self._timeline.record_messages(self._active_step, [message])
-        self._server._send_runtime_call(
-            "preloadStep",
-            {"step": self._active_step, "messages": [serialize_message(message)]},
-        )
+        stored_messages = store_raw_messages([message])
+        self._record_and_preload(self._active_step, stored_messages)
         return handle
 
     def dispatch_audio_update(self, message: _messages.Message) -> None:
         """Route audio updates either into the active step or directly to clients."""
         if self._active_step is not None:
-            self._timeline.record_messages(self._active_step, [message])
-            self._server._send_runtime_call(
-                "preloadStep",
-                {
-                    "step": self._active_step,
-                    "messages": [serialize_message(message)],
-                },
-            )
+            stored_messages = store_raw_messages([message])
+            self._record_and_preload(self._active_step, stored_messages)
             return
+        stored_message = store_raw_message(message)
         self._server._send_runtime_call(
-            "applyMessageUpdate", serialize_message(message)
+            "applyMessageUpdate", serialize_stored_message(stored_message)
         )
 
     def _register_timeline_node(self, name: str) -> None:
-        if name in self._timeline.baseline_messages_by_name:
+        if self._timeline.has_saved_baseline(name):
             return
         baseline = self._collect_live_messages_for_name(name)
         if not baseline:
             return
         # Baseline messages rebuild the node before step-local diffs are replayed.
-        self._timeline.baseline_messages_by_name[name] = baseline
-        messages = [serialize_message(message) for message in baseline]
+        self._timeline.set_baseline(name, baseline)
+        messages = serialize_stored_messages(baseline)
         self._server._send_runtime_call(
             "setBaseline",
             {"name": name, "messages": messages},
         )
 
-    def _collect_live_messages_for_name(self, name: str) -> list[_messages.Message]:
+    def _record_and_preload(
+        self, step: int, stored_messages: list[StoredMessage]
+    ) -> TimelineStep:
+        """Store one timestep and preload its serialized updates into live runtimes."""
+        step_state = self._timeline.record_step(step, stored_messages)
+        payload = {
+            "step": step,
+            "messages": serialize_stored_messages(stored_messages),
+            "nodeNames": sorted(step_state.node_names),
+        }
+        self._server._send_runtime_call("preloadStep", payload)
+        return step_state
+
+    def _collect_live_messages_for_name(self, name: str) -> list[StoredMessage]:
         return [
             message
-            for message in impl.broadcast_messages(self._server)
-            if is_scene_message(message) and getattr(message, "name", None) == name
+            for message in store_raw_messages(impl.broadcast_messages(self._server))
+            if is_scene_message(message) and message.get("name") == name
         ]
 
 
-def _validate_msg(
-    message: _messages.Message,
+def _validate_messages(
+    stored_messages: list[StoredMessage],
     timeline_names: set[str],
 ) -> None:
-    """Make sure that the message only modifies nodes that are part of the timeline."""
-    if not is_scene_message(message):
-        return
-    name = getattr(message, "name", None)
-    if not isinstance(name, str) or not name:
-        return
-    # `viser` uses one family of message classes for node creation and another
-    # for later transform/property updates, so we distinguish them explicitly.
-    if isinstance(message, _messages._CreateSceneNodeMessage):
-        timeline_names.add(name)
-        return
-    if name in timeline_names:
-        return
-    raise RuntimeError(f"Cannot modify static scene node {name!r} inside server.at(t).")
+    """Make sure that recorded messages only modify timeline-owned nodes."""
+    for stored_message in stored_messages:
+        if not is_scene_message(stored_message):
+            continue
+        name = extract_message_name(stored_message)
+        if name is None:
+            continue
+        if is_create_scene_message(stored_message):
+            timeline_names.add(name)
+            continue
+        if name in timeline_names:
+            continue
+        raise RuntimeError(
+            f"Cannot modify static scene node {name!r} inside server.at(t)."
+        )

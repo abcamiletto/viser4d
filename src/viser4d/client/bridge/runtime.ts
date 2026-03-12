@@ -1,6 +1,7 @@
 import {
   type RuntimeMessage,
   type RuntimeValue,
+  reviveMessage,
 } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { isAudioMessage } from "../audio/messages";
@@ -283,7 +284,8 @@ export class TimelineRuntime {
   }
 
   setBaseline(payload: { name: string; messages: RuntimeMessage[] }): void {
-    this.baselineByName.set(payload.name, payload.messages);
+    const messages = payload.messages.map((message) => reviveMessage(message));
+    this.baselineByName.set(payload.name, messages);
     this.timelineNodeNames.add(payload.name);
   }
 
@@ -292,15 +294,17 @@ export class TimelineRuntime {
     messages: RuntimeMessage[];
     nodeNames?: string[];
   }): void {
+    const messages = payload.messages.map((message) => reviveMessage(message));
     this.stepMessages[payload.step] = this.ensureStep(payload.step).concat(
-      payload.messages,
+      messages,
     );
     for (const name of payload.nodeNames || []) {
       this.timelineNodeNames.add(name);
     }
   }
 
-  applyMessageUpdate(message: RuntimeMessage): void {
+  applyMessageUpdate(rawMessage: RuntimeMessage): void {
+    const message = reviveMessage(rawMessage);
     const name = typeof message.name === "string" ? message.name : null;
     debugState.push("runtime.apply_message_update", {
       type: message.type,
