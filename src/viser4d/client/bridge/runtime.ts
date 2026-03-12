@@ -119,15 +119,18 @@ export class TimelineRuntime {
     if (this.interceptorInstalled) {
       return;
     }
+    const messageSource = this.getViewer().messageSource;
     const queue = this.getViewer().mutable.current.messageQueue;
     const originalPush = queue.push.bind(queue);
     queue.push = (...messages: RuntimeMessage[]): number => {
       const forwarded: RuntimeMessage[] = [];
       for (const message of messages) {
-        if (this.handleQueuedMessage(message)) {
+        const revived =
+          messageSource === "websocket" ? message : reviveMessage(message);
+        if (this.handleQueuedMessage(revived)) {
           continue;
         }
-        forwarded.push(message);
+        forwarded.push(revived);
       }
       return originalPush(...forwarded);
     };

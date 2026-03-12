@@ -16,11 +16,19 @@
     if (Array.isArray(value)) {
       return value.map((item) => revive(item));
     }
+    if (value instanceof ArrayBuffer) {
+      return new Uint8Array(value.slice(0));
+    }
     if (!value || typeof value !== "object") {
       return value;
     }
     if (value instanceof Uint8Array) {
       return value;
+    }
+    if (ArrayBuffer.isView(value)) {
+      return new Uint8Array(
+        value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)
+      );
     }
     const record = value;
     if (isBinaryPayload(record)) {
@@ -601,15 +609,17 @@
       if (this.interceptorInstalled) {
         return;
       }
+      const messageSource = this.getViewer().messageSource;
       const queue = this.getViewer().mutable.current.messageQueue;
       const originalPush = queue.push.bind(queue);
       queue.push = (...messages) => {
         const forwarded = [];
         for (const message of messages) {
-          if (this.handleQueuedMessage(message)) {
+          const revived = messageSource === "websocket" ? message : reviveMessage(message);
+          if (this.handleQueuedMessage(revived)) {
             continue;
           }
-          forwarded.push(message);
+          forwarded.push(revived);
         }
         return originalPush(...forwarded);
       };
