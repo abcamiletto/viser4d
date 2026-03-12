@@ -70,7 +70,9 @@ class ExportBuilder:
         return blob
 
 
-def _with_playback_time(message: StoredMessage, *, playback_time: float) -> StoredMessage:
+def _with_playback_time(
+    message: StoredMessage, *, playback_time: float
+) -> StoredMessage:
     if not is_audio_message_type(message.get("type")):
         return message
     return {**message, "__viserPlaybackTime": playback_time}
