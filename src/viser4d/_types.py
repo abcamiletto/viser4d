@@ -40,6 +40,7 @@ class RuntimeConfig(TypedDict):
 
 
 class ClientRuntimeConfig(RuntimeConfig):
+    timelineSliderUuid: str
     timestepSyncUuid: str
 
 

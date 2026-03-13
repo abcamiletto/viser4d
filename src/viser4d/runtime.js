@@ -538,6 +538,7 @@
         fps: 30,
         baseFps: null,
         loop: false,
+        timelineSliderUuid: null,
         timestepSyncUuid: null
       };
       this.timelineNodeNames = /* @__PURE__ */ new Set();
@@ -547,9 +548,10 @@
       this.playStartPerfTime = 0;
       this.playing = false;
       this.rafId = null;
+      this.lastLocalSliderStep = -1;
       this.lastSyncedStep = -1;
       this.lastSyncSentAt = 0;
-      this.syncIntervalMs = 250;
+      this.maxTimestepSyncHz = 30;
       this.audio = new AudioRuntime(
         () => this.getTransportStep(),
         (event, payload) => debugState.push(event, payload)
@@ -780,19 +782,30 @@
       this.pushMessages([message]);
     }
     syncTimestepToServer(step, force = false) {
+      const clampedStep = Math.max(0, Math.min(this.config.numSteps - 1, step));
+      if (this.config.timelineSliderUuid && (force || clampedStep !== this.lastLocalSliderStep)) {
+        this.lastLocalSliderStep = clampedStep;
+        this.pushMessages([
+          {
+            type: "GuiUpdateMessage",
+            uuid: this.config.timelineSliderUuid,
+            updates: { value: clampedStep }
+          }
+        ]);
+      }
       if (!this.config.timestepSyncUuid) {
         return;
       }
       const now = performance.now();
-      if (!force && step === this.lastSyncedStep) {
+      if (!force && clampedStep === this.lastSyncedStep) {
         return;
       }
-      if (!force && this.playing && now - this.lastSyncSentAt < this.syncIntervalMs) {
+      if (!force && this.playing && this.config.fps > this.maxTimestepSyncHz && now - this.lastSyncSentAt < 1e3 / this.maxTimestepSyncHz) {
         return;
       }
-      this.lastSyncedStep = step;
+      this.lastSyncedStep = clampedStep;
       this.lastSyncSentAt = now;
-      this.sendGuiUpdate(this.config.timestepSyncUuid, step);
+      this.sendGuiUpdate(this.config.timestepSyncUuid, clampedStep);
     }
     resetTimelineState() {
       debugState.push("runtime.reset_timeline_state", {

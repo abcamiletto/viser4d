@@ -182,6 +182,7 @@ class ClientPlaybackHandle:
                 fps=fps,
                 base_fps=self._server._base_fps,
                 loop=loop,
+                timeline_slider_uuid=impl.gui_uuid(self._timeline_slider),
                 timestep_sync_uuid=impl.gui_uuid(self._timestep_sync),
             ),
         )
@@ -219,9 +220,10 @@ class ClientPlaybackHandle:
         self._pause_button.color = _pause_button_color(brand_color)
 
     def _sync_from_client(self, timestep: int) -> None:
-        self._set_current_timestep(timestep)
+        assert 0 <= timestep < self._server.num_steps
         should_sync_buttons = False
         with self._lock:
+            self._current_timestep = timestep
             if (
                 self._is_playing
                 and not self._loop

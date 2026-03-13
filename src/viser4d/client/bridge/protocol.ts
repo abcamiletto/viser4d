@@ -5,6 +5,7 @@ export type RuntimeConfig = {
   fps: number;
   baseFps: number | null;
   loop: boolean;
+  timelineSliderUuid: string | null;
   timestepSyncUuid: string | null;
 };
 
