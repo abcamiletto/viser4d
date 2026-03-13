@@ -76,6 +76,9 @@ export class TimelineRuntime {
   private playbackLastAppliedMessageTime = -1;
   private interceptorInstalled = false;
   private playbackMonitorId: number | null = null;
+  // Rewinds are staged across frames: remove, rebuild baselines, then replay diffs.
+  private resetEpoch = 0;
+  private resetTargetStep: number | null = null;
 
   constructor() {
     this.playbackAudio.setStepRate(1);
@@ -340,23 +343,47 @@ export class TimelineRuntime {
       appliedStep: this.appliedStep,
       playing: this.playing,
     });
+    const epoch = ++this.resetEpoch;
+    this.resetTargetStep = 0;
     this.pushMessages(
       Array.from(this.timelineNodeNames).map((name) => ({
         type: "RemoveSceneNodeMessage",
         name,
       })),
     );
-    for (const [name, messages] of this.baselineByName.entries()) {
-      this.timelineNodeNames.add(name);
-      this.pushMessages(messages);
-    }
     this.audio.resetTimeline();
     this.appliedStep = -1;
+    getWindow().requestAnimationFrame(() => {
+      if (epoch !== this.resetEpoch) {
+        return;
+      }
+      // Recreate nodes in a separate frame so reused names remount cleanly.
+      for (const [name, messages] of this.baselineByName.entries()) {
+        this.timelineNodeNames.add(name);
+        this.pushMessages(messages);
+      }
+      getWindow().requestAnimationFrame(() => {
+        if (epoch !== this.resetEpoch) {
+          return;
+        }
+        const targetStep = this.resetTargetStep ?? 0;
+        this.resetTargetStep = null;
+        if (targetStep >= 0) {
+          this.applyThrough(targetStep);
+        }
+      });
+    });
   }
 
   private applyThrough(step: number): void {
+    if (this.resetTargetStep !== null) {
+      this.resetTargetStep = step;
+      return;
+    }
     if (step < this.appliedStep) {
       this.resetTimelineState();
+      this.resetTargetStep = step;
+      return;
     }
     for (let index = this.appliedStep + 1; index <= step; index += 1) {
       const messages = this.stepMessages[index];

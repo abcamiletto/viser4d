@@ -564,6 +564,9 @@
       this.playbackLastAppliedMessageTime = -1;
       this.interceptorInstalled = false;
       this.playbackMonitorId = null;
+      // Rewinds are staged across frames: remove, rebuild baselines, then replay diffs.
+      this.resetEpoch = 0;
+      this.resetTargetStep = null;
       this.playbackAudio.setStepRate(1);
       this.installWhenReady();
     }
@@ -797,22 +800,45 @@
         appliedStep: this.appliedStep,
         playing: this.playing
       });
+      const epoch = ++this.resetEpoch;
+      this.resetTargetStep = 0;
       this.pushMessages(
         Array.from(this.timelineNodeNames).map((name) => ({
           type: "RemoveSceneNodeMessage",
           name
         }))
       );
-      for (const [name, messages] of this.baselineByName.entries()) {
-        this.timelineNodeNames.add(name);
-        this.pushMessages(messages);
-      }
       this.audio.resetTimeline();
       this.appliedStep = -1;
+      getWindow().requestAnimationFrame(() => {
+        if (epoch !== this.resetEpoch) {
+          return;
+        }
+        for (const [name, messages] of this.baselineByName.entries()) {
+          this.timelineNodeNames.add(name);
+          this.pushMessages(messages);
+        }
+        getWindow().requestAnimationFrame(() => {
+          if (epoch !== this.resetEpoch) {
+            return;
+          }
+          const targetStep = this.resetTargetStep ?? 0;
+          this.resetTargetStep = null;
+          if (targetStep >= 0) {
+            this.applyThrough(targetStep);
+          }
+        });
+      });
     }
     applyThrough(step) {
+      if (this.resetTargetStep !== null) {
+        this.resetTargetStep = step;
+        return;
+      }
       if (step < this.appliedStep) {
         this.resetTimelineState();
+        this.resetTargetStep = step;
+        return;
       }
       for (let index = this.appliedStep + 1; index <= step; index += 1) {
         const messages = this.stepMessages[index];
