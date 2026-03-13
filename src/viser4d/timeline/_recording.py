@@ -147,6 +147,12 @@ def _validate_messages(
         if name is None:
             continue
         if is_create_scene_message(stored_message):
+            if name in timeline_names:
+                raise RuntimeError(
+                    f"Cannot create timeline node {name!r} more than once. "
+                    "Create it once and update the returned handle inside later "
+                    "server.at(t) blocks."
+                )
             timeline_names.add(name)
             continue
         if name in timeline_names:

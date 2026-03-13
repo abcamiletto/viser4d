@@ -100,6 +100,19 @@ def test_at_rejects_updates_to_static_scene_nodes() -> None:
         server.stop()
 
 
+def test_at_rejects_recreating_timeline_nodes() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0):
+            server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+
+        with pytest.raises(RuntimeError, match="Cannot create timeline node"):
+            with server.at(1):
+                server.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
+    finally:
+        server.stop()
+
+
 def test_stop_unblocks_sleep_forever() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     sleeper = threading.Thread(target=server.sleep_forever)
