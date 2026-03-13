@@ -33,23 +33,7 @@ jobs:
             echo "needs_tag=true" >> "$GITHUB_OUTPUT"
           fi
 
-          if python - "$version" <<'PY'
-import json
-import sys
-import urllib.error
-import urllib.request
-
-version = sys.argv[1]
-try:
-    with urllib.request.urlopen("https://pypi.org/pypi/viser4d/json") as response:
-        releases = json.load(response)["releases"]
-except urllib.error.HTTPError as exc:
-    if exc.code == 404:
-        sys.exit(1)
-    raise
-
-sys.exit(0 if version in releases else 1)
-PY
+          if uv run python -c "import json, sys, urllib.request; version = sys.argv[1]; releases = json.load(urllib.request.urlopen('https://pypi.org/pypi/viser4d/json'))['releases']; sys.exit(0 if version in releases else 1)" "$version"
           then
             echo "needs_publish=false" >> "$GITHUB_OUTPUT"
           else
