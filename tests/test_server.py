@@ -63,6 +63,32 @@ def test_serialize_rejects_invalid_timestep_range() -> None:
         server.stop()
 
 
+def test_refresh_redraws_current_timestep_without_seeking() -> None:
+    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
+
+    class _PlaybackStub:
+        def __init__(self) -> None:
+            self.refresh_calls = 0
+
+        def refresh(self) -> None:
+            self.refresh_calls += 1
+
+    try:
+        server.seek(1)
+        playback = _PlaybackStub()
+        server._client_playback_values = lambda: [playback]  # type: ignore[method-assign]
+        seen_timesteps: list[int] = []
+        server.on_timestep_change(seen_timesteps.append)
+
+        server.refresh()
+
+        assert server._current_timestep == 1
+        assert playback.refresh_calls == 1
+        assert seen_timesteps == []
+    finally:
+        server.stop()
+
+
 def test_at_rejects_updates_to_static_scene_nodes() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
@@ -70,6 +96,19 @@ def test_at_rejects_updates_to_static_scene_nodes() -> None:
         with pytest.raises(RuntimeError, match="Cannot modify static scene node"):
             with server.at(0):
                 joint.position = (1.0, 0.0, 0.0)
+    finally:
+        server.stop()
+
+
+def test_at_rejects_recreating_timeline_nodes() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0):
+            server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+
+        with pytest.raises(RuntimeError, match="Cannot create timeline node"):
+            with server.at(1):
+                server.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
     finally:
         server.stop()
 

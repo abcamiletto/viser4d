@@ -162,6 +162,10 @@ class ClientPlaybackHandle:
         self._set_current_timestep(t)
         self._send_runtime_call("seek", {"step": t})
 
+    def refresh(self) -> None:
+        """Redraw this client's current timestep from recorded timeline state."""
+        self._send_runtime_call("refresh", {})
+
     def set_fps(self, fps: float) -> None:
         """Update playback speed on this client."""
         with self._lock:

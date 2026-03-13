@@ -358,14 +358,14 @@ export class TimelineRuntime {
     this.sendGuiUpdate(this.config.timestepSyncUuid, clampedStep);
   }
 
-  private resetTimelineState(): void {
+  private resetTimelineState(targetStep = 0): void {
     debugState.push("runtime.reset_timeline_state", {
       currentStep: this.currentStep,
       appliedStep: this.appliedStep,
       playing: this.playing,
     });
     const epoch = ++this.resetEpoch;
-    this.resetTargetStep = 0;
+    this.resetTargetStep = targetStep;
     this.pushMessages(
       Array.from(this.timelineNodeNames).map((name) => ({
         type: "RemoveSceneNodeMessage",
@@ -402,8 +402,7 @@ export class TimelineRuntime {
       return;
     }
     if (step < this.appliedStep) {
-      this.resetTimelineState();
-      this.resetTargetStep = step;
+      this.resetTimelineState(step);
       return;
     }
     for (let index = this.appliedStep + 1; index <= step; index += 1) {
@@ -424,6 +423,10 @@ export class TimelineRuntime {
     this.applyThrough(step);
     this.audio.seek(step, this.config.fps, this.playing);
     this.syncTimestepToServer(step, true);
+  }
+
+  refresh(): void {
+    this.resetTimelineState(Math.floor(this.currentStep));
   }
 
   private tick(timestamp: number): void {

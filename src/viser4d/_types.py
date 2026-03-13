@@ -50,6 +50,7 @@ RuntimeMethod: TypeAlias = Literal[
     "pause",
     "play",
     "preloadStep",
+    "refresh",
     "seek",
     "setBaseline",
     "setFps",

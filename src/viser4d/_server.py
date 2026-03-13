@@ -84,6 +84,13 @@ class Viser4dServer(viser.ViserServer):
         for playback in self._client_playback_values():
             playback.seek(timestep)
 
+    def refresh(self) -> None:
+        """Redraw the current timestep on all connected clients while paused."""
+        if self._is_playing:
+            return
+        for playback in self._client_playback_values():
+            playback.refresh()
+
     def set_fps(self, fps: float) -> None:
         """Update playback speed without changing the current timestep."""
         self._controller.set_fps(fps)
