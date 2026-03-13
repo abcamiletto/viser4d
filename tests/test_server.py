@@ -63,6 +63,16 @@ def test_serialize_rejects_invalid_timestep_range() -> None:
         server.stop()
 
 
+def test_current_timestep_is_public() -> None:
+    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
+    try:
+        assert server.current_timestep == 0
+        server.seek(2)
+        assert server.current_timestep == 2
+    finally:
+        server.stop()
+
+
 def test_refresh_redraws_current_timestep_without_seeking() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
 
@@ -82,7 +92,7 @@ def test_refresh_redraws_current_timestep_without_seeking() -> None:
 
         server.refresh()
 
-        assert server._current_timestep == 1
+        assert server.current_timestep == 1
         assert playback.refresh_calls == 1
         assert seen_timesteps == []
     finally:

@@ -101,6 +101,11 @@ class Viser4dServer(viser.ViserServer):
         """Register a callback for committed timestep changes."""
         self._controller.on_timestep_change(callback)
 
+    @property
+    def current_timestep(self) -> int:
+        """Return the current discrete timestep."""
+        return self._controller.current_timestep
+
     def sleep_forever(self) -> None:
         """Block until the server is stopped."""
         while not self._stop_event.wait(3600):
@@ -171,4 +176,4 @@ class Viser4dServer(viser.ViserServer):
 
     @property
     def _current_timestep(self) -> int:
-        return self._controller.current_timestep
+        return self.current_timestep
