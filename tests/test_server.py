@@ -1,5 +1,7 @@
+import contextlib
 import threading
 import time
+from types import SimpleNamespace
 
 import msgspec
 import numpy as np
@@ -10,48 +12,35 @@ import viser4d
 from viser4d.timeline import ClientPlaybackHandle
 
 
-class _FakeGuiControl:
-    def __init__(self, value: object = None) -> None:
-        self.value = value
-        self.visible = True
-        self.color = None
-        self.max = None
-
-    def on_update(self, callback):
-        return callback
-
-    def on_click(self, callback):
-        return callback
-
-
-class _FakeGuiFolder:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
+def _fake_control(value: object = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        value=value,
+        visible=True,
+        color=None,
+        max=None,
+        on_update=lambda callback: callback,
+        on_click=lambda callback: callback,
+    )
 
 
 class _FakeGui:
     def add_number(self, name, value, **kwargs):
-        return _FakeGuiControl(value)
+        return _fake_control(value)
 
     def add_folder(self, name):
-        return _FakeGuiFolder()
+        return contextlib.nullcontext()
 
     def add_slider(self, name, *, initial_value, **kwargs):
-        return _FakeGuiControl(initial_value)
+        return _fake_control(initial_value)
 
     def add_button_group(self, name, options):
-        return _FakeGuiControl()
+        return _fake_control()
 
     def add_button(self, name, **kwargs):
-        return _FakeGuiControl()
+        return _fake_control()
 
 
-class _FakeClient:
-    def __init__(self) -> None:
-        self.gui = _FakeGui()
+_FakeClient = SimpleNamespace(gui=_FakeGui())
 
 
 class _FakeServer:
@@ -145,7 +134,7 @@ def test_client_playback_applies_timestep_zero_on_init(monkeypatch: pytest.Monke
         lambda self, timestep: seen_seeks.append(timestep),
     )
 
-    ClientPlaybackHandle(_FakeServer(), _FakeClient())
+    ClientPlaybackHandle(_FakeServer(), _FakeClient)
 
     assert seen_seeks == [0]
 
