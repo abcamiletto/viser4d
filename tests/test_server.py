@@ -7,6 +7,60 @@ import pytest
 import zstandard
 
 import viser4d
+from viser4d.timeline import ClientPlaybackHandle
+
+
+class _FakeGuiControl:
+    def __init__(self, value: object = None) -> None:
+        self.value = value
+        self.visible = True
+        self.color = None
+        self.max = None
+
+    def on_update(self, callback):
+        return callback
+
+    def on_click(self, callback):
+        return callback
+
+
+class _FakeGuiFolder:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeGui:
+    def add_number(self, name, value, **kwargs):
+        return _FakeGuiControl(value)
+
+    def add_folder(self, name):
+        return _FakeGuiFolder()
+
+    def add_slider(self, name, *, initial_value, **kwargs):
+        return _FakeGuiControl(initial_value)
+
+    def add_button_group(self, name, options):
+        return _FakeGuiControl()
+
+    def add_button(self, name, **kwargs):
+        return _FakeGuiControl()
+
+
+class _FakeClient:
+    def __init__(self) -> None:
+        self.gui = _FakeGui()
+
+
+class _FakeServer:
+    num_steps = 3
+    _fps = 30.0
+    _base_fps = 30.0
+    _loop = False
+    _is_playing = False
+    _current_timestep = 0
 
 
 def test_audio_requires_timestep_context() -> None:
@@ -71,6 +125,29 @@ def test_current_timestep_is_public() -> None:
         assert server.current_timestep == 2
     finally:
         server.stop()
+
+
+def test_client_playback_applies_timestep_zero_on_init(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_seeks: list[int] = []
+
+    monkeypatch.setattr(
+        "viser4d.timeline._playback.impl.gui_uuid",
+        lambda _control: "uuid",
+    )
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_send_runtime_call",
+        lambda self, method, payload: None,
+    )
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "seek",
+        lambda self, timestep: seen_seeks.append(timestep),
+    )
+
+    ClientPlaybackHandle(_FakeServer(), _FakeClient())
+
+    assert seen_seeks == [0]
 
 
 def test_play_uses_current_fps_by_default() -> None:

@@ -112,8 +112,7 @@ class ClientPlaybackHandle:
         self.sync_runtime_config()
         self._sync_playback_buttons()
         # Late-joining clients need the current scene state before playback starts.
-        if self._current_timestep != 0:
-            self.seek(self._current_timestep)
+        self.seek(self._current_timestep)
         if self._is_playing:
             self.play(loop=self._loop)
 
