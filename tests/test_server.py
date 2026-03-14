@@ -43,7 +43,7 @@ def test_timeline_operations_serialize_and_seek() -> None:
             audio.volume = 0.25
 
         server.set_fps(24.0)
-        server.play(24.0)
+        server.play()
         server.pause()
         server.seek(2)
 
@@ -69,6 +69,16 @@ def test_current_timestep_is_public() -> None:
         assert server.current_timestep == 0
         server.seek(2)
         assert server.current_timestep == 2
+    finally:
+        server.stop()
+
+
+def test_play_uses_current_fps_by_default() -> None:
+    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
+    try:
+        server.set_fps(24.0)
+        server.play()
+        assert server._fps == 24.0
     finally:
         server.stop()
 

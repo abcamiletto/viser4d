@@ -102,9 +102,8 @@ class ClientPlaybackHandle:
         @self._play_button.on_click
         def _play(_event: Any) -> None:
             with self._lock:
-                fps = self._fps
                 loop = self._loop
-            self.play(fps, loop=loop)
+            self.play(loop=loop)
 
         @self._pause_button.on_click
         def _pause(_event: Any) -> None:
@@ -116,7 +115,7 @@ class ClientPlaybackHandle:
         if self._current_timestep != 0:
             self.seek(self._current_timestep)
         if self._is_playing:
-            self.play(self._fps, loop=self._loop)
+            self.play(loop=self._loop)
 
     @property
     def fps(self) -> float:
@@ -138,10 +137,10 @@ class ClientPlaybackHandle:
         with self._lock:
             return self._current_timestep
 
-    def play(self, fps: float, loop: bool = False) -> None:
+    def play(self, fps: float | None = None, loop: bool = False) -> None:
         """Start playback on this client."""
         with self._lock:
-            self._fps = float(fps)
+            self._fps = self._fps if fps is None else float(fps)
             self._loop = bool(loop)
             self._is_playing = True
             payload = {"fps": self._fps, "loop": self._loop}
