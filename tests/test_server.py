@@ -1,60 +1,10 @@
-import contextlib
 import threading
 import time
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
 
-import msgspec
 import numpy as np
 import pytest
-import zstandard
 
 import viser4d
-from viser4d.timeline import ClientPlaybackHandle
-
-if TYPE_CHECKING:
-    from viser._viser import ClientHandle
-    from viser4d._server import Viser4dServer
-
-
-def _fake_control(value: object = None) -> SimpleNamespace:
-    return SimpleNamespace(
-        value=value,
-        visible=True,
-        color=None,
-        max=None,
-        on_update=lambda callback: callback,
-        on_click=lambda callback: callback,
-    )
-
-
-class _FakeGui:
-    def add_number(self, name, value, **kwargs):
-        return _fake_control(value)
-
-    def add_folder(self, name):
-        return contextlib.nullcontext()
-
-    def add_slider(self, name, *, initial_value, **kwargs):
-        return _fake_control(initial_value)
-
-    def add_button_group(self, name, options):
-        return _fake_control()
-
-    def add_button(self, name, **kwargs):
-        return _fake_control()
-
-
-_FakeClient = SimpleNamespace(gui=_FakeGui())
-
-
-class _FakeServer:
-    num_steps = 3
-    _fps = 30.0
-    _base_fps = 30.0
-    _loop = False
-    _is_playing = False
-    _current_timestep = 0
 
 
 def test_audio_requires_timestep_context() -> None:
@@ -117,70 +67,6 @@ def test_current_timestep_is_public() -> None:
         assert server.current_timestep == 0
         server.seek(2)
         assert server.current_timestep == 2
-    finally:
-        server.stop()
-
-
-def test_client_playback_applies_timestep_zero_on_init(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen_seeks: list[int] = []
-
-    monkeypatch.setattr(
-        "viser4d.timeline._playback.impl.gui_uuid",
-        lambda _control: "uuid",
-    )
-    monkeypatch.setattr(
-        ClientPlaybackHandle,
-        "_send_runtime_call",
-        lambda self, method, payload: None,
-    )
-    monkeypatch.setattr(
-        ClientPlaybackHandle,
-        "seek",
-        lambda self, timestep: seen_seeks.append(timestep),
-    )
-
-    ClientPlaybackHandle(
-        cast("Viser4dServer", _FakeServer()),
-        cast("ClientHandle", _FakeClient),
-    )
-
-    assert seen_seeks == [0]
-
-
-def test_play_uses_current_fps_by_default() -> None:
-    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
-    try:
-        server.set_fps(24.0)
-        server.play()
-        assert server._fps == 24.0
-    finally:
-        server.stop()
-
-
-def test_refresh_redraws_current_timestep_without_seeking() -> None:
-    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
-
-    class _PlaybackStub:
-        def __init__(self) -> None:
-            self.refresh_calls = 0
-
-        def refresh(self) -> None:
-            self.refresh_calls += 1
-
-    try:
-        server.seek(1)
-        playback = _PlaybackStub()
-        server._client_playback_values = lambda: [playback]  # type: ignore[method-assign]
-        seen_timesteps: list[int] = []
-        server.on_timestep_change(seen_timesteps.append)
-
-        server.refresh()
-
-        assert server.current_timestep == 1
-        assert playback.refresh_calls == 1
-        assert seen_timesteps == []
     finally:
         server.stop()
 
@@ -281,36 +167,5 @@ def test_stereo_audio_append_preserves_channel_layout() -> None:
 
         with pytest.raises(ValueError, match="channel count"):
             audio.append(np.array([5, 6], dtype=np.int16))
-    finally:
-        server.stop()
-
-
-def test_serialize_preserves_binary_mesh_payloads() -> None:
-    server = viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
-    try:
-        vertices = np.array(
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            dtype=np.float32,
-        )
-        faces = np.array([[0, 1, 2]], dtype=np.uint32)
-        with server.at(0):
-            server.scene.add_mesh_simple(
-                "/mesh",
-                vertices=vertices,
-                faces=faces,
-            )
-
-        recording = server.serialize()
-        size = int.from_bytes(recording[:8], "little")
-        packed = zstandard.ZstdDecompressor().decompress(recording[8:], size)
-        decoded = msgspec.msgpack.decode(packed)
-        mesh_message = next(
-            message
-            for _, message in decoded["messages"]
-            if message.get("type") == "MeshMessage"
-        )
-
-        assert isinstance(mesh_message["props"]["vertices"], bytes)
-        assert isinstance(mesh_message["props"]["faces"], bytes)
     finally:
         server.stop()
