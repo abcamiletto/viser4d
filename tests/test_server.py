@@ -2,6 +2,7 @@ import contextlib
 import threading
 import time
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import msgspec
 import numpy as np
@@ -10,6 +11,10 @@ import zstandard
 
 import viser4d
 from viser4d.timeline import ClientPlaybackHandle
+
+if TYPE_CHECKING:
+    from viser._viser import ClientHandle
+    from viser4d._server import Viser4dServer
 
 
 def _fake_control(value: object = None) -> SimpleNamespace:
@@ -116,7 +121,9 @@ def test_current_timestep_is_public() -> None:
         server.stop()
 
 
-def test_client_playback_applies_timestep_zero_on_init(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_client_playback_applies_timestep_zero_on_init(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen_seeks: list[int] = []
 
     monkeypatch.setattr(
@@ -134,7 +141,10 @@ def test_client_playback_applies_timestep_zero_on_init(monkeypatch: pytest.Monke
         lambda self, timestep: seen_seeks.append(timestep),
     )
 
-    ClientPlaybackHandle(_FakeServer(), _FakeClient)
+    ClientPlaybackHandle(
+        cast("Viser4dServer", _FakeServer()),
+        cast("ClientHandle", _FakeClient),
+    )
 
     assert seen_seeks == [0]
 
