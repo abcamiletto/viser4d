@@ -92,3 +92,10 @@ jobs:
       - run: uv sync --group dev
       - run: uv pip install --python .venv/bin/python --upgrade viser
       - run: uv run --group dev pytest -q
+
+  blender-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: cd packages/viser4d-blender && uv run --python 3.11 --group dev pytest -q

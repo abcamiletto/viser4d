@@ -1,0 +1,35 @@
+[project]
+name = "viser4d-blender"
+version = "0.1.0"
+description = "Convert strict .viser recordings into .blend files."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "bpy>5.0.0",
+    "msgspec>=0.18.6,<1.0.0",
+    "numpy>=1,<2",
+    "zstandard>=0.20.0,<1.0.0",
+]
+
+[project.scripts]
+viser4d-to-blend = "viser4d_blender._cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
