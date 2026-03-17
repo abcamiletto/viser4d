@@ -139,7 +139,8 @@ class ClientPlaybackHandle:
     def play(self, fps: float | None = None, loop: bool = False) -> None:
         """Start playback on this client."""
         with self._lock:
-            self._fps = self._fps if fps is None else float(fps)
+            if fps is not None:
+                self._fps = float(fps)
             self._loop = bool(loop)
             self._is_playing = True
             payload = {"fps": self._fps, "loop": self._loop}

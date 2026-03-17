@@ -65,12 +65,19 @@ class Viser4dServer(viser.ViserServer):
         with self._recorder.at(t):
             yield
 
+    @property
+    def fps(self) -> float:
+        """Current playback speed in frames per second."""
+        return self._controller.fps
+
     def play(self, fps: float | None = None, loop: bool = False) -> None:
         """Start timeline playback at the current FPS and optionally loop."""
-        fps = self._controller.fps if fps is None else float(fps)
-        self._controller.play(fps, loop=loop)
+        current_fps = self.fps
+        if fps is not None:
+            current_fps = float(fps)
+        self._controller.play(current_fps, loop=loop)
         for playback in self._client_playback_values():
-            playback.play(fps, loop=loop)
+            playback.play(current_fps, loop=loop)
 
     def pause(self) -> None:
         """Pause timeline playback for all connected clients."""

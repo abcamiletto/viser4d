@@ -18,6 +18,13 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
       - name: Detect release state
         id: version
         run: |
@@ -46,6 +53,12 @@ jobs:
           git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
           git tag "${{ steps.version.outputs.tag }}"
           git push origin "${{ steps.version.outputs.tag }}"
+      - name: Install runtime build dependencies
+        if: steps.version.outputs.needs_tag == 'true' || steps.version.outputs.needs_publish == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Build runtime bundle
+        if: steps.version.outputs.needs_tag == 'true' || steps.version.outputs.needs_publish == 'true'
+        run: pnpm run build:runtime
       - name: Build
         if: steps.version.outputs.needs_tag == 'true' || steps.version.outputs.needs_publish == 'true'
         run: uv build

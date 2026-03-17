@@ -2,7 +2,8 @@ export type RuntimeScalar = string | number | boolean | null;
 
 export type RuntimeValue =
   | RuntimeScalar
-  | Uint8Array
+  | ArrayBuffer
+  | ArrayBufferView
   | RuntimeValue[]
   | { [key: string]: RuntimeValue | undefined };
 
@@ -35,15 +36,31 @@ function isBinaryPayload(value: Record<string, unknown>): value is BinaryPayload
   return typeof value.__viser4d_binary__ === "string";
 }
 
-export function revive(value: RuntimeValue): RuntimeValue {
+function asBinaryBytes(value: object): Uint8Array | null {
+  // Runtime messages are treated as immutable after ingress. Normalize any
+  // binary buffer/view to a Uint8Array view without copying.
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (!ArrayBuffer.isView(value)) {
+    return null;
+  }
+  return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+}
+
+export function normalizeTransportValue(value: RuntimeValue): RuntimeValue {
   if (Array.isArray(value)) {
-    return value.map((item) => revive(item));
+    return value.map((item) => normalizeTransportValue(item));
   }
   if (!value || typeof value !== "object") {
     return value;
   }
-  if (value instanceof Uint8Array) {
-    return value;
+  const bytes = asBinaryBytes(value);
+  if (bytes) {
+    return bytes;
   }
   const record = value as Record<string, unknown>;
   if (isBinaryPayload(record)) {
@@ -51,13 +68,16 @@ export function revive(value: RuntimeValue): RuntimeValue {
   }
   const out: { [key: string]: RuntimeValue | undefined } = {};
   for (const [key, inner] of Object.entries(record)) {
-    out[key] = inner === undefined ? undefined : revive(inner as RuntimeValue);
+    out[key] =
+      inner === undefined
+        ? undefined
+        : normalizeTransportValue(inner as RuntimeValue);
   }
   return out;
 }
 
-export function reviveMessage(message: RuntimeMessage): RuntimeMessage {
-  return revive(message) as RuntimeMessage;
+export function normalizeTransportMessage(message: RuntimeMessage): RuntimeMessage {
+  return normalizeTransportValue(message) as RuntimeMessage;
 }
 
 export function decodeAudioArray(payload: AudioArrayPayload): ArrayLike<number> {

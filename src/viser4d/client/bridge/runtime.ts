@@ -1,7 +1,7 @@
 import {
   type RuntimeMessage,
   type RuntimeValue,
-  reviveMessage,
+  normalizeTransportMessage,
 } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { isAudioMessage } from "../audio/messages";
@@ -76,7 +76,7 @@ export class TimelineRuntime {
   private playbackPlaying = false;
   private playbackObserved = false;
   private playbackLastAppliedMessageTime = -1;
-  private interceptorInstalled = false;
+  private queueIngressConfigured = false;
   private playbackMonitorId: number | null = null;
   // Rewinds are staged across frames: remove, rebuild baselines, then replay diffs.
   private resetEpoch = 0;
@@ -102,11 +102,11 @@ export class TimelineRuntime {
   }
 
   private installWhenReady(): void {
-    if (this.interceptorInstalled) {
+    if (this.queueIngressConfigured) {
       return;
     }
     try {
-      this.installMessageQueueInterceptor();
+      this.configureQueueIngress();
       if (this.getViewer().messageSource !== "websocket") {
         this.startPlaybackMonitor();
       }
@@ -115,23 +115,30 @@ export class TimelineRuntime {
     }
   }
 
-  private installMessageQueueInterceptor(): void {
-    if (this.interceptorInstalled) {
+  private configureQueueIngress(): void {
+    if (this.queueIngressConfigured) {
       return;
     }
+    if (this.getViewer().messageSource === "websocket") {
+      this.queueIngressConfigured = true;
+      return;
+    }
+    // File playback and embedded recordings push msgpack-decoded transport
+    // messages directly into the viewer queue, so normalize them at ingress.
     const queue = this.getViewer().mutable.current.messageQueue;
     const originalPush = queue.push.bind(queue);
     queue.push = (...messages: RuntimeMessage[]): number => {
       const forwarded: RuntimeMessage[] = [];
       for (const message of messages) {
-        if (this.handleQueuedMessage(message)) {
+        const normalized = normalizeTransportMessage(message);
+        if (this.handleQueuedMessage(normalized)) {
           continue;
         }
-        forwarded.push(message);
+        forwarded.push(normalized);
       }
       return originalPush(...forwarded);
     };
-    this.interceptorInstalled = true;
+    this.queueIngressConfigured = true;
   }
 
   private handleQueuedMessage(message: RuntimeMessage): boolean {
@@ -289,7 +296,9 @@ export class TimelineRuntime {
   }
 
   setBaseline(payload: { name: string; messages: RuntimeMessage[] }): void {
-    const messages = payload.messages.map((message) => reviveMessage(message));
+    const messages = payload.messages.map((message) =>
+      normalizeTransportMessage(message),
+    );
     this.baselineByName.set(payload.name, messages);
     this.timelineNodeNames.add(payload.name);
   }
@@ -299,7 +308,9 @@ export class TimelineRuntime {
     messages: RuntimeMessage[];
     nodeNames?: string[];
   }): void {
-    const messages = payload.messages.map((message) => reviveMessage(message));
+    const messages = payload.messages.map((message) =>
+      normalizeTransportMessage(message),
+    );
     this.stepMessages[payload.step] = this.ensureStep(payload.step).concat(
       messages,
     );
@@ -309,7 +320,7 @@ export class TimelineRuntime {
   }
 
   applyMessageUpdate(rawMessage: RuntimeMessage): void {
-    const message = reviveMessage(rawMessage);
+    const message = normalizeTransportMessage(rawMessage);
     const name = typeof message.name === "string" ? message.name : null;
     debugState.push("runtime.apply_message_update", {
       type: message.type,
