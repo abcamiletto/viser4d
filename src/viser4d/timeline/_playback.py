@@ -21,7 +21,12 @@ if TYPE_CHECKING:
 
 
 class ClientPlaybackHandle:
-    """Per-client playback controls backed by the injected browser runtime."""
+    """Per-client playback controls backed by the injected browser runtime.
+
+    The visible playback widgets stay client-local in the browser. Python only
+    observes committed timestep changes through the hidden sync control and
+    sends explicit server-side broadcast commands.
+    """
 
     def __init__(self, server: Viser4dServer, client: ClientHandle) -> None:
         self._server = server
@@ -30,8 +35,6 @@ class ClientPlaybackHandle:
         self._loop = False
         self._is_playing = False
         self._current_timestep = 0
-        self._syncing_fps_slider = False
-        self._syncing_timestep_slider = False
         self._lock = threading.RLock()
 
         # Hidden control used by the browser runtime to report the active timestep back.
@@ -74,43 +77,7 @@ class ClientPlaybackHandle:
         def _sync(_event: Any) -> None:
             self._sync_from_client(int(self._timestep_sync.value))
 
-        @self._timeline_slider.on_update
-        def _sync_slider(_event: Any) -> None:
-            with self._lock:
-                syncing_timestep_slider = self._syncing_timestep_slider
-            if syncing_timestep_slider:
-                return
-            self.seek(int(self._timeline_slider.value))
-
-        @self._fps_slider.on_update
-        def _sync_fps(_event: Any) -> None:
-            with self._lock:
-                syncing_fps_slider = self._syncing_fps_slider
-            if syncing_fps_slider:
-                return
-            self.set_fps(float(self._fps_slider.value))
-
-        @self._step_buttons.on_click
-        def _step(_event: Any) -> None:
-            with self._lock:
-                current_timestep = self._current_timestep
-            if self._step_buttons.value == "Prev":
-                self.seek(current_timestep - 1)
-            else:
-                self.seek(current_timestep + 1)
-
-        @self._play_button.on_click
-        def _play(_event: Any) -> None:
-            with self._lock:
-                loop = self._loop
-            self.play(loop=loop)
-
-        @self._pause_button.on_click
-        def _pause(_event: Any) -> None:
-            self.pause()
-
         self.sync_runtime_config()
-        self._sync_playback_buttons()
         # New clients need the initial timeline scene state before playback starts.
         self.seek(self._current_timestep)
 
@@ -143,14 +110,12 @@ class ClientPlaybackHandle:
             self._is_playing = True
             payload = {"fps": self._fps, "loop": self._loop}
         self._set_fps_slider_value(payload["fps"])
-        self._sync_playback_buttons()
         self._send_runtime_call("play", payload)
 
     def pause(self) -> None:
         """Pause playback on this client."""
         with self._lock:
             self._is_playing = False
-        self._sync_playback_buttons()
         self._send_runtime_call("pause", {})
 
     def seek(self, t: int) -> None:
@@ -184,6 +149,10 @@ class ClientPlaybackHandle:
                 timeline_fps=self._server._timeline_fps,
                 loop=loop,
                 timeline_slider_uuid=impl.gui_uuid(self._timeline_slider),
+                fps_slider_uuid=impl.gui_uuid(self._fps_slider),
+                step_buttons_uuid=impl.gui_uuid(self._step_buttons),
+                play_button_uuid=impl.gui_uuid(self._play_button),
+                pause_button_uuid=impl.gui_uuid(self._pause_button),
                 timestep_sync_uuid=impl.gui_uuid(self._timestep_sync),
             ),
         )
@@ -197,7 +166,6 @@ class ClientPlaybackHandle:
 
     def _sync_from_client(self, timestep: int) -> None:
         assert 0 <= timestep < self._server.num_steps
-        should_sync_buttons = False
         with self._lock:
             self._current_timestep = timestep
             if (
@@ -206,21 +174,13 @@ class ClientPlaybackHandle:
                 and timestep >= self._server.num_steps - 1
             ):
                 self._is_playing = False
-                should_sync_buttons = True
-        if should_sync_buttons:
-            self._sync_playback_buttons()
         self._server._dispatch_timestep_change(self._client, timestep)
 
     def _set_current_timestep(self, timestep: int) -> None:
         assert 0 <= timestep < self._server.num_steps
         with self._lock:
             self._current_timestep = timestep
-            self._syncing_timestep_slider = True
-        try:
-            self._timeline_slider.value = timestep
-        finally:
-            with self._lock:
-                self._syncing_timestep_slider = False
+        self._timeline_slider.value = timestep
 
     def _send_runtime_call(
         self, method: RuntimeMethod, payload: RuntimePayload
@@ -231,20 +191,7 @@ class ClientPlaybackHandle:
     def _set_fps_slider_value(self, fps: float) -> None:
         if self._fps_slider.value == fps:
             return
-        with self._lock:
-            self._syncing_fps_slider = True
-        try:
-            self._fps_slider.value = fps
-        finally:
-            with self._lock:
-                self._syncing_fps_slider = False
-
-    def _sync_playback_buttons(self) -> None:
-        with self._lock:
-            is_playing = self._is_playing
-        self._play_button.visible = not is_playing
-        self._pause_button.visible = is_playing
-
+        self._fps_slider.value = fps
 
 def _pause_button_color(
     brand_color: tuple[int, int, int] | None,

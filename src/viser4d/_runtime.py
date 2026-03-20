@@ -31,6 +31,10 @@ def client_runtime_config_payload(
     timeline_fps: float,
     loop: bool,
     timeline_slider_uuid: str,
+    fps_slider_uuid: str,
+    step_buttons_uuid: str,
+    play_button_uuid: str,
+    pause_button_uuid: str,
     timestep_sync_uuid: str,
 ) -> ClientRuntimeConfig:
     return ClientRuntimeConfig(
@@ -39,6 +43,10 @@ def client_runtime_config_payload(
         timelineFps=timeline_fps,
         loop=loop,
         timelineSliderUuid=timeline_slider_uuid,
+        fpsSliderUuid=fps_slider_uuid,
+        stepButtonsUuid=step_buttons_uuid,
+        playButtonUuid=play_button_uuid,
+        pauseButtonUuid=pause_button_uuid,
         timestepSyncUuid=timestep_sync_uuid,
     )
 

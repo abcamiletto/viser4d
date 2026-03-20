@@ -41,6 +41,10 @@ class RuntimeConfig(TypedDict):
 
 class ClientRuntimeConfig(RuntimeConfig):
     timelineSliderUuid: str
+    fpsSliderUuid: str
+    stepButtonsUuid: str
+    playButtonUuid: str
+    pauseButtonUuid: str
     timestepSyncUuid: str
 
 

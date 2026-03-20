@@ -6,7 +6,34 @@ export type RuntimeConfig = {
   timelineFps: number | null;
   loop: boolean;
   timelineSliderUuid: string | null;
+  fpsSliderUuid: string | null;
+  stepButtonsUuid: string | null;
+  playButtonUuid: string | null;
+  pauseButtonUuid: string | null;
   timestepSyncUuid: string | null;
+};
+
+export type GuiUpdateMessage = {
+  type: "GuiUpdateMessage";
+  uuid: string;
+  updates: { [key: string]: RuntimeValue | undefined };
+};
+
+export type ViewerMessage = {
+  type: string;
+  [key: string]: unknown;
+};
+
+type GuiStateLike = {
+  guiConfigFromUuid: { [uuid: string]: unknown | undefined };
+  updateGuiProps(
+    uuid: string,
+    updates: { [key: string]: RuntimeValue | undefined },
+  ): void;
+};
+
+type UseGuiLike = {
+  getState(): GuiStateLike;
 };
 
 export type ViewerLike = {
@@ -14,13 +41,10 @@ export type ViewerLike = {
   mutable: {
     current: {
       messageQueue: RuntimeMessage[];
-      sendMessage(message: {
-        type: "GuiUpdateMessage";
-        uuid: string;
-        updates: { [key: string]: RuntimeValue | undefined };
-      }): void;
+      sendMessage: (message: ViewerMessage) => void;
     };
   };
+  useGui: UseGuiLike;
   useSceneTree: unknown;
 };
 
@@ -46,6 +70,7 @@ function isViewerLike(value: unknown): value is ViewerLike {
   return (
     isObjectRecord(value) &&
     isObjectRecord(value.mutable) &&
+    "useGui" in value &&
     "useSceneTree" in value
   );
 }

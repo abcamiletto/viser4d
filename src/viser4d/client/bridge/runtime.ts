@@ -9,7 +9,9 @@ import {
   findPlaybackTimeSlider,
   findViewer,
   getWindow,
+  type GuiUpdateMessage,
   type RuntimeConfig,
+  type ViewerMessage,
   type ViewerLike,
 } from "./protocol";
 
@@ -51,6 +53,10 @@ export class TimelineRuntime {
     timelineFps: null,
     loop: false,
     timelineSliderUuid: null,
+    fpsSliderUuid: null,
+    stepButtonsUuid: null,
+    playButtonUuid: null,
+    pauseButtonUuid: null,
     timestepSyncUuid: null,
   };
   private timelineNodeNames = new Set<string>();
@@ -75,6 +81,7 @@ export class TimelineRuntime {
   private playbackObserved = false;
   private playbackLastAppliedMessageTime = -1;
   private queueIngressConfigured = false;
+  private guiMessageInterceptorInstalled = false;
   private playbackMonitorId: number | null = null;
   // Rewinds are staged across frames: remove, rebuild baselines, then replay diffs.
   private resetEpoch = 0;
@@ -100,11 +107,9 @@ export class TimelineRuntime {
   }
 
   private installWhenReady(): void {
-    if (this.queueIngressConfigured) {
-      return;
-    }
     try {
       this.configureQueueIngress();
+      this.installGuiMessageInterceptor();
       if (this.getViewer().messageSource !== "websocket") {
         this.startPlaybackMonitor();
       }
@@ -137,6 +142,71 @@ export class TimelineRuntime {
       return originalPush(...forwarded);
     };
     this.queueIngressConfigured = true;
+  }
+
+  private installGuiMessageInterceptor(): void {
+    if (this.guiMessageInterceptorInstalled) {
+      return;
+    }
+    const mutable = this.getViewer().mutable.current;
+    let rawSendMessage = mutable.sendMessage;
+    // Keep the built-in playback controls client-local by consuming their
+    // outgoing GUI updates before viser forwards them to Python.
+    const wrappedSendMessage = (message: ViewerMessage): void => {
+      if (
+        message.type === "GuiUpdateMessage"
+        && this.handleLocalPlaybackGuiMessage(message as GuiUpdateMessage)
+      ) {
+        return;
+      }
+      rawSendMessage(message);
+    };
+    Object.defineProperty(mutable, "sendMessage", {
+      configurable: true,
+      enumerable: true,
+      get: () => wrappedSendMessage,
+      set: (value) => {
+        rawSendMessage = value;
+      },
+    });
+    this.guiMessageInterceptorInstalled = true;
+  }
+
+  private handleLocalPlaybackGuiMessage(message: GuiUpdateMessage): boolean {
+    const value = message.updates.value;
+    if (message.uuid === this.config.timelineSliderUuid) {
+      const step = Number(value);
+      if (!Number.isFinite(step)) {
+        return true;
+      }
+      this.seek({ step });
+      return true;
+    }
+    if (message.uuid === this.config.fpsSliderUuid) {
+      const fps = Number(value);
+      if (!Number.isFinite(fps)) {
+        return true;
+      }
+      this.setFps({ fps, loop: this.config.loop });
+      return true;
+    }
+    if (message.uuid === this.config.stepButtonsUuid) {
+      if (value === "Prev") {
+        this.seek({ step: Math.floor(this.currentStep) - 1 });
+      } else if (value === "Next") {
+        this.seek({ step: Math.floor(this.currentStep) + 1 });
+      }
+      return true;
+    }
+    if (message.uuid === this.config.playButtonUuid) {
+      this.play({ fps: this.config.fps, loop: this.config.loop });
+      return true;
+    }
+    if (message.uuid === this.config.pauseButtonUuid) {
+      this.pause();
+      return true;
+    }
+    return false;
   }
 
   private handleQueuedMessage(message: RuntimeMessage): boolean {
@@ -232,6 +302,18 @@ export class TimelineRuntime {
     });
   }
 
+  private syncPlaybackButtons(): void {
+    const guiState = this.getViewer().useGui.getState();
+    const sync = (uuid: string | null, visible: boolean): void => {
+      if (!uuid || guiState.guiConfigFromUuid[uuid] === undefined) {
+        return;
+      }
+      guiState.updateGuiProps(uuid, { visible });
+    };
+    sync(this.config.playButtonUuid, !this.playing);
+    sync(this.config.pauseButtonUuid, this.playing);
+  }
+
   private ensureStep(step: number): RuntimeMessage[] {
     const bucket = this.stepMessages[step];
     if (bucket) {
@@ -291,6 +373,7 @@ export class TimelineRuntime {
     }
     debugState.push("runtime.configure", this.config);
     this.syncAudioTransport();
+    this.syncPlaybackButtons();
   }
 
   setBaseline(payload: { name: string; messages: RuntimeMessage[] }): void {
@@ -477,6 +560,7 @@ export class TimelineRuntime {
         this.playing = false;
         this.audio.pause(this.currentStep, this.config.fps);
         this.syncAdvancedTimesteps(previousStep, this.currentStep, true);
+        this.syncPlaybackButtons();
         return;
       }
       this.anchorTransport(0, timestamp);
@@ -504,6 +588,7 @@ export class TimelineRuntime {
     if (this.rafId !== null) {
       getWindow().cancelAnimationFrame(this.rafId);
     }
+    this.syncPlaybackButtons();
     this.rafId = getWindow().requestAnimationFrame((timestamp) =>
       this.tick(timestamp),
     );
@@ -527,6 +612,7 @@ export class TimelineRuntime {
     }
     this.audio.pause(step, this.config.fps);
     this.syncTimestepToServer(Math.floor(this.currentStep), true);
+    this.syncPlaybackButtons();
   }
 }
 

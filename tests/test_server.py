@@ -93,7 +93,6 @@ def test_client_playback_sync_dispatches_server_timestep_callback() -> None:
     playback._current_timestep = 0
     playback._is_playing = False
     playback._loop = False
-    playback._sync_playback_buttons = lambda: None
 
     playback._sync_from_client(2)
 

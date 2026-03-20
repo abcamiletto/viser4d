@@ -39,7 +39,8 @@ scrub, and step through the client-local timeline.
 
 - The built-in browser controls (`Play`, `Pause`, `Prev`, `Next`, and the
   `Timestep` slider) are client-local. Different tabs can be on different
-  timesteps at the same time.
+  timesteps at the same time, and those controls are handled directly in the
+  browser rather than round-tripping through Python.
 - The `fps=` passed to `Viser4dServer(...)` defines the timeline step rate used
   for audio timing and `.viser` export, and also serves as the initial client
   playback speed.
