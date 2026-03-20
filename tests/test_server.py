@@ -1,10 +1,12 @@
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 import viser4d
+from viser4d.timeline import ClientPlaybackHandle, TimelineController
 
 
 def test_audio_requires_timestep_context() -> None:
@@ -69,6 +71,92 @@ def test_current_timestep_is_public() -> None:
         assert server.current_timestep == 2
     finally:
         server.stop()
+
+
+def test_on_client_timestep_change_dispatches_client_and_step() -> None:
+    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
+    callback_called = threading.Event()
+    seen: list[tuple[int, int]] = []
+    client = SimpleNamespace(client_id=7)
+
+    try:
+        def _on_client_timestep(client_handle: object, timestep: int) -> None:
+            seen.append((getattr(client_handle, "client_id"), timestep))
+            callback_called.set()
+
+        server.on_client_timestep_change(_on_client_timestep)
+        server._dispatch_client_timestep_change(client, 2)  # type: ignore[arg-type]
+
+        assert callback_called.wait(timeout=1.0)
+        assert seen == [(7, 2)]
+    finally:
+        server.stop()
+
+
+def test_client_playback_sync_dispatches_server_client_timestep_callback() -> None:
+    seen: list[tuple[int, int]] = []
+
+    class _DummyServer:
+        num_steps = 4
+
+        def _dispatch_client_timestep_change(
+            self, client: object, timestep: int
+        ) -> None:
+            seen.append((getattr(client, "client_id"), timestep))
+
+    playback = ClientPlaybackHandle.__new__(ClientPlaybackHandle)
+    playback._server = _DummyServer()  # type: ignore[assignment]
+    playback._client = SimpleNamespace(client_id=11)  # type: ignore[assignment]
+    playback._lock = threading.RLock()  # type: ignore[assignment]
+    playback._current_timestep = 0  # type: ignore[assignment]
+    playback._is_playing = False  # type: ignore[assignment]
+    playback._loop = False  # type: ignore[assignment]
+    playback._sync_playback_buttons = lambda: None  # type: ignore[assignment]
+
+    playback._sync_from_client(2)
+
+    assert playback.current_timestep == 2
+    assert seen == [(11, 2)]
+
+
+def test_timeline_controller_emits_each_crossed_playback_step() -> None:
+    class _DummyServer:
+        num_steps = 5
+
+        def _sync_client_playback_state(self, **_: object) -> None:
+            return
+
+    controller = TimelineController(_DummyServer(), fps=30.0)  # type: ignore[arg-type]
+    try:
+        seen: list[int] = []
+        controller.on_timestep_change(seen.append)
+
+        controller._advance_playback_timestep(3, loop=False)
+
+        assert seen == [1, 2, 3]
+    finally:
+        controller.stop()
+
+
+def test_timeline_controller_emits_wrapped_playback_steps() -> None:
+    class _DummyServer:
+        num_steps = 5
+
+        def _sync_client_playback_state(self, **_: object) -> None:
+            return
+
+    controller = TimelineController(_DummyServer(), fps=30.0)  # type: ignore[arg-type]
+    try:
+        seen: list[int] = []
+        controller.on_timestep_change(seen.append)
+
+        controller.set_current_timestep(3)
+        seen.clear()
+        controller._advance_playback_timestep(1, loop=True)
+
+        assert seen == [4, 0, 1]
+    finally:
+        controller.stop()
 
 
 def test_at_rejects_updates_to_static_scene_nodes() -> None:

@@ -65,11 +65,11 @@ server.play(fps=30, loop=True)
 server.sleep_forever()
 ```
 
-## Timestep callbacks
+## Shared timestep callbacks
 
 If you have your own visualization logic and just want to use viser4d's timeline
 infrastructure (playback controls, seeking, scrubbing), you can register a
-callback that fires whenever the timestep changes:
+callback that fires whenever the shared server timestep changes:
 
 ```python
 import viser4d
@@ -90,6 +90,32 @@ server.sleep_forever()
 Callbacks are invoked after viser4d applies its own recorded state, so you can
 mix both approaches - record some operations with `at(t)` and handle others via
 callbacks.
+
+`server.on_timestep_change(...)` follows the shared server transport driven by
+`server.seek(...)` and `server.play(...)`.
+
+## Client-local timestep callbacks
+
+The built-in playback controls shown in each browser tab are client-local. If
+you want lazy updates that follow a specific client's Play button, scrubbing, or
+step controls, register a client callback instead:
+
+```python
+import viser
+import viser4d
+
+server = viser4d.Viser4dServer(num_steps=100)
+
+def on_client_timestep(client: viser.ClientHandle, t: int) -> None:
+    update_video_frame(client.scene, t)
+    update_client_overlays(client.scene, t)
+
+server.on_client_timestep_change(on_client_timestep)
+server.sleep_forever()
+```
+
+These callbacks fire once per client after that client's timeline runtime
+commits a new discrete timestep.
 
 ## Serialize `.viser` recordings
 

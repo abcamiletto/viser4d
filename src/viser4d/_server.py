@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import threading
+from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Callable, Iterator
 
 import viser
 from viser import _messages
+from viser._threadpool_exceptions import print_threadpool_errors
 
 from . import _viser_private as impl
 from .audio import AudioApi
@@ -36,6 +39,9 @@ class Viser4dServer(viser.ViserServer):
         self._timeline = TimelineStore(self.num_steps)
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
+        self._client_timestep_callbacks: list[
+            Callable[[ClientHandle, int], None | Awaitable[None]]
+        ] = []
         self._stop_event = threading.Event()
         self._controller = TimelineController(self, fps=fps)
         self._recorder = SceneRecorder(self, self._timeline)
@@ -109,6 +115,13 @@ class Viser4dServer(viser.ViserServer):
         """Register a callback for committed timestep changes."""
         self._controller.on_timestep_change(callback)
 
+    def on_client_timestep_change(
+        self,
+        callback: Callable[[ClientHandle, int], None | Awaitable[None]],
+    ) -> None:
+        """Register a callback for client-local timestep changes."""
+        self._client_timestep_callbacks.append(callback)
+
     @property
     def current_timestep(self) -> int:
         """Return the current discrete timestep."""
@@ -149,6 +162,17 @@ class Viser4dServer(viser.ViserServer):
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:
         with self._client_playbacks_lock:
             return list(self._client_playbacks.values())
+
+    def _dispatch_client_timestep_change(
+        self, client: ClientHandle, timestep: int
+    ) -> None:
+        for callback in list(self._client_timestep_callbacks):
+            if asyncio.iscoroutinefunction(callback):
+                self._event_loop.create_task(callback(client, timestep))
+                continue
+            self._thread_executor.submit(callback, client, timestep).add_done_callback(
+                print_threadpool_errors
+            )
 
     def _sync_client_playback_state(
         self,

@@ -97,6 +97,21 @@ class TimelineController:
         for callback in list(self._callbacks):
             callback(timestep)
 
+    def _advance_playback_timestep(self, timestep: int, *, loop: bool) -> None:
+        """Emit each discrete timestep crossed by forward playback."""
+        assert 0 <= timestep < self._server.num_steps
+        current_timestep = self._current_timestep
+        if timestep == current_timestep:
+            return
+        if loop and timestep < current_timestep:
+            for step in range(current_timestep + 1, self._server.num_steps):
+                self.set_current_timestep(step)
+            for step in range(0, timestep + 1):
+                self.set_current_timestep(step)
+            return
+        for step in range(current_timestep + 1, timestep + 1):
+            self.set_current_timestep(step)
+
     def _set_anchor(self, step: float, *, now: float | None = None) -> None:
         self._anchor_step = max(0.0, min(float(step), self._server.num_steps - 1))
         self._anchor_time = time.monotonic() if now is None else now
@@ -115,10 +130,12 @@ class TimelineController:
             should_sync_buttons = False
             with self._lock:
                 is_playing = self._is_playing
+                loop = self._loop
+                fps = self._fps
                 timestep = int(self._transport_step())
                 if (
                     is_playing
-                    and not self._loop
+                    and not loop
                     and timestep >= self._server.num_steps - 1
                 ):
                     timestep = self._server.num_steps - 1
@@ -132,8 +149,8 @@ class TimelineController:
             if should_sync_buttons:
                 self._server._sync_client_playback_state(
                     timestep=timestep,
-                    fps=self._fps,
-                    loop=self._loop,
+                    fps=fps,
+                    loop=loop,
                     is_playing=False,
                 )
-            self.set_current_timestep(timestep)
+            self._advance_playback_timestep(timestep, loop=loop)

@@ -62,8 +62,6 @@ export class TimelineRuntime {
   private rafId: number | null = null;
   private lastLocalSliderStep = -1;
   private lastSyncedStep = -1;
-  private lastSyncSentAt = 0;
-  private readonly maxTimestepSyncHz = 30;
   private readonly audio = new AudioRuntime(
     () => this.getTransportStep(),
     (event, payload) => debugState.push(event, payload),
@@ -334,7 +332,7 @@ export class TimelineRuntime {
     this.pushMessages([message]);
   }
 
-  private syncTimestepToServer(step: number, force = false): void {
+  private syncTimelineSlider(step: number, force = false): void {
     const clampedStep = Math.max(0, Math.min(this.config.numSteps - 1, step));
     if (
       this.config.timelineSliderUuid
@@ -349,24 +347,51 @@ export class TimelineRuntime {
         },
       ]);
     }
+  }
+
+  private sendTimestepToServer(step: number, force = false): void {
+    const clampedStep = Math.max(0, Math.min(this.config.numSteps - 1, step));
     if (!this.config.timestepSyncUuid) {
       return;
     }
-    const now = performance.now();
     if (!force && clampedStep === this.lastSyncedStep) {
       return;
     }
-    if (
-      !force
-      && this.playing
-      && this.config.fps > this.maxTimestepSyncHz
-      && now - this.lastSyncSentAt < 1000 / this.maxTimestepSyncHz
-    ) {
+    this.lastSyncedStep = clampedStep;
+    this.sendGuiUpdate(this.config.timestepSyncUuid, clampedStep);
+  }
+
+  private syncTimestepToServer(step: number, force = false): void {
+    this.syncTimelineSlider(step, force);
+    this.sendTimestepToServer(step, force);
+  }
+
+  private syncAdvancedTimesteps(
+    previousStep: number,
+    nextStep: number,
+    forceFinal = false,
+  ): void {
+    const previousDiscrete = Math.floor(previousStep);
+    const nextDiscrete = Math.floor(nextStep);
+    this.syncTimelineSlider(nextDiscrete, forceFinal);
+    if (nextDiscrete === previousDiscrete) {
+      if (forceFinal) {
+        this.sendTimestepToServer(nextDiscrete, true);
+      }
       return;
     }
-    this.lastSyncedStep = clampedStep;
-    this.lastSyncSentAt = now;
-    this.sendGuiUpdate(this.config.timestepSyncUuid, clampedStep);
+    if (nextDiscrete > previousDiscrete) {
+      for (let step = previousDiscrete + 1; step <= nextDiscrete; step += 1) {
+        this.sendTimestepToServer(step);
+      }
+      return;
+    }
+    for (let step = previousDiscrete + 1; step < this.config.numSteps; step += 1) {
+      this.sendTimestepToServer(step);
+    }
+    for (let step = 0; step <= nextDiscrete; step += 1) {
+      this.sendTimestepToServer(step);
+    }
   }
 
   private resetTimelineState(targetStep = 0): void {
@@ -444,24 +469,26 @@ export class TimelineRuntime {
     if (!this.playing) {
       return;
     }
+    const previousStep = this.currentStep;
     const next = this.getTransportStep(timestamp);
     if (next >= this.config.numSteps) {
       if (!this.config.loop) {
         this.currentStep = this.config.numSteps - 1;
         this.playing = false;
         this.audio.pause(this.currentStep, this.config.fps);
-        this.syncTimestepToServer(Math.floor(this.currentStep), true);
+        this.syncAdvancedTimesteps(previousStep, this.currentStep, true);
         return;
       }
       this.anchorTransport(0, timestamp);
       this.resetTimelineState();
       this.applyThrough(0);
       this.audio.play(0, this.config.fps);
+      this.syncAdvancedTimesteps(previousStep, 0, true);
     } else {
       this.currentStep = next;
       this.applyThrough(Math.floor(this.currentStep));
+      this.syncAdvancedTimesteps(previousStep, this.currentStep);
     }
-    this.syncTimestepToServer(Math.floor(this.currentStep));
     this.rafId = getWindow().requestAnimationFrame((nextTimestamp) =>
       this.tick(nextTimestamp),
     );

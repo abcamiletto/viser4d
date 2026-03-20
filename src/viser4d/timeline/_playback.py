@@ -236,6 +236,7 @@ class ClientPlaybackHandle:
                 should_sync_buttons = True
         if should_sync_buttons:
             self._sync_playback_buttons()
+        self._server._dispatch_client_timestep_change(self._client, timestep)
 
     def _set_current_timestep(self, timestep: int) -> None:
         assert 0 <= timestep < self._server.num_steps
