@@ -35,7 +35,7 @@ class AudioArrayPayload(TypedDict):
 class RuntimeConfig(TypedDict):
     numSteps: int
     fps: float
-    baseFps: float
+    timelineFps: float
     loop: bool
 
 

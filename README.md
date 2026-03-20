@@ -2,7 +2,7 @@
 
 viser4d is a small wrapper around `viser` that adds a time dimension. It records
 scene operations across timesteps, supports timeline-synced audio playback, and
-can seek or play them back.
+plays them back client-locally in each browser tab.
 
 ## Quickstart
 
@@ -14,7 +14,7 @@ pip install viser4d
 import numpy as np
 import viser4d
 
-server = viser4d.Viser4dServer(num_steps=10)
+server = viser4d.Viser4dServer(num_steps=10, fps=10)
 
 with server.at(0):
     points = np.random.uniform(-1.0, 1.0, size=(200, 3))
@@ -29,9 +29,26 @@ for i in range(1, 10):
         points = np.random.uniform(-1.0, 1.0, size=(200, 3))
         point_cloud.points = points
 
-server.play(fps=10, loop=True)
 server.sleep_forever()
 ```
+
+Open the viewer in your browser and use the built-in Playback controls to play,
+scrub, and step through the client-local timeline.
+
+## Timeline model
+
+- The built-in browser controls (`Play`, `Pause`, `Prev`, `Next`, and the
+  `Timestep` slider) are client-local. Different tabs can be on different
+  timesteps at the same time.
+- The `fps=` passed to `Viser4dServer(...)` defines the timeline step rate used
+  for audio timing and `.viser` export, and also serves as the initial client
+  playback speed.
+- `server.on_timestep_change(...)` fires whenever any client commits a new
+  discrete timestep and passes `(client, timestep)`. With multiple clients, it
+  is an aggregate event stream and may repeat timesteps or arrive out of order.
+- `server.play(...)` and `server.pause()` broadcast playback commands to the
+  clients that are connected right now. They do not create a shared server
+  clock.
 
 ## Streaming ingest
 
@@ -43,7 +60,7 @@ import numpy as np
 import viser4d
 
 num_steps = 180
-server = viser4d.Viser4dServer(num_steps=num_steps)
+server = viser4d.Viser4dServer(num_steps=num_steps, fps=30)
 
 def get_next_points() -> np.ndarray:
     # Replace with your real sensor/network/pipeline frame source.
@@ -59,46 +76,15 @@ for t in range(1, num_steps):
     points = get_next_points()
     with server.at(t):
         point_cloud.points = points
-    server.seek(t)  # optional: keep view synced to latest streamed frame
 
-server.play(fps=30, loop=True)
 server.sleep_forever()
 ```
 
-## Shared timestep callbacks
+## Timestep callbacks
 
 If you have your own visualization logic and just want to use viser4d's timeline
-infrastructure (playback controls, seeking, scrubbing), you can register a
-callback that fires whenever the shared server timestep changes:
-
-```python
-import viser4d
-
-server = viser4d.Viser4dServer(num_steps=100)
-
-def on_timestep(t: int) -> None:
-    # Update your custom visualizations here
-    update_video_frames(t)
-    update_body_meshes(t)
-    update_3d_keypoints(t)
-
-server.on_timestep_change(on_timestep)
-server.play(fps=30, loop=True)
-server.sleep_forever()
-```
-
-Callbacks are invoked after viser4d applies its own recorded state, so you can
-mix both approaches - record some operations with `at(t)` and handle others via
-callbacks.
-
-`server.on_timestep_change(...)` follows the shared server transport driven by
-`server.seek(...)` and `server.play(...)`.
-
-## Client-local timestep callbacks
-
-The built-in playback controls shown in each browser tab are client-local. If
-you want lazy updates that follow a specific client's Play button, scrubbing, or
-step controls, register a client callback instead:
+infrastructure, you can register a callback that fires whenever any connected
+client commits a new discrete timestep:
 
 ```python
 import viser
@@ -106,16 +92,27 @@ import viser4d
 
 server = viser4d.Viser4dServer(num_steps=100)
 
-def on_client_timestep(client: viser.ClientHandle, t: int) -> None:
+def on_timestep(client: viser.ClientHandle, t: int) -> None:
     update_video_frame(client.scene, t)
     update_client_overlays(client.scene, t)
 
-server.on_client_timestep_change(on_client_timestep)
+server.on_timestep_change(on_timestep)
 server.sleep_forever()
 ```
 
-These callbacks fire once per client after that client's timeline runtime
-commits a new discrete timestep.
+With multiple clients, this callback is aggregate: if two tabs both visit
+timestep `3`, it will fire twice, once for each client.
+
+## Server playback commands
+
+`server.play(...)` starts each connected client from that client's own current
+timestep. Passing `fps=...` to `server.play(...)` also updates the default
+client playback speed for later `play()` calls and future clients.
+`server.pause()` pauses each connected client wherever it currently is.
+`server.set_fps(...)` updates the same default playback speed without starting
+playback. Neither method changes the timeline step rate used for audio timing
+or export; set that with `fps=` when you construct the server. New clients
+always start paused at timestep `0`.
 
 ## Serialize `.viser` recordings
 
@@ -173,7 +170,8 @@ scene.add_frame(...)                   scene.add_frame(...)
 
 - **Inside `at(t)`**: Operations are recorded to a timeline, not executed.
 - **Outside `at(t)`**: Operations forward directly to viser's live scene.
-- **Playback**: `seek(t)` or `play()` applies recorded state to the live scene.
+- **Client playback**: Each browser tab owns its own transport and playback state.
+- **Timestep callbacks**: `on_timestep_change(...)` aggregates committed client steps and passes the source client.
 - **Audio**: Add timeline-synced tracks with `server.audio.add_track(...)`.
 
 See `examples/` for more.

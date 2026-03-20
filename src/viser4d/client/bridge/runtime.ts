@@ -48,7 +48,7 @@ export class TimelineRuntime {
   private config: RuntimeConfig = {
     numSteps: 1,
     fps: 30,
-    baseFps: null,
+    timelineFps: null,
     loop: false,
     timelineSliderUuid: null,
     timestepSyncUuid: null,
@@ -282,10 +282,10 @@ export class TimelineRuntime {
 
   configure(config: Partial<RuntimeConfig>): void {
     this.config = { ...this.config, ...config };
-    if (!this.config.baseFps) {
-      this.config.baseFps = this.config.fps;
+    if (!this.config.timelineFps) {
+      this.config.timelineFps = this.config.fps;
     }
-    this.audio.setStepRate(this.config.baseFps);
+    this.audio.setStepRate(this.config.timelineFps);
     while (this.stepMessages.length < this.config.numSteps) {
       this.stepMessages.push([]);
     }

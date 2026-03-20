@@ -34,7 +34,7 @@ rng = np.random.default_rng(args.seed)
 num_objects = max(1, args.num_objects)
 num_steps = max(2, args.num_steps)
 
-server = viser4d.Viser4dServer(num_steps=num_steps, port=args.port)
+server = viser4d.Viser4dServer(num_steps=num_steps, fps=args.fps, port=args.port)
 server.scene.add_grid(
     "/ground", width=12.0, height=12.0, cell_size=0.5, cell_thickness=1
 )
@@ -89,5 +89,5 @@ for step in range(num_steps):
                     0.2 * np.sin(2.0 * t + i * 0.2),
                 )
 
-server.play(fps=args.fps, loop=True)
+# Open the viewer and use the Playback controls in the GUI.
 server.sleep_forever()

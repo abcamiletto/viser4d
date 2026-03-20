@@ -28,7 +28,7 @@ def client_runtime_config_payload(
     *,
     num_steps: int,
     fps: float,
-    base_fps: float,
+    timeline_fps: float,
     loop: bool,
     timeline_slider_uuid: str,
     timestep_sync_uuid: str,
@@ -36,7 +36,7 @@ def client_runtime_config_payload(
     return ClientRuntimeConfig(
         numSteps=num_steps,
         fps=fps,
-        baseFps=base_fps,
+        timelineFps=timeline_fps,
         loop=loop,
         timelineSliderUuid=timeline_slider_uuid,
         timestepSyncUuid=timestep_sync_uuid,

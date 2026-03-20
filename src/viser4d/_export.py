@@ -51,7 +51,7 @@ class ExportBuilder:
         # Timeline-managed nodes are reconstructed from their saved baseline plus step diffs.
         for baseline in self._timeline.iter_baselines():
             recording.extend((0.0, message) for message in baseline)
-        fps = max(self._server._base_fps, 1.0)
+        fps = max(self._server._timeline_fps, 1.0)
         for step in range(end + 1):
             time = 0.0 if step <= start else (step - start) / fps
             step_state = self._timeline.step(step)

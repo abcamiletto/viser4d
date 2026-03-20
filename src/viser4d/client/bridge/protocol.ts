@@ -3,7 +3,7 @@ import type { RuntimeMessage, RuntimeValue } from "../binary";
 export type RuntimeConfig = {
   numSteps: number;
   fps: number;
-  baseFps: number | null;
+  timelineFps: number | null;
   loop: boolean;
   timelineSliderUuid: string | null;
   timestepSyncUuid: string | null;

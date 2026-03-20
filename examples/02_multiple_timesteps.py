@@ -9,7 +9,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-server = viser4d.Viser4dServer(num_steps=4, port=args.port)
+server = viser4d.Viser4dServer(num_steps=4, fps=1, port=args.port)
 
 for t in range(4):
     with server.at(t):
@@ -19,5 +19,5 @@ for t in range(4):
             colors=(0, 200, 255),
         )
 
-server.play(fps=1, loop=True)
+# Open the viewer and use the Playback controls in the GUI.
 server.sleep_forever()

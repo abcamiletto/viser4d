@@ -30,5 +30,5 @@ for i in range(60):
         frustum.position = position
         frustum.wxyz = wxyz
 
-server.play(fps=30, loop=True)
+# Open the viewer and use the Playback controls in the GUI.
 server.sleep_forever()

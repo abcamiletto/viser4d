@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import contextlib
+import inspect
 import threading
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Callable, Iterator
 
 import viser
 from viser import _messages
-from viser._threadpool_exceptions import print_threadpool_errors
 
 from . import _viser_private as impl
 from .audio import AudioApi
@@ -18,7 +17,6 @@ from ._runtime import make_runtime_message, runtime_source
 from .timeline import (
     ClientPlaybackHandle,
     SceneRecorder,
-    TimelineController,
     TimelineStore,
 )
 
@@ -36,14 +34,15 @@ class Viser4dServer(viser.ViserServer):
         super().__init__(**kwargs)
 
         self.num_steps = num_steps
+        self._fps = float(fps)
+        self._timeline_fps = float(fps)
         self._timeline = TimelineStore(self.num_steps)
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
-        self._client_timestep_callbacks: list[
+        self._timestep_callbacks: list[
             Callable[[ClientHandle, int], None | Awaitable[None]]
         ] = []
         self._stop_event = threading.Event()
-        self._controller = TimelineController(self, fps=fps)
         self._recorder = SceneRecorder(self, self._timeline)
         self._export_builder = ExportBuilder(self, self._timeline)
         self.audio = AudioApi(self)
@@ -73,59 +72,38 @@ class Viser4dServer(viser.ViserServer):
 
     @property
     def fps(self) -> float:
-        """Current playback speed in frames per second."""
-        return self._controller.fps
+        """Default client playback speed for connected and future clients."""
+        return self._fps
 
     def play(self, fps: float | None = None, loop: bool = False) -> None:
-        """Start timeline playback at the current FPS and optionally loop."""
-        current_fps = self.fps
+        """Ask connected clients to play from their own current timesteps."""
         if fps is not None:
-            current_fps = float(fps)
-        self._controller.play(current_fps, loop=loop)
+            self._fps = float(fps)
         for playback in self._client_playback_values():
-            playback.play(current_fps, loop=loop)
+            playback.play(self._fps, loop=loop)
 
     def pause(self) -> None:
-        """Pause timeline playback for all connected clients."""
-        self._controller.pause()
+        """Ask connected clients to pause at their current timesteps."""
         for playback in self._client_playback_values():
             playback.pause()
 
-    def seek(self, t: int) -> None:
-        """Jump the timeline to timestep ``t``."""
-        self._controller.seek(t)
-        timestep = self._controller.current_timestep
-        for playback in self._client_playback_values():
-            playback.seek(timestep)
-
     def refresh(self) -> None:
-        """Redraw the current timestep on all connected clients while paused."""
-        if self._is_playing:
-            return
+        """Redraw the current timestep on all connected clients."""
         for playback in self._client_playback_values():
             playback.refresh()
 
     def set_fps(self, fps: float) -> None:
-        """Update playback speed without changing the current timestep."""
-        self._controller.set_fps(fps)
+        """Update client playback speed without changing timeline cadence."""
+        self._fps = float(fps)
         for playback in self._client_playback_values():
-            playback.set_fps(self._controller.fps)
+            playback.set_fps(self._fps)
 
-    def on_timestep_change(self, callback: Callable[[int], None]) -> None:
-        """Register a callback for committed timestep changes."""
-        self._controller.on_timestep_change(callback)
-
-    def on_client_timestep_change(
+    def on_timestep_change(
         self,
         callback: Callable[[ClientHandle, int], None | Awaitable[None]],
     ) -> None:
-        """Register a callback for client-local timestep changes."""
-        self._client_timestep_callbacks.append(callback)
-
-    @property
-    def current_timestep(self) -> int:
-        """Return the current discrete timestep."""
-        return self._controller.current_timestep
+        """Register a callback for any committed client timestep change."""
+        self._timestep_callbacks.append(callback)
 
     def sleep_forever(self) -> None:
         """Block until the server is stopped."""
@@ -145,9 +123,8 @@ class Viser4dServer(viser.ViserServer):
         )
 
     def stop(self) -> None:
-        """Stop the predictor thread and shut down the underlying viser server."""
+        """Shut down the underlying viser server."""
         self._stop_event.set()
-        self._controller.stop()
         super().stop()
 
     def _dispatch_audio_update(self, message: _messages.Message) -> None:
@@ -163,49 +140,10 @@ class Viser4dServer(viser.ViserServer):
         with self._client_playbacks_lock:
             return list(self._client_playbacks.values())
 
-    def _dispatch_client_timestep_change(
+    def _dispatch_timestep_change(
         self, client: ClientHandle, timestep: int
     ) -> None:
-        for callback in list(self._client_timestep_callbacks):
-            if asyncio.iscoroutinefunction(callback):
-                self._event_loop.create_task(callback(client, timestep))
-                continue
-            self._thread_executor.submit(callback, client, timestep).add_done_callback(
-                print_threadpool_errors
-            )
-
-    def _sync_client_playback_state(
-        self,
-        *,
-        timestep: int | None = None,
-        fps: float | None = None,
-        loop: bool | None = None,
-        is_playing: bool | None = None,
-    ) -> None:
-        for playback in self._client_playback_values():
-            playback.sync_state(
-                timestep=timestep,
-                fps=fps,
-                loop=loop,
-                is_playing=is_playing,
-            )
-
-    @property
-    def _fps(self) -> float:
-        return self._controller.fps
-
-    @property
-    def _base_fps(self) -> float:
-        return self._controller.base_fps
-
-    @property
-    def _loop(self) -> bool:
-        return self._controller.loop
-
-    @property
-    def _is_playing(self) -> bool:
-        return self._controller.is_playing
-
-    @property
-    def _current_timestep(self) -> int:
-        return self.current_timestep
+        for callback in list(self._timestep_callbacks):
+            maybe_awaitable = callback(client, timestep)
+            if inspect.iscoroutine(maybe_awaitable):
+                self._event_loop.create_task(maybe_awaitable)

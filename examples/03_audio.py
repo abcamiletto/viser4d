@@ -72,5 +72,5 @@ for step in range(NUM_STEPS):
             point_size=0.05,
         )
 
-server.play(fps=FPS, loop=True)
+# Open the viewer and use the Playback controls in the GUI.
 server.sleep_forever()

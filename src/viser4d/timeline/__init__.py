@@ -1,4 +1,3 @@
-from ._controller import TimelineController
 from ._playback import ClientPlaybackHandle
 from ._recording import SceneRecorder
 from ._store import (
@@ -19,7 +18,6 @@ from ._store import (
 __all__ = [
     "ClientPlaybackHandle",
     "SceneRecorder",
-    "TimelineController",
     "TimelineRecorder",
     "TimelineStep",
     "TimelineStore",

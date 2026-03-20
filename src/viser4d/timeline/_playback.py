@@ -26,10 +26,10 @@ class ClientPlaybackHandle:
     def __init__(self, server: Viser4dServer, client: ClientHandle) -> None:
         self._server = server
         self._client = client
-        self._fps = server._fps
-        self._loop = server._loop
-        self._is_playing = server._is_playing
-        self._current_timestep = server._current_timestep
+        self._fps = server.fps
+        self._loop = False
+        self._is_playing = False
+        self._current_timestep = 0
         self._syncing_fps_slider = False
         self._syncing_timestep_slider = False
         self._lock = threading.RLock()
@@ -111,10 +111,8 @@ class ClientPlaybackHandle:
 
         self.sync_runtime_config()
         self._sync_playback_buttons()
-        # Late-joining clients need the current scene state before playback starts.
+        # New clients need the initial timeline scene state before playback starts.
         self.seek(self._current_timestep)
-        if self._is_playing:
-            self.play(loop=self._loop)
 
     @property
     def fps(self) -> float:
@@ -183,7 +181,7 @@ class ClientPlaybackHandle:
             client_runtime_config_payload(
                 num_steps=self._server.num_steps,
                 fps=fps,
-                base_fps=self._server._base_fps,
+                timeline_fps=self._server._timeline_fps,
                 loop=loop,
                 timeline_slider_uuid=impl.gui_uuid(self._timeline_slider),
                 timestep_sync_uuid=impl.gui_uuid(self._timestep_sync),
@@ -191,31 +189,6 @@ class ClientPlaybackHandle:
         )
         self._timeline_slider.max = max(self._server.num_steps - 1, 0)
         self._timestep_sync.max = max(self._server.num_steps - 1, 0)
-
-    def sync_state(
-        self,
-        *,
-        timestep: int | None = None,
-        fps: float | None = None,
-        loop: bool | None = None,
-        is_playing: bool | None = None,
-    ) -> None:
-        """Mirror server-side transport state into this client's controls."""
-        with self._lock:
-            if timestep is not None:
-                assert 0 <= timestep < self._server.num_steps
-                self._current_timestep = timestep
-            if fps is not None:
-                self._fps = float(fps)
-            if loop is not None:
-                self._loop = bool(loop)
-            if is_playing is not None:
-                self._is_playing = bool(is_playing)
-            current_timestep = self._current_timestep
-            current_fps = self._fps
-        self._set_current_timestep(current_timestep)
-        self._set_fps_slider_value(current_fps)
-        self._sync_playback_buttons()
 
     def apply_theme_colors(self, brand_color: tuple[int, int, int] | None) -> None:
         """Apply the current theme color to the playback buttons."""
@@ -236,7 +209,7 @@ class ClientPlaybackHandle:
                 should_sync_buttons = True
         if should_sync_buttons:
             self._sync_playback_buttons()
-        self._server._dispatch_client_timestep_change(self._client, timestep)
+        self._server._dispatch_timestep_change(self._client, timestep)
 
     def _set_current_timestep(self, timestep: int) -> None:
         assert 0 <= timestep < self._server.num_steps

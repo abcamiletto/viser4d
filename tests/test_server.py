@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import viser4d
-from viser4d.timeline import ClientPlaybackHandle, TimelineController
+from viser4d.timeline import ClientPlaybackHandle
 
 
 def test_audio_requires_timestep_context() -> None:
@@ -25,12 +25,9 @@ def test_num_steps_must_be_positive() -> None:
         viser4d.Viser4dServer(num_steps=0, port=0, verbose=False)
 
 
-def test_timeline_operations_serialize_and_seek() -> None:
+def test_timeline_operations_serialize_and_playback_commands() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
-        seen_timesteps: list[int] = []
-        server.on_timestep_change(seen_timesteps.append)
-
         with server.at(0):
             frame = server.scene.add_frame("/frame")
             audio = server.audio.add_track(
@@ -45,9 +42,7 @@ def test_timeline_operations_serialize_and_seek() -> None:
         server.set_fps(24.0)
         server.play()
         server.pause()
-        server.seek(2)
 
-        assert seen_timesteps[-1] == 2
         assert server.serialize()
         assert server.serialize(start_timestep=1, end_timestep=1)
     finally:
@@ -63,45 +58,30 @@ def test_serialize_rejects_invalid_timestep_range() -> None:
         server.stop()
 
 
-def test_current_timestep_is_public() -> None:
+def test_timestep_change_callbacks_follow_client_events() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
-    try:
-        assert server.current_timestep == 0
-        server.seek(2)
-        assert server.current_timestep == 2
-    finally:
-        server.stop()
-
-
-def test_on_client_timestep_change_dispatches_client_and_step() -> None:
-    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
-    callback_called = threading.Event()
-    seen: list[tuple[int, int]] = []
+    seen_events: list[tuple[int, int]] = []
     client = SimpleNamespace(client_id=7)
 
     try:
-        def _on_client_timestep(client_handle: object, timestep: int) -> None:
-            seen.append((getattr(client_handle, "client_id"), timestep))
-            callback_called.set()
+        def _on_timestep(client_handle: object, timestep: int) -> None:
+            seen_events.append((getattr(client_handle, "client_id"), timestep))
 
-        server.on_client_timestep_change(_on_client_timestep)
-        server._dispatch_client_timestep_change(client, 2)  # type: ignore[arg-type]
+        server.on_timestep_change(_on_timestep)
+        server._dispatch_timestep_change(client, 2)  # type: ignore[arg-type]
 
-        assert callback_called.wait(timeout=1.0)
-        assert seen == [(7, 2)]
+        assert seen_events == [(7, 2)]
     finally:
         server.stop()
 
 
-def test_client_playback_sync_dispatches_server_client_timestep_callback() -> None:
+def test_client_playback_sync_dispatches_server_timestep_callback() -> None:
     seen: list[tuple[int, int]] = []
 
     class _DummyServer:
         num_steps = 4
 
-        def _dispatch_client_timestep_change(
-            self, client: object, timestep: int
-        ) -> None:
+        def _dispatch_timestep_change(self, client: object, timestep: int) -> None:
             seen.append((getattr(client, "client_id"), timestep))
 
     playback = ClientPlaybackHandle.__new__(ClientPlaybackHandle)
@@ -119,44 +99,55 @@ def test_client_playback_sync_dispatches_server_client_timestep_callback() -> No
     assert seen == [(11, 2)]
 
 
-def test_timeline_controller_emits_each_crossed_playback_step() -> None:
-    class _DummyServer:
-        num_steps = 5
+def test_server_broadcast_commands_only_touch_connected_clients() -> None:
+    server = viser4d.Viser4dServer(num_steps=4, port=0, verbose=False)
 
-        def _sync_client_playback_state(self, **_: object) -> None:
-            return
+    class _PlaybackStub:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
 
-    controller = TimelineController(_DummyServer(), fps=30.0)  # type: ignore[arg-type]
+        def play(self, fps: float, loop: bool = False) -> None:
+            self.calls.append(("play", (fps, loop)))
+
+        def pause(self) -> None:
+            self.calls.append(("pause", None))
+
+        def refresh(self) -> None:
+            self.calls.append(("refresh", None))
+
+        def set_fps(self, fps: float) -> None:
+            self.calls.append(("set_fps", fps))
+
     try:
-        seen: list[int] = []
-        controller.on_timestep_change(seen.append)
+        first = _PlaybackStub()
+        second = _PlaybackStub()
+        server._client_playbacks = {1: first, 2: second}
 
-        controller._advance_playback_timestep(3, loop=False)
+        assert server.fps == 30.0
+        assert server._timeline_fps == 30.0
+        server.play(fps=12.0, loop=True)
+        assert server.fps == 12.0
+        assert server._timeline_fps == 30.0
+        server.pause()
+        server.play()
+        server.set_fps(24.0)
+        assert server.fps == 24.0
+        assert server._timeline_fps == 30.0
+        server.pause()
+        server.refresh()
 
-        assert seen == [1, 2, 3]
+        expected = [
+            ("play", (12.0, True)),
+            ("pause", None),
+            ("play", (12.0, False)),
+            ("set_fps", 24.0),
+            ("pause", None),
+            ("refresh", None),
+        ]
+        assert first.calls == expected
+        assert second.calls == expected
     finally:
-        controller.stop()
-
-
-def test_timeline_controller_emits_wrapped_playback_steps() -> None:
-    class _DummyServer:
-        num_steps = 5
-
-        def _sync_client_playback_state(self, **_: object) -> None:
-            return
-
-    controller = TimelineController(_DummyServer(), fps=30.0)  # type: ignore[arg-type]
-    try:
-        seen: list[int] = []
-        controller.on_timestep_change(seen.append)
-
-        controller.set_current_timestep(3)
-        seen.clear()
-        controller._advance_playback_timestep(1, loop=True)
-
-        assert seen == [4, 0, 1]
-    finally:
-        controller.stop()
+        server.stop()
 
 
 def test_at_rejects_updates_to_static_scene_nodes() -> None:

@@ -9,7 +9,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-server = viser4d.Viser4dServer(num_steps=10, port=args.port)
+server = viser4d.Viser4dServer(num_steps=10, fps=10, port=args.port)
 
 server.scene.add_frame("/origin", axes_length=0.25)
 server.scene.add_grid("/ground", width=10.0, height=10.0)
@@ -27,5 +27,5 @@ for i in range(10):
         else:
             point_cloud.points = points
 
-server.play(fps=10, loop=True)
+# Open the viewer and use the Playback controls in the GUI.
 server.sleep_forever()
