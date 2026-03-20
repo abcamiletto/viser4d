@@ -140,9 +140,7 @@ class Viser4dServer(viser.ViserServer):
         with self._client_playbacks_lock:
             return list(self._client_playbacks.values())
 
-    def _dispatch_timestep_change(
-        self, client: ClientHandle, timestep: int
-    ) -> None:
+    def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
             maybe_awaitable = callback(client, timestep)
             if inspect.iscoroutine(maybe_awaitable):

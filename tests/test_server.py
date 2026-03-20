@@ -1,6 +1,7 @@
 import threading
 import time
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import pytest
@@ -64,6 +65,7 @@ def test_timestep_change_callbacks_follow_client_events() -> None:
     client = SimpleNamespace(client_id=7)
 
     try:
+
         def _on_timestep(client_handle: object, timestep: int) -> None:
             seen_events.append((getattr(client_handle, "client_id"), timestep))
 
@@ -85,13 +87,13 @@ def test_client_playback_sync_dispatches_server_timestep_callback() -> None:
             seen.append((getattr(client, "client_id"), timestep))
 
     playback = ClientPlaybackHandle.__new__(ClientPlaybackHandle)
-    playback._server = _DummyServer()  # type: ignore[assignment]
-    playback._client = SimpleNamespace(client_id=11)  # type: ignore[assignment]
-    playback._lock = threading.RLock()  # type: ignore[assignment]
-    playback._current_timestep = 0  # type: ignore[assignment]
-    playback._is_playing = False  # type: ignore[assignment]
-    playback._loop = False  # type: ignore[assignment]
-    playback._sync_playback_buttons = lambda: None  # type: ignore[assignment]
+    playback._server = _DummyServer()
+    playback._client = SimpleNamespace(client_id=11)
+    playback._lock = threading.RLock()
+    playback._current_timestep = 0
+    playback._is_playing = False
+    playback._loop = False
+    playback._sync_playback_buttons = lambda: None
 
     playback._sync_from_client(2)
 
@@ -121,7 +123,10 @@ def test_server_broadcast_commands_only_touch_connected_clients() -> None:
     try:
         first = _PlaybackStub()
         second = _PlaybackStub()
-        server._client_playbacks = {1: first, 2: second}
+        server._client_playbacks = cast(
+            dict[int, ClientPlaybackHandle],
+            {1: first, 2: second},
+        )
 
         assert server.fps == 30.0
         assert server._timeline_fps == 30.0
