@@ -77,14 +77,36 @@ def test_timestep_change_callbacks_follow_client_events() -> None:
         server.stop()
 
 
-def test_client_playback_sync_dispatches_server_timestep_callback() -> None:
-    seen: list[tuple[int, int]] = []
+def test_playback_change_callbacks_follow_client_events() -> None:
+    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
+    seen_events: list[tuple[int, bool]] = []
+    client = SimpleNamespace(client_id=7)
+
+    try:
+
+        def _on_playback(client_handle: object, is_playing: bool) -> None:
+            seen_events.append((getattr(client_handle, "client_id"), is_playing))
+
+        server.on_playback_change(_on_playback)
+        server._dispatch_playback_change(client, True)  # type: ignore[arg-type]
+
+        assert seen_events == [(7, True)]
+    finally:
+        server.stop()
+
+
+def test_client_playback_sync_dispatches_server_callbacks() -> None:
+    seen_timesteps: list[tuple[int, int]] = []
+    seen_playback: list[tuple[int, bool]] = []
 
     class _DummyServer:
         num_steps = 4
 
         def _dispatch_timestep_change(self, client: object, timestep: int) -> None:
-            seen.append((getattr(client, "client_id"), timestep))
+            seen_timesteps.append((getattr(client, "client_id"), timestep))
+
+        def _dispatch_playback_change(self, client: object, is_playing: bool) -> None:
+            seen_playback.append((getattr(client, "client_id"), is_playing))
 
     playback = ClientPlaybackHandle.__new__(ClientPlaybackHandle)
     playback._server = _DummyServer()
@@ -94,10 +116,53 @@ def test_client_playback_sync_dispatches_server_timestep_callback() -> None:
     playback._is_playing = False
     playback._loop = False
 
+    playback._sync_playback_from_client(True)
+    playback._sync_playback_from_client(True)
     playback._sync_from_client(2)
+    playback._sync_playback_from_client(False)
 
     assert playback.current_timestep == 2
-    assert seen == [(11, 2)]
+    assert playback.is_playing is False
+    assert seen_timesteps == [(11, 2)]
+    assert seen_playback == [(11, True), (11, False)]
+
+
+def test_playback_state_tracks_browser_reports_not_commands() -> None:
+    sent_calls: list[tuple[str, object]] = []
+    seen_playback: list[tuple[int, bool]] = []
+
+    class _DummyServer:
+        def _dispatch_playback_change(self, client: object, is_playing: bool) -> None:
+            seen_playback.append((getattr(client, "client_id"), is_playing))
+
+    playback = ClientPlaybackHandle.__new__(ClientPlaybackHandle)
+    playback._server = _DummyServer()
+    playback._client = SimpleNamespace(client_id=11)
+    playback._lock = threading.RLock()
+    playback._fps = 30.0
+    playback._loop = False
+    playback._is_playing = False
+    playback._set_fps_slider_value = lambda fps: None
+    playback._send_runtime_call = lambda method, payload: sent_calls.append(
+        (method, payload)
+    )
+
+    playback.play()
+    assert playback.is_playing is False
+
+    playback._sync_playback_from_client(True)
+    assert playback.is_playing is True
+
+    playback.pause()
+    assert playback.is_playing is True
+
+    playback._sync_playback_from_client(False)
+    assert playback.is_playing is False
+    assert sent_calls == [
+        ("play", {"fps": 30.0, "loop": False}),
+        ("pause", {}),
+    ]
+    assert seen_playback == [(11, True), (11, False)]
 
 
 def test_server_broadcast_commands_only_touch_connected_clients() -> None:
@@ -150,6 +215,22 @@ def test_server_broadcast_commands_only_touch_connected_clients() -> None:
         ]
         assert first.calls == expected
         assert second.calls == expected
+    finally:
+        server.stop()
+
+
+def test_server_exposes_client_playbacks() -> None:
+    server = viser4d.Viser4dServer(num_steps=4, port=0, verbose=False)
+
+    try:
+        first = cast(ClientPlaybackHandle, SimpleNamespace(is_playing=True))
+        second = cast(ClientPlaybackHandle, SimpleNamespace(is_playing=False))
+        server._client_playbacks = {1: first, 2: second}
+
+        playbacks = server.get_client_playbacks()
+
+        assert playbacks == {1: first, 2: second}
+        assert playbacks is not server._client_playbacks
     finally:
         server.stop()
 

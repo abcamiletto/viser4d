@@ -47,6 +47,9 @@ scrub, and step through the client-local timeline.
 - `server.on_timestep_change(...)` fires whenever any client commits a new
   discrete timestep and passes `(client, timestep)`. With multiple clients, it
   is an aggregate event stream and may repeat timesteps or arrive out of order.
+- `server.on_playback_change(...)` fires whenever a client reports that its
+  built-in transport changed between playing and paused, and passes
+  `(client, is_playing)`.
 - `server.play(...)` and `server.pause()` broadcast playback commands to the
   clients that are connected right now. They do not create a shared server
   clock.
@@ -103,6 +106,31 @@ server.sleep_forever()
 
 With multiple clients, this callback is aggregate: if two tabs both visit
 timestep `3`, it will fire twice, once for each client.
+
+## Playback state callbacks
+
+If you need to know when a client starts or stops playback, use the playback
+callback and the per-client playback handles:
+
+```python
+import viser
+import viser4d
+
+server = viser4d.Viser4dServer(num_steps=100)
+
+def on_playback_change(client: viser.ClientHandle, is_playing: bool) -> None:
+    print(client.client_id, is_playing)
+
+server.on_playback_change(on_playback_change)
+
+# Snapshot of connected playback handles keyed by client id.
+for client_id, playback in server.get_client_playbacks().items():
+    print(client_id, playback.is_playing, playback.current_timestep)
+```
+
+`ClientPlaybackHandle.is_playing` reflects the last play/pause state reported by
+that browser tab. `server.play(...)` and `server.pause()` send commands, but the
+handle state only changes once the client reports the result back.
 
 ## Server playback commands
 
@@ -173,6 +201,7 @@ scene.add_frame(...)                   scene.add_frame(...)
 - **Outside `at(t)`**: Operations forward directly to viser's live scene.
 - **Client playback**: Each browser tab owns its own transport and playback state.
 - **Timestep callbacks**: `on_timestep_change(...)` aggregates committed client steps and passes the source client.
+- **Playback callbacks**: `on_playback_change(...)` reports per-client play/pause transitions.
 - **Audio**: Add timeline-synced tracks with `server.audio.add_track(...)`.
 
 See `examples/` for more.

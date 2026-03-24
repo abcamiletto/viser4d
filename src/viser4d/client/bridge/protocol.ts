@@ -10,6 +10,7 @@ export type RuntimeConfig = {
   stepButtonsUuid: string | null;
   playButtonUuid: string | null;
   pauseButtonUuid: string | null;
+  playbackStateSyncUuid: string | null;
   timestepSyncUuid: string | null;
 };
 

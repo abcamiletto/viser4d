@@ -57,6 +57,7 @@ export class TimelineRuntime {
     stepButtonsUuid: null,
     playButtonUuid: null,
     pauseButtonUuid: null,
+    playbackStateSyncUuid: null,
     timestepSyncUuid: null,
   };
   private timelineNodeNames = new Set<string>();
@@ -294,7 +295,7 @@ export class TimelineRuntime {
     this.getViewer().mutable.current.messageQueue.push(...messages);
   }
 
-  private sendGuiUpdate(uuid: string, value: number): void {
+  private sendGuiUpdate(uuid: string, value: RuntimeValue): void {
     this.getViewer().mutable.current.sendMessage({
       type: "GuiUpdateMessage",
       uuid,
@@ -449,6 +450,12 @@ export class TimelineRuntime {
     this.sendTimestepToServer(step, force);
   }
 
+  private sendPlaybackStateToServer(isPlaying: boolean): void {
+    if (this.config.playbackStateSyncUuid) {
+      this.sendGuiUpdate(this.config.playbackStateSyncUuid, isPlaying);
+    }
+  }
+
   private syncAdvancedTimesteps(
     previousStep: number,
     nextStep: number,
@@ -560,6 +567,7 @@ export class TimelineRuntime {
         this.playing = false;
         this.audio.pause(this.currentStep, this.config.fps);
         this.syncAdvancedTimesteps(previousStep, this.currentStep, true);
+        this.sendPlaybackStateToServer(false);
         this.syncPlaybackButtons();
         return;
       }
@@ -588,6 +596,7 @@ export class TimelineRuntime {
     if (this.rafId !== null) {
       getWindow().cancelAnimationFrame(this.rafId);
     }
+    this.sendPlaybackStateToServer(true);
     this.syncPlaybackButtons();
     this.rafId = getWindow().requestAnimationFrame((timestamp) =>
       this.tick(timestamp),
@@ -611,6 +620,7 @@ export class TimelineRuntime {
       this.rafId = null;
     }
     this.audio.pause(step, this.config.fps);
+    this.sendPlaybackStateToServer(false);
     this.syncTimestepToServer(Math.floor(this.currentStep), true);
     this.syncPlaybackButtons();
   }

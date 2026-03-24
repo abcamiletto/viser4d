@@ -45,6 +45,7 @@ class ClientRuntimeConfig(RuntimeConfig):
     stepButtonsUuid: str
     playButtonUuid: str
     pauseButtonUuid: str
+    playbackStateSyncUuid: str
     timestepSyncUuid: str
 
 

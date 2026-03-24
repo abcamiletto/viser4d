@@ -35,6 +35,7 @@ def client_runtime_config_payload(
     step_buttons_uuid: str,
     play_button_uuid: str,
     pause_button_uuid: str,
+    playback_state_sync_uuid: str,
     timestep_sync_uuid: str,
 ) -> ClientRuntimeConfig:
     return ClientRuntimeConfig(
@@ -47,6 +48,7 @@ def client_runtime_config_payload(
         stepButtonsUuid=step_buttons_uuid,
         playButtonUuid=play_button_uuid,
         pauseButtonUuid=pause_button_uuid,
+        playbackStateSyncUuid=playback_state_sync_uuid,
         timestepSyncUuid=timestep_sync_uuid,
     )
 

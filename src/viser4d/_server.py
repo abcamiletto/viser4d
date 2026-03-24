@@ -42,6 +42,9 @@ class Viser4dServer(viser.ViserServer):
         self._timestep_callbacks: list[
             Callable[[ClientHandle, int], None | Awaitable[None]]
         ] = []
+        self._playback_callbacks: list[
+            Callable[[ClientHandle, bool], None | Awaitable[None]]
+        ] = []
         self._stop_event = threading.Event()
         self._recorder = SceneRecorder(self, self._timeline)
         self._export_builder = ExportBuilder(self, self._timeline)
@@ -105,6 +108,18 @@ class Viser4dServer(viser.ViserServer):
         """Register a callback for any committed client timestep change."""
         self._timestep_callbacks.append(callback)
 
+    def on_playback_change(
+        self,
+        callback: Callable[[ClientHandle, bool], None | Awaitable[None]],
+    ) -> None:
+        """Register a callback for client play/pause state changes."""
+        self._playback_callbacks.append(callback)
+
+    def get_client_playbacks(self) -> dict[int, ClientPlaybackHandle]:
+        """Return a copy of the connected client playback handles."""
+        with self._client_playbacks_lock:
+            return self._client_playbacks.copy()
+
     def sleep_forever(self) -> None:
         """Block until the server is stopped."""
         while not self._stop_event.wait(3600):
@@ -143,5 +158,11 @@ class Viser4dServer(viser.ViserServer):
     def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
             maybe_awaitable = callback(client, timestep)
+            if inspect.iscoroutine(maybe_awaitable):
+                self._event_loop.create_task(maybe_awaitable)
+
+    def _dispatch_playback_change(self, client: ClientHandle, is_playing: bool) -> None:
+        for callback in list(self._playback_callbacks):
+            maybe_awaitable = callback(client, is_playing)
             if inspect.iscoroutine(maybe_awaitable):
                 self._event_loop.create_task(maybe_awaitable)
