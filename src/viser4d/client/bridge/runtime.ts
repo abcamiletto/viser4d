@@ -49,14 +49,15 @@ export class TimelineRuntime {
   private playbackTimeSlider: Element | null = null;
   private config: RuntimeConfig = {
     numSteps: 1,
-    fps: 30,
-    timelineFps: null,
+    timelineFps: 30,
+    speed: 1,
     loop: false,
     timelineSliderUuid: null,
-    fpsSliderUuid: null,
+    speedSliderUuid: null,
     stepButtonsUuid: null,
     playButtonUuid: null,
     pauseButtonUuid: null,
+    speedSyncUuid: null,
     playbackStateSyncUuid: null,
     timestepSyncUuid: null,
   };
@@ -183,12 +184,12 @@ export class TimelineRuntime {
       this.seek({ step });
       return true;
     }
-    if (message.uuid === this.config.fpsSliderUuid) {
-      const fps = Number(value);
-      if (!Number.isFinite(fps)) {
+    if (message.uuid === this.config.speedSliderUuid) {
+      const speed = Number(value);
+      if (!Number.isFinite(speed)) {
         return true;
       }
-      this.setFps({ fps, loop: this.config.loop });
+      this.setSpeed({ speed, loop: this.config.loop });
       return true;
     }
     if (message.uuid === this.config.stepButtonsUuid) {
@@ -200,7 +201,10 @@ export class TimelineRuntime {
       return true;
     }
     if (message.uuid === this.config.playButtonUuid) {
-      this.play({ fps: this.config.fps, loop: this.config.loop });
+      this.play({
+        speed: this.config.speed,
+        loop: this.config.loop,
+      });
       return true;
     }
     if (message.uuid === this.config.pauseButtonUuid) {
@@ -303,6 +307,10 @@ export class TimelineRuntime {
     });
   }
 
+  private getPlaybackFps(): number {
+    return this.config.timelineFps * this.config.speed;
+  }
+
   private syncPlaybackButtons(): void {
     const guiState = this.getViewer().useGui.getState();
     const sync = (uuid: string | null, visible: boolean): void => {
@@ -332,7 +340,7 @@ export class TimelineRuntime {
   }
 
   private syncAudioTransport(): void {
-    this.audio.seek(this.currentStep, this.config.fps, this.playing);
+    this.audio.seek(this.currentStep, this.getPlaybackFps(), this.playing);
   }
 
   private applyStepMessages(step: number, messages: RuntimeMessage[]): void {
@@ -359,15 +367,12 @@ export class TimelineRuntime {
     }
     return (
       this.playStartStep +
-      ((timestamp - this.playStartPerfTime) / 1000) * this.config.fps
+      ((timestamp - this.playStartPerfTime) / 1000) * this.getPlaybackFps()
     );
   }
 
   configure(config: Partial<RuntimeConfig>): void {
     this.config = { ...this.config, ...config };
-    if (!this.config.timelineFps) {
-      this.config.timelineFps = this.config.fps;
-    }
     this.audio.setStepRate(this.config.timelineFps);
     while (this.stepMessages.length < this.config.numSteps) {
       this.stepMessages.push([]);
@@ -448,6 +453,12 @@ export class TimelineRuntime {
   private syncTimestepToServer(step: number, force = false): void {
     this.syncTimelineSlider(step, force);
     this.sendTimestepToServer(step, force);
+  }
+
+  private sendSpeedToServer(speed: number): void {
+    if (this.config.speedSyncUuid) {
+      this.sendGuiUpdate(this.config.speedSyncUuid, speed);
+    }
   }
 
   private sendPlaybackStateToServer(isPlaying: boolean): void {
@@ -547,7 +558,7 @@ export class TimelineRuntime {
       this.anchorTransport(step);
     }
     this.applyThrough(step);
-    this.audio.seek(step, this.config.fps, this.playing);
+    this.audio.seek(step, this.getPlaybackFps(), this.playing);
     this.syncTimestepToServer(step, true);
   }
 
@@ -565,7 +576,7 @@ export class TimelineRuntime {
       if (!this.config.loop) {
         this.currentStep = this.config.numSteps - 1;
         this.playing = false;
-        this.audio.pause(this.currentStep, this.config.fps);
+        this.audio.pause(this.currentStep, this.getPlaybackFps());
         this.syncAdvancedTimesteps(previousStep, this.currentStep, true);
         this.sendPlaybackStateToServer(false);
         this.syncPlaybackButtons();
@@ -574,7 +585,7 @@ export class TimelineRuntime {
       this.anchorTransport(0, timestamp);
       this.resetTimelineState();
       this.applyThrough(0);
-      this.audio.play(0, this.config.fps);
+      this.audio.play(0, this.getPlaybackFps());
       this.syncAdvancedTimesteps(previousStep, 0, true);
     } else {
       this.currentStep = next;
@@ -586,16 +597,17 @@ export class TimelineRuntime {
     );
   }
 
-  play(payload: { fps: number; loop: boolean }): void {
+  play(payload: { speed: number; loop: boolean }): void {
     const step = this.getTransportStep();
-    this.config.fps = payload.fps;
+    this.config.speed = payload.speed;
     this.config.loop = payload.loop;
     this.playing = true;
     this.anchorTransport(step);
-    this.audio.play(step, this.config.fps);
+    this.audio.play(step, this.getPlaybackFps());
     if (this.rafId !== null) {
       getWindow().cancelAnimationFrame(this.rafId);
     }
+    this.sendSpeedToServer(payload.speed);
     this.sendPlaybackStateToServer(true);
     this.syncPlaybackButtons();
     this.rafId = getWindow().requestAnimationFrame((timestamp) =>
@@ -603,12 +615,13 @@ export class TimelineRuntime {
     );
   }
 
-  setFps(payload: { fps: number; loop: boolean }): void {
+  setSpeed(payload: { speed: number; loop: boolean }): void {
     const step = this.getTransportStep();
-    this.config.fps = payload.fps;
+    this.config.speed = payload.speed;
     this.config.loop = payload.loop;
     this.anchorTransport(step);
-    this.audio.setFps(step, this.config.fps, this.playing);
+    this.audio.setFps(step, this.getPlaybackFps(), this.playing);
+    this.sendSpeedToServer(payload.speed);
   }
 
   pause(): void {
@@ -619,7 +632,7 @@ export class TimelineRuntime {
       getWindow().cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
-    this.audio.pause(step, this.config.fps);
+    this.audio.pause(step, this.getPlaybackFps());
     this.sendPlaybackStateToServer(false);
     this.syncTimestepToServer(Math.floor(this.currentStep), true);
     this.syncPlaybackButtons();

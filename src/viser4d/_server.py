@@ -14,11 +14,10 @@ from .audio import AudioApi
 from ._export import ExportBuilder
 from ._types import RuntimeMethod, RuntimePayload
 from ._runtime import make_runtime_message, runtime_source
-from .timeline import (
-    ClientPlaybackHandle,
-    SceneRecorder,
-    TimelineStore,
-)
+from ._validation import require_positive_float
+from .timeline._playback import ClientPlaybackHandle
+from .timeline._recording import SceneRecorder
+from .timeline._store import TimelineStore
 
 if TYPE_CHECKING:
     from viser._viser import ClientHandle
@@ -34,8 +33,7 @@ class Viser4dServer(viser.ViserServer):
         super().__init__(**kwargs)
 
         self.num_steps = num_steps
-        self._fps = float(fps)
-        self._timeline_fps = float(fps)
+        self._timeline_fps = require_positive_float("fps", fps)
         self._timeline = TimelineStore(self.num_steps)
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
@@ -57,10 +55,13 @@ class Viser4dServer(viser.ViserServer):
 
         @self.on_client_connect
         def _attach_playback(client: ClientHandle) -> None:
-            playback = ClientPlaybackHandle(self, client)
+            playback = ClientPlaybackHandle(
+                self,
+                client,
+                brand_color=impl.playback_brand_color(self),
+            )
             with self._client_playbacks_lock:
                 self._client_playbacks[client.client_id] = playback
-            playback.apply_theme_colors(impl.playback_brand_color(self))
 
         @self.on_client_disconnect
         def _detach_playback(client: ClientHandle) -> None:
@@ -75,15 +76,16 @@ class Viser4dServer(viser.ViserServer):
 
     @property
     def fps(self) -> float:
-        """Default client playback speed for connected and future clients."""
-        return self._fps
+        """Timeline step rate used for recording, audio timing, and export."""
+        return self._timeline_fps
 
-    def play(self, fps: float | None = None, loop: bool = False) -> None:
+    def play(self, speed: float | None = None, loop: bool = False) -> None:
         """Ask connected clients to play from their own current timesteps."""
-        if fps is not None:
-            self._fps = float(fps)
+        next_speed = None
+        if speed is not None:
+            next_speed = require_positive_float("speed", speed)
         for playback in self._client_playback_values():
-            playback.play(self._fps, loop=loop)
+            playback.play(speed=next_speed, loop=loop)
 
     def pause(self) -> None:
         """Ask connected clients to pause at their current timesteps."""
@@ -95,11 +97,11 @@ class Viser4dServer(viser.ViserServer):
         for playback in self._client_playback_values():
             playback.refresh()
 
-    def set_fps(self, fps: float) -> None:
-        """Update client playback speed without changing timeline cadence."""
-        self._fps = float(fps)
+    def set_playback_speed(self, speed: float) -> None:
+        """Update connected client playback speed without starting playback."""
+        next_speed = require_positive_float("speed", speed)
         for playback in self._client_playback_values():
-            playback.set_fps(self._fps)
+            playback.set_speed(next_speed)
 
     def on_timestep_change(
         self,
@@ -114,6 +116,11 @@ class Viser4dServer(viser.ViserServer):
     ) -> None:
         """Register a callback for client play/pause state changes."""
         self._playback_callbacks.append(callback)
+
+    def get_client_playback(self, client_id: int) -> ClientPlaybackHandle | None:
+        """Return one connected client playback handle, if present."""
+        with self._client_playbacks_lock:
+            return self._client_playbacks.get(client_id)
 
     def get_client_playbacks(self) -> dict[int, ClientPlaybackHandle]:
         """Return a copy of the connected client playback handles."""
@@ -158,11 +165,15 @@ class Viser4dServer(viser.ViserServer):
     def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
             maybe_awaitable = callback(client, timestep)
-            if inspect.iscoroutine(maybe_awaitable):
-                self._event_loop.create_task(maybe_awaitable)
+            if inspect.isawaitable(maybe_awaitable):
+                self._event_loop.create_task(_await_callback(maybe_awaitable))
 
     def _dispatch_playback_change(self, client: ClientHandle, is_playing: bool) -> None:
         for callback in list(self._playback_callbacks):
             maybe_awaitable = callback(client, is_playing)
-            if inspect.iscoroutine(maybe_awaitable):
-                self._event_loop.create_task(maybe_awaitable)
+            if inspect.isawaitable(maybe_awaitable):
+                self._event_loop.create_task(_await_callback(maybe_awaitable))
+
+
+async def _await_callback(awaitable: Awaitable[None]) -> None:
+    await awaitable

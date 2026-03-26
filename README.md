@@ -42,8 +42,8 @@ scrub, and step through the client-local timeline.
   timesteps at the same time, and those controls are handled directly in the
   browser rather than round-tripping through Python.
 - The `fps=` passed to `Viser4dServer(...)` defines the timeline step rate used
-  for audio timing and `.viser` export, and also serves as the initial client
-  playback speed.
+  for audio timing and `.viser` export. Client playback speed is expressed as a
+  `speed` factor on top of that base rate.
 - `server.on_timestep_change(...)` fires whenever any client commits a new
   discrete timestep and passes `(client, timestep)`. With multiple clients, it
   is an aggregate event stream and may repeat timesteps or arrive out of order.
@@ -52,7 +52,7 @@ scrub, and step through the client-local timeline.
   `(client, is_playing)`.
 - `server.play(...)` and `server.pause()` broadcast playback commands to the
   clients that are connected right now. They do not create a shared server
-  clock.
+  clock or a persistent server-side playback speed.
 
 ## Streaming ingest
 
@@ -110,7 +110,9 @@ timestep `3`, it will fire twice, once for each client.
 ## Playback state callbacks
 
 If you need to know when a client starts or stops playback, use the playback
-callback and the per-client playback handles:
+callback and the per-client playback handles. Use
+`server.get_client_playback(client_id)` for direct lookup, or
+`server.get_client_playbacks()` to snapshot all connected clients:
 
 ```python
 import viser
@@ -120,28 +122,40 @@ server = viser4d.Viser4dServer(num_steps=100)
 
 def on_playback_change(client: viser.ClientHandle, is_playing: bool) -> None:
     print(client.client_id, is_playing)
+    playback = server.get_client_playback(client.client_id)
+    if playback is not None:
+        print(playback.current_timestep, playback.speed)
 
 server.on_playback_change(on_playback_change)
 
 # Snapshot of connected playback handles keyed by client id.
 for client_id, playback in server.get_client_playbacks().items():
-    print(client_id, playback.is_playing, playback.current_timestep)
+    print(
+        client_id,
+        playback.is_playing,
+        playback.current_timestep,
+        playback.speed,
+    )
 ```
 
 `ClientPlaybackHandle.is_playing` reflects the last play/pause state reported by
 that browser tab. `server.play(...)` and `server.pause()` send commands, but the
 handle state only changes once the client reports the result back.
+`ClientPlaybackHandle.speed` is the tab's current playback-speed factor. If you
+need the effective playback FPS, compute `server.fps * playback.speed`.
 
 ## Server playback commands
 
 `server.play(...)` starts each connected client from that client's own current
-timestep. Passing `fps=...` to `server.play(...)` also updates the default
-client playback speed for later `play()` calls and future clients.
+timestep. Calling `server.play()` with no `speed` preserves each client's own
+current playback speed. Passing `speed=...` to `server.play(...)` overrides the
+connected clients only.
 `server.pause()` pauses each connected client wherever it currently is.
-`server.set_fps(...)` updates the same default playback speed without starting
-playback. Neither method changes the timeline step rate used for audio timing
-or export; set that with `fps=` when you construct the server. New clients
-always start paused at timestep `0`.
+`server.set_playback_speed(...)` updates the connected clients' playback speed
+without starting playback.
+Neither method changes the base timeline step rate used for audio timing or
+export; set that with `fps=` when you construct the server. New clients always
+start paused at timestep `0` with speed `1.0`.
 
 ## Serialize `.viser` recordings
 

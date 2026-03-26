@@ -21,7 +21,7 @@ parser.add_argument(
     default=180,
     help="Number of timesteps in the recorded timeline.",
 )
-parser.add_argument("--fps", type=float, default=30.0, help="Playback FPS.")
+parser.add_argument("--fps", type=float, default=30.0, help="Timeline FPS.")
 parser.add_argument(
     "--seed",
     type=int,

@@ -2,14 +2,15 @@ import type { RuntimeMessage, RuntimeValue } from "../binary";
 
 export type RuntimeConfig = {
   numSteps: number;
-  fps: number;
-  timelineFps: number | null;
+  timelineFps: number;
+  speed: number;
   loop: boolean;
   timelineSliderUuid: string | null;
-  fpsSliderUuid: string | null;
+  speedSliderUuid: string | null;
   stepButtonsUuid: string | null;
   playButtonUuid: string | null;
   pauseButtonUuid: string | null;
+  speedSyncUuid: string | null;
   playbackStateSyncUuid: string | null;
   timestepSyncUuid: string | null;
 };

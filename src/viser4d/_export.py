@@ -8,7 +8,7 @@ from . import _viser_private as impl
 from .audio._messages import is_audio_message_type
 from ._types import StoredMessage
 from ._runtime import RUNTIME_MARKER, runtime_source
-from .timeline import (
+from .timeline._store import (
     TimelineStore,
     serialize_viser_recording,
     store_raw_message,
@@ -32,9 +32,20 @@ class ExportBuilder:
         """Build a `.viser` recording for the requested timestep range."""
         start = start_timestep
         end = end_timestep if end_timestep is not None else self._server.num_steps - 1
-        assert 0 <= start < self._server.num_steps
-        assert 0 <= end < self._server.num_steps
-        assert start <= end
+        if not 0 <= start < self._server.num_steps:
+            raise ValueError(
+                f"start_timestep must be in [0, {self._server.num_steps - 1}], "
+                f"got {start}."
+            )
+        if not 0 <= end < self._server.num_steps:
+            raise ValueError(
+                f"end_timestep must be in [0, {self._server.num_steps - 1}], got {end}."
+            )
+        if start > end:
+            raise ValueError(
+                "start_timestep must be less than or equal to end_timestep, "
+                f"got {start} > {end}."
+            )
 
         # Bootstrap playback with the injected runtime before any timeline messages arrive.
         runtime_source_message = _messages.RunJavascriptMessage(runtime_source())
@@ -51,7 +62,7 @@ class ExportBuilder:
         # Timeline-managed nodes are reconstructed from their saved baseline plus step diffs.
         for baseline in self._timeline.iter_baselines():
             recording.extend((0.0, message) for message in baseline)
-        fps = max(self._server._timeline_fps, 1.0)
+        fps = self._server.fps
         for step in range(end + 1):
             time = 0.0 if step <= start else (step - start) / fps
             step_state = self._timeline.step(step)

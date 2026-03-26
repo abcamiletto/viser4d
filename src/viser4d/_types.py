@@ -34,17 +34,18 @@ class AudioArrayPayload(TypedDict):
 
 class RuntimeConfig(TypedDict):
     numSteps: int
-    fps: float
     timelineFps: float
+    speed: float
     loop: bool
 
 
 class ClientRuntimeConfig(RuntimeConfig):
     timelineSliderUuid: str
-    fpsSliderUuid: str
+    speedSliderUuid: str
     stepButtonsUuid: str
     playButtonUuid: str
     pauseButtonUuid: str
+    speedSyncUuid: str
     playbackStateSyncUuid: str
     timestepSyncUuid: str
 
@@ -58,7 +59,7 @@ RuntimeMethod: TypeAlias = Literal[
     "refresh",
     "seek",
     "setBaseline",
-    "setFps",
+    "setSpeed",
 ]
 
 RuntimePayload: TypeAlias = Mapping[str, object]

@@ -26,6 +26,20 @@ def test_num_steps_must_be_positive() -> None:
         viser4d.Viser4dServer(num_steps=0, port=0, verbose=False)
 
 
+def test_fps_and_speed_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="fps must be a positive finite float"):
+        viser4d.Viser4dServer(num_steps=1, fps=0.0, port=0, verbose=False)
+
+    server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
+    try:
+        with pytest.raises(ValueError, match="speed must be a positive finite float"):
+            server.play(speed=0.0)
+        with pytest.raises(ValueError, match="speed must be a positive finite float"):
+            server.set_playback_speed(-1.0)
+    finally:
+        server.stop()
+
+
 def test_timeline_operations_serialize_and_playback_commands() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
@@ -40,7 +54,7 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
             frame.position = (1.0, 2.0, 3.0)
             audio.volume = 0.25
 
-        server.set_fps(24.0)
+        server.set_playback_speed(0.8)
         server.play()
         server.pause()
 
@@ -53,7 +67,7 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
 def test_serialize_rejects_invalid_timestep_range() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="start_timestep must be less than or equal"):
             server.serialize(start_timestep=2, end_timestep=1)
     finally:
         server.stop()
@@ -101,6 +115,7 @@ def test_client_playback_sync_dispatches_server_callbacks() -> None:
 
     class _DummyServer:
         num_steps = 4
+        fps = 30.0
 
         def _dispatch_timestep_change(self, client: object, timestep: int) -> None:
             seen_timesteps.append((getattr(client, "client_id"), timestep))
@@ -113,15 +128,19 @@ def test_client_playback_sync_dispatches_server_callbacks() -> None:
     playback._client = SimpleNamespace(client_id=11)
     playback._lock = threading.RLock()
     playback._current_timestep = 0
+    playback._speed = 1.0
     playback._is_playing = False
     playback._loop = False
 
+    playback._sync_speed_from_client(1.5)
     playback._sync_playback_from_client(True)
     playback._sync_playback_from_client(True)
     playback._sync_from_client(2)
     playback._sync_playback_from_client(False)
 
     assert playback.current_timestep == 2
+    assert playback.speed == 1.5
+    assert playback._server.fps * playback.speed == 45.0
     assert playback.is_playing is False
     assert seen_timesteps == [(11, 2)]
     assert seen_playback == [(11, True), (11, False)]
@@ -132,6 +151,8 @@ def test_playback_state_tracks_browser_reports_not_commands() -> None:
     seen_playback: list[tuple[int, bool]] = []
 
     class _DummyServer:
+        fps = 30.0
+
         def _dispatch_playback_change(self, client: object, is_playing: bool) -> None:
             seen_playback.append((getattr(client, "client_id"), is_playing))
 
@@ -139,16 +160,20 @@ def test_playback_state_tracks_browser_reports_not_commands() -> None:
     playback._server = _DummyServer()
     playback._client = SimpleNamespace(client_id=11)
     playback._lock = threading.RLock()
-    playback._fps = 30.0
+    playback._speed = 1.0
     playback._loop = False
     playback._is_playing = False
-    playback._set_fps_slider_value = lambda fps: None
+    playback._set_speed_slider_value = lambda speed: None
     playback._send_runtime_call = lambda method, payload: sent_calls.append(
         (method, payload)
     )
 
     playback.play()
     assert playback.is_playing is False
+
+    playback._sync_speed_from_client(0.5)
+    assert playback.speed == 0.5
+    assert playback._server.fps * playback.speed == 15.0
 
     playback._sync_playback_from_client(True)
     assert playback.is_playing is True
@@ -159,7 +184,7 @@ def test_playback_state_tracks_browser_reports_not_commands() -> None:
     playback._sync_playback_from_client(False)
     assert playback.is_playing is False
     assert sent_calls == [
-        ("play", {"fps": 30.0, "loop": False}),
+        ("play", {"speed": 1.0, "loop": False}),
         ("pause", {}),
     ]
     assert seen_playback == [(11, True), (11, False)]
@@ -172,8 +197,8 @@ def test_server_broadcast_commands_only_touch_connected_clients() -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[str, object]] = []
 
-        def play(self, fps: float, loop: bool = False) -> None:
-            self.calls.append(("play", (fps, loop)))
+        def play(self, speed: float | None = None, loop: bool = False) -> None:
+            self.calls.append(("play", (speed, loop)))
 
         def pause(self) -> None:
             self.calls.append(("pause", None))
@@ -181,8 +206,8 @@ def test_server_broadcast_commands_only_touch_connected_clients() -> None:
         def refresh(self) -> None:
             self.calls.append(("refresh", None))
 
-        def set_fps(self, fps: float) -> None:
-            self.calls.append(("set_fps", fps))
+        def set_speed(self, speed: float) -> None:
+            self.calls.append(("set_speed", speed))
 
     try:
         first = _PlaybackStub()
@@ -194,22 +219,22 @@ def test_server_broadcast_commands_only_touch_connected_clients() -> None:
 
         assert server.fps == 30.0
         assert server._timeline_fps == 30.0
-        server.play(fps=12.0, loop=True)
-        assert server.fps == 12.0
+        server.play(speed=0.5, loop=True)
+        assert server.fps == 30.0
         assert server._timeline_fps == 30.0
         server.pause()
         server.play()
-        server.set_fps(24.0)
-        assert server.fps == 24.0
+        server.set_playback_speed(2.0)
+        assert server.fps == 30.0
         assert server._timeline_fps == 30.0
         server.pause()
         server.refresh()
 
         expected = [
-            ("play", (12.0, True)),
+            ("play", (0.5, True)),
             ("pause", None),
-            ("play", (12.0, False)),
-            ("set_fps", 24.0),
+            ("play", (None, False)),
+            ("set_speed", 2.0),
             ("pause", None),
             ("refresh", None),
         ]
@@ -226,6 +251,10 @@ def test_server_exposes_client_playbacks() -> None:
         first = cast(ClientPlaybackHandle, SimpleNamespace(is_playing=True))
         second = cast(ClientPlaybackHandle, SimpleNamespace(is_playing=False))
         server._client_playbacks = {1: first, 2: second}
+
+        assert server.get_client_playback(1) is first
+        assert server.get_client_playback(2) is second
+        assert server.get_client_playback(3) is None
 
         playbacks = server.get_client_playbacks()
 
