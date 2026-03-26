@@ -67,7 +67,9 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
 def test_serialize_rejects_invalid_timestep_range() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
-        with pytest.raises(ValueError, match="start_timestep must be less than or equal"):
+        with pytest.raises(
+            ValueError, match="start_timestep must be less than or equal"
+        ):
             server.serialize(start_timestep=2, end_timestep=1)
     finally:
         server.stop()
