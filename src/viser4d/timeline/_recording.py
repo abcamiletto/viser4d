@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Iterator, cast
+from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
-from viser._scene_api import SceneApi
+from viser import ClientHandle
 from viser import _messages
+from viser._scene_api import SceneApi
 from viser.infra import WebsockMessageHandler
 
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
@@ -53,6 +53,16 @@ class _TimelineTransport(WebsockMessageHandler):
         return
 
     def atomic_end(self) -> None:
+        return
+
+
+class _TimelineSceneOwner(ClientHandle):
+    def __init__(self, server: Viser4dServer, transport: _TimelineTransport) -> None:
+        self._websock_connection = transport
+        self._viser_server = server
+        self.client_id = -1
+
+    def flush(self) -> None:
         return
 
 
@@ -172,9 +182,11 @@ def _make_timeline_scene(
     server: Viser4dServer,
     transport: _TimelineTransport,
 ) -> SceneApi:
-    owner = cast(Any, SimpleNamespace(_websock_connection=transport))
-    return SceneApi(
+    owner = _TimelineSceneOwner(server, transport)
+    scene = SceneApi(
         owner,
         thread_executor=server._thread_executor,
         event_loop=server.get_event_loop(),
     )
+    owner.scene = scene
+    return scene
