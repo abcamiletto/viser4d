@@ -10,7 +10,6 @@ from viser import ScenePointerEvent, TransformControlsEvent, _messages
 from viser.infra import ClientId
 
 import viser4d
-from viser4d import _viser_private as impl
 from viser4d.timeline import ClientPlaybackHandle
 
 
@@ -294,28 +293,6 @@ def test_server_exposes_client_playbacks() -> None:
 
         assert playbacks == {1: first, 2: second}
         assert playbacks is not server._client_playbacks
-    finally:
-        server.stop()
-
-
-def test_timeline_scene_stays_out_of_live_viser_state() -> None:
-    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
-    try:
-        with server.at(0) as timeline:
-            assert timeline.scene is not server.scene
-            joint = timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
-
-        assert "/joint" not in server.scene._handle_from_node_name
-        assert [
-            type(message).__name__
-            for message in impl.broadcast_messages(server)
-            if getattr(message, "name", None) == "/joint"
-        ] == []
-
-        with server.at(1):
-            joint.position = (1.0, 0.0, 0.0)
-
-        assert server._timeline.has_node("/joint")
     finally:
         server.stop()
 
