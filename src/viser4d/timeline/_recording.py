@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
-from viser import ClientHandle
 from viser import _messages
 from viser._scene_api import SceneApi
 from viser.infra import WebsockMessageHandler
@@ -42,8 +41,9 @@ class SceneRecorder:
         self._pending_messages: list[_messages.Message] | None = None
         self._transport = _TimelineTransport(self)
         owner = _TimelineSceneOwner(server, self._transport)
+        # SceneApi only reads the client-like fields defined on _TimelineSceneOwner.
         self.scene = SceneApi(
-            owner,
+            owner,  # type: ignore[arg-type]
             thread_executor=server._thread_executor,
             event_loop=server.get_event_loop(),
         )
@@ -174,7 +174,7 @@ class _TimelineTransport(WebsockMessageHandler):
         pass
 
 
-class _TimelineSceneOwner(ClientHandle):
+class _TimelineSceneOwner:
     """Minimal client-like owner required by ``SceneApi``."""
 
     scene: SceneApi
