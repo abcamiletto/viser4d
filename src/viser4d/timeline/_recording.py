@@ -32,40 +32,6 @@ class TimelineContext:
     audio: AudioApi
 
 
-class _TimelineTransport(WebsockMessageHandler):
-    def __init__(self, recorder: SceneRecorder) -> None:
-        super().__init__()
-        self._recorder = recorder
-        self._recording_enabled = False
-
-    def start(self) -> None:
-        self._recording_enabled = True
-
-    def get_message_buffer(self) -> Any:
-        return self
-
-    def push(self, message: _messages.Message) -> None:
-        if not self._recording_enabled:
-            return
-        self._recorder._push_timeline_message(message)
-
-    def atomic_start(self) -> None:
-        return
-
-    def atomic_end(self) -> None:
-        return
-
-
-class _TimelineSceneOwner(ClientHandle):
-    def __init__(self, server: Viser4dServer, transport: _TimelineTransport) -> None:
-        self._websock_connection = transport
-        self._viser_server = server
-        self.client_id = -1
-
-    def flush(self) -> None:
-        return
-
-
 class SceneRecorder:
     """Capture per-timestep scene and audio edits from a timeline-only scene."""
 
@@ -75,7 +41,13 @@ class SceneRecorder:
         self._active_step: int | None = None
         self._pending_messages: list[_messages.Message] | None = None
         self._transport = _TimelineTransport(self)
-        self.scene = _make_timeline_scene(server, self._transport)
+        owner = _TimelineSceneOwner(server, self._transport)
+        self.scene = SceneApi(
+            owner,
+            thread_executor=server._thread_executor,
+            event_loop=server.get_event_loop(),
+        )
+        owner.scene = self.scene
         self._transport.start()
 
     @property
@@ -178,15 +150,39 @@ class SceneRecorder:
             )
 
 
-def _make_timeline_scene(
-    server: Viser4dServer,
-    transport: _TimelineTransport,
-) -> SceneApi:
-    owner = _TimelineSceneOwner(server, transport)
-    scene = SceneApi(
-        owner,
-        thread_executor=server._thread_executor,
-        event_loop=server.get_event_loop(),
-    )
-    owner.scene = scene
-    return scene
+class _TimelineTransport(WebsockMessageHandler):
+    def __init__(self, recorder: SceneRecorder) -> None:
+        super().__init__()
+        self._recorder = recorder
+        self._recording_enabled = False
+
+    def start(self) -> None:
+        self._recording_enabled = True
+
+    def get_message_buffer(self) -> Any:
+        return self
+
+    def push(self, message: _messages.Message) -> None:
+        if not self._recording_enabled:
+            return
+        self._recorder._push_timeline_message(message)
+
+    def atomic_start(self) -> None:
+        pass
+
+    def atomic_end(self) -> None:
+        pass
+
+
+class _TimelineSceneOwner(ClientHandle):
+    """Minimal client-like owner required by ``SceneApi``."""
+
+    scene: SceneApi
+
+    def __init__(self, server: Viser4dServer, transport: _TimelineTransport) -> None:
+        self._websock_connection = transport
+        self._viser_server = server
+        self.client_id = -1
+
+    def flush(self) -> None:
+        pass
