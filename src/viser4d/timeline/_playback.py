@@ -104,6 +104,7 @@ class ClientPlaybackHandle:
             self._sync_playback_from_client(bool(self._playback_state_sync.value))
 
         self._sync_runtime_config()
+        self._server._recorder.sync_client_scene_overlays(self._client)
         # New clients need the initial timeline scene state before playback starts.
         self.seek(self._current_timestep)
 
@@ -172,7 +173,6 @@ class ClientPlaybackHandle:
         self._send_runtime_call(
             "configure",
             client_runtime_config_payload(
-                client_id=self._client.client_id,
                 num_steps=self._server.num_steps,
                 timeline_fps=self._server.fps,
                 speed=speed,

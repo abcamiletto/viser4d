@@ -40,7 +40,6 @@ class RuntimeConfig(TypedDict):
 
 
 class ClientRuntimeConfig(RuntimeConfig):
-    clientId: int | None
     timelineSliderUuid: str
     speedSliderUuid: str
     stepButtonsUuid: str
@@ -53,6 +52,7 @@ class ClientRuntimeConfig(RuntimeConfig):
 
 RuntimeMethod: TypeAlias = Literal[
     "applyMessageUpdate",
+    "cacheSceneOverlay",
     "configure",
     "pause",
     "play",

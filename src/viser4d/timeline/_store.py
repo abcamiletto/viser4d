@@ -109,6 +109,7 @@ class TimelineStore:
         self.num_steps = num_steps
         self.steps = [TimelineStep() for _ in range(num_steps)]
         self.node_names: set[str] = set()
+        self.live_scene_updates: dict[str, StoredMessage] = {}
 
     def validate_step(self, step: int) -> int:
         """Return ``step`` if it is in range, else raise ``IndexError``."""
@@ -138,6 +139,29 @@ class TimelineStore:
                     continue
                 self._record_audio_message(step_state, track_name, message)
         return step_state
+
+    def record_live_scene_update(
+        self,
+        message: StoredMessage,
+        *,
+        redundancy_key: str,
+    ) -> None:
+        """Store the latest live scene overlay keyed by viser's redundancy key."""
+        clear_node_name = (
+            extract_message_name(message)
+            if message.get("type") == "RemoveSceneNodeMessage"
+            else None
+        )
+        if clear_node_name is not None:
+            for key, update in list(self.live_scene_updates.items()):
+                if extract_message_name(update) == clear_node_name:
+                    self.live_scene_updates.pop(key)
+        self.live_scene_updates.pop(redundancy_key, None)
+        self.live_scene_updates[redundancy_key] = message
+
+    def iter_live_scene_updates(self) -> tuple[tuple[str, StoredMessage], ...]:
+        """Return the current live scene overlay snapshot in replay order."""
+        return tuple(self.live_scene_updates.items())
 
     def _record_audio_message(
         self,

@@ -4,8 +4,10 @@ import time
 from types import SimpleNamespace
 from typing import cast
 
+import msgspec
 import numpy as np
 import pytest
+import zstandard
 from viser import ScenePointerEvent, TransformControlsEvent, _messages
 from viser.infra import ClientId
 
@@ -39,6 +41,13 @@ def _dispatch_viewer_message(
         server.get_event_loop(),
     )
     future.result(timeout=1.0)
+
+
+def _decode_serialized_recording(blob: bytes) -> dict[str, object]:
+    packed_size = int.from_bytes(blob[:8], "little")
+    packed = zstandard.ZstdDecompressor().decompress(blob[8:])
+    assert len(packed) == packed_size
+    return cast(dict[str, object], msgspec.msgpack.decode(packed))
 
 
 def test_audio_requires_timestep_context() -> None:
@@ -364,6 +373,32 @@ def test_timeline_handle_mutations_work_after_recording() -> None:
 
         assert tuple(joint.position) == (1.0, 2.0, 3.0)
         assert joint.visible is False
+    finally:
+        server.stop()
+
+
+def test_serialize_includes_live_timeline_scene_overlays() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+
+        joint.position = (1.0, 2.0, 3.0)
+
+        recording = _decode_serialized_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        exported_positions = [
+            cast(
+                tuple[float, float, float],
+                tuple(cast(list[object], message["position"])),
+            )
+            for _time, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert (1.0, 2.0, 3.0) in exported_positions
     finally:
         server.stop()
 

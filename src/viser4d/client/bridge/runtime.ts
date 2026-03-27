@@ -48,7 +48,6 @@ export class TimelineRuntime {
   private viewer: ViewerLike | null = null;
   private playbackTimeSlider: Element | null = null;
   private config: RuntimeConfig = {
-    clientId: null,
     numSteps: 1,
     timelineFps: 30,
     speed: 1,
@@ -401,9 +400,6 @@ export class TimelineRuntime {
 
   applyMessageUpdate(payload: {
     message: RuntimeMessage;
-    redundancyKey?: string | null;
-    clearNodeName?: string | null;
-    excludedClientId?: number | null;
   }): void {
     const message = normalizeTransportMessage(payload.message);
     const name = typeof message.name === "string" ? message.name : null;
@@ -416,15 +412,20 @@ export class TimelineRuntime {
       this.audio.applyLiveMessages(Math.floor(this.currentStep), [message]);
       return;
     }
+    this.pushMessages([message]);
+  }
+
+  cacheSceneOverlay(payload: {
+    message: RuntimeMessage;
+    redundancyKey?: string | null;
+    clearNodeName?: string | null;
+  }): void {
+    const message = normalizeTransportMessage(payload.message);
     this.cacheSceneOverlayMessage(
       message,
       payload.redundancyKey ?? null,
       payload.clearNodeName ?? null,
     );
-    if (payload.excludedClientId === this.config.clientId) {
-      return;
-    }
-    this.pushMessages([message]);
   }
 
   private syncTimelineSlider(step: number, force = false): void {

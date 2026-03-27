@@ -9,8 +9,10 @@ from viser import _messages
 from viser._scene_api import SceneApi
 from viser.infra import WebsockMessageHandler
 
+from .. import _viser_private as impl
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
+from .._runtime import make_runtime_message
 from .._types import StoredMessage
 from ._store import (
     TimelineStore,
@@ -23,6 +25,7 @@ from ._store import (
 if TYPE_CHECKING:
     from ..audio import AudioApi
     from .._server import Viser4dServer
+    from viser._viser import ClientHandle
 
 
 @dataclass(frozen=True)
@@ -108,7 +111,7 @@ class SceneRecorder:
             stored_messages = store_raw_messages([message])
             self._record_and_preload(self._active_step, stored_messages)
             return
-        self._send_live_update(message)
+        self._send_runtime_update(message)
 
     def _record_and_preload(
         self, step: int, stored_messages: list[StoredMessage]
@@ -134,24 +137,61 @@ class SceneRecorder:
             raise RuntimeError(
                 "Timeline scene nodes can only be created inside server.at(t)."
             )
-        self._send_live_update(message)
+        self._broadcast_live_scene_update(message)
 
-    def _send_live_update(self, message: _messages.Message) -> None:
+    def _send_runtime_update(self, message: _messages.Message) -> None:
         stored_message = store_raw_message(message)
-        clear_node_name = (
-            message.name
-            if isinstance(message, _messages.RemoveSceneNodeMessage)
-            else None
-        )
         self._server._send_runtime_call(
             "applyMessageUpdate",
             {
                 "message": serialize_stored_message(stored_message),
-                "redundancyKey": message.redundancy_key(),
-                "clearNodeName": clear_node_name,
-                "excludedClientId": getattr(message, "excluded_self_client", None),
             },
         )
+
+    def sync_client_scene_overlays(self, client: ClientHandle) -> None:
+        """Prime one client's runtime cache with the latest live scene overlays."""
+        for redundancy_key, message in self._timeline.iter_live_scene_updates():
+            impl.queue_client_message(
+                client,
+                make_runtime_message(
+                    "cacheSceneOverlay",
+                    {
+                        "message": serialize_stored_message(message),
+                        "redundancyKey": redundancy_key,
+                        "clearNodeName": (
+                            message.get("name")
+                            if message.get("type") == "RemoveSceneNodeMessage"
+                            else None
+                        ),
+                    },
+                ),
+            )
+
+    def _broadcast_live_scene_update(self, message: _messages.Message) -> None:
+        stored_message = store_raw_message(message)
+        redundancy_key = message.redundancy_key()
+        self._timeline.record_live_scene_update(
+            stored_message,
+            redundancy_key=redundancy_key,
+        )
+        runtime_message = make_runtime_message(
+            "cacheSceneOverlay",
+            {
+                "message": serialize_stored_message(stored_message),
+                "redundancyKey": redundancy_key,
+                "clearNodeName": (
+                    message.name
+                    if isinstance(message, _messages.RemoveSceneNodeMessage)
+                    else None
+                ),
+            },
+        )
+        excluded_client_id = message.excluded_self_client
+        for client in self._server.get_clients().values():
+            impl.queue_client_message(client, runtime_message)
+            if excluded_client_id == client.client_id:
+                continue
+            impl.queue_client_message(client, message)
 
     def _validate_create_message(self, message: _messages.Message) -> None:
         if not isinstance(message, _messages._CreateSceneNodeMessage):

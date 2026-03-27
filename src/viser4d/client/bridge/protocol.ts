@@ -1,7 +1,6 @@
 import type { RuntimeMessage, RuntimeValue } from "../binary";
 
 export type RuntimeConfig = {
-  clientId: number | null;
   numSteps: number;
   timelineFps: number;
   speed: number;
