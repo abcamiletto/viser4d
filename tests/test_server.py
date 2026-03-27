@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import viser4d
+from viser4d import _viser_private as impl
 from viser4d.timeline import ClientPlaybackHandle
 
 
@@ -43,9 +44,9 @@ def test_fps_and_speed_must_be_positive() -> None:
 def test_timeline_operations_serialize_and_playback_commands() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
-        with server.at(0):
-            frame = server.scene.add_frame("/frame")
-            audio = server.audio.add_track(
+        with server.at(0) as timeline:
+            frame = timeline.scene.add_frame("/frame")
+            audio = timeline.audio.add_track(
                 "/audio",
                 data=np.array([0, 1, 2], dtype=np.int16),
                 sample_rate=16_000,
@@ -266,13 +267,35 @@ def test_server_exposes_client_playbacks() -> None:
         server.stop()
 
 
-def test_at_rejects_updates_to_static_scene_nodes() -> None:
+def test_timeline_scene_stays_out_of_live_viser_state() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        joint = server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
-        with pytest.raises(RuntimeError, match="Cannot modify static scene node"):
-            with server.at(0):
-                joint.position = (1.0, 0.0, 0.0)
+        with server.at(0) as timeline:
+            assert timeline.scene is not server.scene
+            joint = timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+
+        assert "/joint" not in server.scene._handle_from_node_name
+        assert [
+            type(message).__name__
+            for message in impl.broadcast_messages(server)
+            if getattr(message, "name", None) == "/joint"
+        ] == []
+
+        with server.at(1):
+            joint.position = (1.0, 0.0, 0.0)
+
+        assert server._timeline.has_node("/joint")
+    finally:
+        server.stop()
+
+
+def test_at_rejects_reusing_static_scene_names() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+        with pytest.raises(RuntimeError, match="static scene node with the same name"):
+            with server.at(0) as timeline:
+                timeline.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
     finally:
         server.stop()
 
@@ -280,12 +303,12 @@ def test_at_rejects_updates_to_static_scene_nodes() -> None:
 def test_at_rejects_recreating_timeline_nodes() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0):
-            server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+        with server.at(0) as timeline:
+            timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
 
         with pytest.raises(RuntimeError, match="Cannot create timeline node"):
-            with server.at(1):
-                server.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
+            with server.at(1) as timeline:
+                timeline.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
     finally:
         server.stop()
 
@@ -309,8 +332,8 @@ def test_stop_unblocks_sleep_forever() -> None:
 def test_audio_waveform_reflects_appended_data() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0):
-            audio = server.audio.add_track(
+        with server.at(0) as timeline:
+            audio = timeline.audio.add_track(
                 "/audio",
                 data=np.array([1, 2], dtype=np.int16),
                 sample_rate=16_000,
@@ -328,15 +351,15 @@ def test_audio_waveform_reflects_appended_data() -> None:
 def test_audio_rejects_non_mono_or_stereo_shapes() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0):
+        with server.at(0) as timeline:
             with pytest.raises(ValueError, match="mono or stereo"):
-                server.audio.add_track(
+                timeline.audio.add_track(
                     "/audio",
                     data=np.zeros((2, 2, 2), dtype=np.float32),
                     sample_rate=16_000,
                 )
             with pytest.raises(ValueError, match="mono or stereo"):
-                server.audio.add_track(
+                timeline.audio.add_track(
                     "/audio-3ch",
                     data=np.zeros((4, 3), dtype=np.float32),
                     sample_rate=16_000,
@@ -348,8 +371,8 @@ def test_audio_rejects_non_mono_or_stereo_shapes() -> None:
 def test_stereo_audio_append_preserves_channel_layout() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0):
-            audio = server.audio.add_track(
+        with server.at(0) as timeline:
+            audio = timeline.audio.add_track(
                 "/audio",
                 data=np.array([[1, 10], [2, 20]], dtype=np.int16),
                 sample_rate=16_000,

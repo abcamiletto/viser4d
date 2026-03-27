@@ -16,7 +16,7 @@ from ._types import RuntimeMethod, RuntimePayload
 from ._runtime import make_runtime_message, runtime_source
 from ._validation import require_positive_float
 from .timeline._playback import ClientPlaybackHandle
-from .timeline._recording import SceneRecorder
+from .timeline._recording import SceneRecorder, TimelineContext
 from .timeline._store import TimelineStore
 
 if TYPE_CHECKING:
@@ -69,10 +69,10 @@ class Viser4dServer(viser.ViserServer):
                 self._client_playbacks.pop(client.client_id, None)
 
     @contextlib.contextmanager
-    def at(self, t: int) -> Iterator[None]:
-        """Record scene and audio operations for timestep ``t``."""
-        with self._recorder.at(t):
-            yield
+    def at(self, t: int) -> Iterator[TimelineContext]:
+        """Expose the timeline APIs for timestep ``t``."""
+        with self._recorder.at(t) as timeline:
+            yield timeline
 
     @property
     def fps(self) -> float:

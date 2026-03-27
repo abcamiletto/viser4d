@@ -161,9 +161,11 @@ class AudioApi:
         data: np.ndarray,
         sample_rate: int,
     ) -> AudioHandle:
-        """Create an audio track for the current ``server.at(t)`` block."""
+        """Create an audio track for the current ``timeline.audio`` context."""
         if self._server._recorder.active_step is None:
-            raise RuntimeError("audio.add_track() is only valid inside server.at(t).")
+            raise RuntimeError(
+                "audio.add_track() is only valid inside `with server.at(t) as timeline:`."
+            )
         return self._server._recorder.add_audio(
             name, data=data, sample_rate=sample_rate
         )

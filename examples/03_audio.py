@@ -36,8 +36,8 @@ AUDIO_START_STEP = 0
 # -- Server + audio ------------------------------------------------------------
 server = viser4d.Viser4dServer(num_steps=NUM_STEPS, port=args.port)
 
-with server.at(AUDIO_START_STEP):
-    audio_handle = server.audio.add_track(
+with server.at(AUDIO_START_STEP) as timeline:
+    audio_handle = timeline.audio.add_track(
         "/speech", data=samples, sample_rate=sample_rate
     )
 
@@ -53,6 +53,7 @@ def _on_volume(event) -> None:
 
 
 # -- Animated point cloud ------------------------------------------------------
+point_cloud = None
 for step in range(NUM_STEPS):
     frac = step / NUM_STEPS
     angle = frac * 4 * np.pi
@@ -64,13 +65,17 @@ for step in range(NUM_STEPS):
     z = np.full(n_points, frac * 2 - 1)
     points = np.stack([x, y, z], axis=-1).astype(np.float32)
 
-    with server.at(step):
-        server.scene.add_point_cloud(
-            "/cloud",
-            points=points,
-            colors=(0, int(200 * (1 - frac)), int(255 * frac)),
-            point_size=0.05,
-        )
+    with server.at(step) as timeline:
+        if point_cloud is None:
+            point_cloud = timeline.scene.add_point_cloud(
+                "/cloud",
+                points=points,
+                colors=(0, int(200 * (1 - frac)), int(255 * frac)),
+                point_size=0.05,
+            )
+        else:
+            point_cloud.points = points
+            point_cloud.colors = (0, int(200 * (1 - frac)), int(255 * frac))
 
 # Open the viewer and use the Playback controls in the GUI.
 server.sleep_forever()

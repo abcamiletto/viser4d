@@ -59,9 +59,6 @@ class ExportBuilder:
             if isinstance(name, str) and self._timeline.has_node(name):
                 continue
             recording.append((0.0, message))
-        # Timeline-managed nodes are reconstructed from their saved baseline plus step diffs.
-        for baseline in self._timeline.iter_baselines():
-            recording.extend((0.0, message) for message in baseline)
         fps = self._server.fps
         for step in range(end + 1):
             time = 0.0 if step <= start else (step - start) / fps

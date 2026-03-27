@@ -62,7 +62,6 @@ export class TimelineRuntime {
     timestepSyncUuid: null,
   };
   private timelineNodeNames = new Set<string>();
-  private baselineByName = new Map<string, RuntimeMessage[]>();
   private currentStep = 0;
   private playStartStep = 0;
   private playStartPerfTime = 0;
@@ -85,7 +84,7 @@ export class TimelineRuntime {
   private queueIngressConfigured = false;
   private guiMessageInterceptorInstalled = false;
   private playbackMonitorId: number | null = null;
-  // Rewinds are staged across frames: remove, rebuild baselines, then replay diffs.
+  // Rewinds are staged across frames: remove timeline nodes, then replay diffs.
   private resetEpoch = 0;
   private resetTargetStep: number | null = null;
 
@@ -382,14 +381,6 @@ export class TimelineRuntime {
     this.syncPlaybackButtons();
   }
 
-  setBaseline(payload: { name: string; messages: RuntimeMessage[] }): void {
-    const messages = payload.messages.map((message) =>
-      normalizeTransportMessage(message),
-    );
-    this.baselineByName.set(payload.name, messages);
-    this.timelineNodeNames.add(payload.name);
-  }
-
   preloadStep(payload: {
     step: number;
     messages: RuntimeMessage[];
@@ -515,21 +506,11 @@ export class TimelineRuntime {
       if (epoch !== this.resetEpoch) {
         return;
       }
-      // Recreate nodes in a separate frame so reused names remount cleanly.
-      for (const [name, messages] of this.baselineByName.entries()) {
-        this.timelineNodeNames.add(name);
-        this.pushMessages(messages);
+      const targetStep = this.resetTargetStep ?? 0;
+      this.resetTargetStep = null;
+      if (targetStep >= 0) {
+        this.applyThrough(targetStep);
       }
-      getWindow().requestAnimationFrame(() => {
-        if (epoch !== this.resetEpoch) {
-          return;
-        }
-        const targetStep = this.resetTargetStep ?? 0;
-        this.resetTargetStep = null;
-        if (targetStep >= 0) {
-          this.applyThrough(targetStep);
-        }
-      });
     });
   }
 

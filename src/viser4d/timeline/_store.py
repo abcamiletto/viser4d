@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import base64
-import inspect
 from dataclasses import dataclass, field
-from typing import Any, Iterator, cast
+from typing import Any, cast
 
 import msgspec
 import numpy as np
 import viser
 import zstandard
 from viser import _messages
-from viser.infra import WebsockMessageHandler
 
 from ..audio._messages import is_audio_message_type
 from .._types import (
@@ -62,10 +60,6 @@ def store_raw_messages(messages: list[_messages.Message]) -> list[StoredMessage]
     return [store_raw_message(message) for message in messages]
 
 
-def serialize_message(message: _messages.Message) -> SerializedMessage:
-    return serialize_stored_message(store_raw_message(message))
-
-
 def serialize_stored_message(message: StoredMessage) -> SerializedMessage:
     return cast(SerializedMessage, to_jsonable(message))
 
@@ -88,21 +82,6 @@ def is_scene_message(message: StoredMessage) -> bool:
     )
 
 
-_CREATE_SCENE_MESSAGE_TYPES = {
-    name
-    for name, obj in vars(_messages).items()
-    if inspect.isclass(obj)
-    and issubclass(obj, _messages.Message)
-    and obj is not _messages._CreateSceneNodeMessage
-    and issubclass(obj, _messages._CreateSceneNodeMessage)
-}
-
-
-def is_create_scene_message(message: StoredMessage) -> bool:
-    message_type = message.get("type")
-    return isinstance(message_type, str) and message_type in _CREATE_SCENE_MESSAGE_TYPES
-
-
 @dataclass
 class TimelineStep:
     """Recorded scene and audio updates for one timestep."""
@@ -123,16 +102,13 @@ class TimelineUpdate:
     message: StoredMessage
 
 
-TimelineNode = list[StoredMessage]
-
-
 class TimelineStore:
-    """In-memory storage for timestep messages and baseline scene state."""
+    """In-memory storage for timestep messages and timeline-owned node names."""
 
     def __init__(self, num_steps: int) -> None:
         self.num_steps = num_steps
         self.steps = [TimelineStep() for _ in range(num_steps)]
-        self.nodes: dict[str, TimelineNode] = {}
+        self.node_names: set[str] = set()
 
     def validate_step(self, step: int) -> int:
         """Return ``step`` if it is in range, else raise ``IndexError``."""
@@ -147,16 +123,7 @@ class TimelineStore:
         return self.steps[self.validate_step(step)]
 
     def has_node(self, name: str) -> bool:
-        return name in self.nodes
-
-    def has_saved_baseline(self, name: str) -> bool:
-        return bool(self.nodes.get(name))
-
-    def iter_node_names(self) -> Iterator[str]:
-        return iter(self.nodes)
-
-    def iter_baselines(self) -> Iterator[list[StoredMessage]]:
-        return iter(self.nodes.values())
+        return name in self.node_names
 
     def record_step(self, step: int, messages: list[StoredMessage]) -> TimelineStep:
         """Store one timestep's scene and audio updates."""
@@ -171,10 +138,6 @@ class TimelineStore:
                     continue
                 self._record_audio_message(step_state, track_name, message)
         return step_state
-
-    def set_baseline(self, name: str, messages: list[StoredMessage]) -> None:
-        """Store the baseline scene messages for one timeline-owned node."""
-        self.nodes[name] = list(messages)
 
     def _record_audio_message(
         self,
@@ -192,28 +155,8 @@ class TimelineStore:
         node_name = extract_message_name(message)
         if node_name is None:
             return
-        self.nodes.setdefault(node_name, [])
+        self.node_names.add(node_name)
         step_state.scene_updates.append(TimelineUpdate(node_name, message))
-
-
-class TimelineRecorder(WebsockMessageHandler):
-    """Temporary websocket sink used while recording a timestep."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.messages: list[_messages.Message] = []
-
-    def get_message_buffer(self) -> Any:
-        return self
-
-    def push(self, message: _messages.Message) -> None:
-        self.messages.append(message)
-
-    def atomic_start(self) -> None:
-        return
-
-    def atomic_end(self) -> None:
-        return
 
 
 def serialize_viser_recording(
