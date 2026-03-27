@@ -62,6 +62,7 @@ export class TimelineRuntime {
     timestepSyncUuid: null,
   };
   private timelineNodeNames = new Set<string>();
+  private stickySceneMessages = new Map<string, RuntimeMessage>();
   private currentStep = 0;
   private playStartStep = 0;
   private playStartPerfTime = 0;
@@ -409,6 +410,7 @@ export class TimelineRuntime {
       this.audio.applyLiveMessages(Math.floor(this.currentStep), [message]);
       return;
     }
+    this.cacheStickySceneMessage(message);
     this.pushMessages([message]);
   }
 
@@ -530,6 +532,24 @@ export class TimelineRuntime {
       }
     }
     this.appliedStep = step;
+    this.reapplyStickySceneMessages();
+  }
+
+  private cacheStickySceneMessage(message: RuntimeMessage): void {
+    if (
+      message.type !== "SetSceneNodeClickableMessage"
+      || typeof message.name !== "string"
+    ) {
+      return;
+    }
+    this.stickySceneMessages.set(message.name, message);
+  }
+
+  private reapplyStickySceneMessages(): void {
+    if (this.stickySceneMessages.size === 0) {
+      return;
+    }
+    this.pushMessages(Array.from(this.stickySceneMessages.values()));
   }
 
   seek(payload: { step: number }): void {

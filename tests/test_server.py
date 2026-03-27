@@ -1,3 +1,4 @@
+import asyncio
 import threading
 import time
 from types import SimpleNamespace
@@ -5,10 +6,31 @@ from typing import cast
 
 import numpy as np
 import pytest
+from viser import ScenePointerEvent, TransformControlsEvent, _messages
+from viser.infra import ClientId
 
 import viser4d
 from viser4d import _viser_private as impl
 from viser4d.timeline import ClientPlaybackHandle
+
+
+def _attach_fake_client(server: viser4d.Viser4dServer, client_id: int = 0) -> None:
+    server._connected_clients = cast(  # type: ignore[assignment]
+        dict[int, object],
+        {client_id: SimpleNamespace(client_id=client_id)},
+    )
+
+
+def _dispatch_viewer_message(
+    server: viser4d.Viser4dServer,
+    message: _messages.Message,
+    client_id: int = 0,
+) -> None:
+    future = asyncio.run_coroutine_threadsafe(
+        server._websock_server._handle_incoming_message(ClientId(client_id), message),
+        server.get_event_loop(),
+    )
+    future.result(timeout=1.0)
 
 
 def test_audio_requires_timestep_context() -> None:
@@ -309,6 +331,96 @@ def test_at_rejects_recreating_timeline_nodes() -> None:
         with pytest.raises(RuntimeError, match="Cannot create timeline node"):
             with server.at(1) as timeline:
                 timeline.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
+    finally:
+        server.stop()
+
+
+def test_timeline_click_callbacks_work_after_recording() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    clicked = threading.Event()
+
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+
+        _attach_fake_client(server)
+
+        @joint.on_click
+        async def _(_event: object) -> None:
+            clicked.set()
+
+        _dispatch_viewer_message(
+            server,
+            _messages.SceneNodeClickMessage(
+                name="/joint",
+                instance_index=None,
+                ray_origin=(0.0, 0.0, 0.0),
+                ray_direction=(0.0, 0.0, -1.0),
+                screen_pos=(0.5, 0.5),
+            ),
+        )
+
+        assert clicked.wait(timeout=1.0)
+    finally:
+        server.stop()
+
+
+def test_timeline_scene_pointer_callbacks_work_after_recording() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    clicked = threading.Event()
+
+    try:
+        with server.at(0) as timeline:
+            timeline_scene = timeline.scene
+            timeline_scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+
+        _attach_fake_client(server)
+
+        @timeline_scene.on_pointer_event("click")
+        def _(_event: ScenePointerEvent) -> None:
+            clicked.set()
+
+        _dispatch_viewer_message(
+            server,
+            _messages.ScenePointerMessage(
+                event_type="click",
+                ray_origin=(0.0, 0.0, 0.0),
+                ray_direction=(0.0, 0.0, -1.0),
+                screen_pos=((0.5, 0.5),),
+            ),
+        )
+
+        assert clicked.wait(timeout=1.0)
+    finally:
+        server.stop()
+
+
+def test_timeline_transform_controls_callbacks_work_after_recording() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    updates: list[tuple[int | None, tuple[float, float, float]]] = []
+    updated = threading.Event()
+
+    try:
+        with server.at(0) as timeline:
+            controls = timeline.scene.add_transform_controls("/joint")
+
+        @controls.on_update
+        def _(event: TransformControlsEvent) -> None:
+            position = cast(tuple[float, float, float], tuple(event.target.position))
+            updates.append((event.client_id, position))
+            updated.set()
+
+        _dispatch_viewer_message(
+            server,
+            _messages.TransformControlsUpdateMessage(
+                name="/joint",
+                wxyz=(1.0, 0.0, 0.0, 0.0),
+                position=(1.0, 2.0, 3.0),
+            ),
+        )
+
+        assert updated.wait(timeout=1.0)
+        assert updates == [(0, (1.0, 2.0, 3.0))]
     finally:
         server.stop()
 
