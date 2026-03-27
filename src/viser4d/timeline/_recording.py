@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator, cast
 
 import numpy as np
 from viser._scene_api import SceneApi
@@ -172,7 +172,7 @@ def _make_timeline_scene(
     server: Viser4dServer,
     transport: _TimelineTransport,
 ) -> SceneApi:
-    owner = SimpleNamespace(_websock_connection=transport)
+    owner = cast(Any, SimpleNamespace(_websock_connection=transport))
     return SceneApi(
         owner,
         thread_executor=server._thread_executor,
