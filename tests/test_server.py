@@ -15,9 +15,18 @@ from viser4d.timeline import ClientPlaybackHandle
 
 
 def _attach_fake_client(server: viser4d.Viser4dServer, client_id: int = 0) -> None:
+    fake_scene = SimpleNamespace(
+        _scene_pointer_cb=None,
+        remove_pointer_callback=lambda: None,
+    )
+    fake_client = SimpleNamespace(
+        client_id=client_id,
+        scene=fake_scene,
+        _websock_connection=SimpleNamespace(queue_message=lambda _message: None),
+    )
     server._connected_clients = cast(  # type: ignore[assignment]
         dict[int, object],
-        {client_id: SimpleNamespace(client_id=client_id)},
+        {client_id: fake_client},
     )
 
 
@@ -403,6 +412,8 @@ def test_timeline_transform_controls_callbacks_work_after_recording() -> None:
     try:
         with server.at(0) as timeline:
             controls = timeline.scene.add_transform_controls("/joint")
+
+        _attach_fake_client(server)
 
         @controls.on_update
         def _(event: TransformControlsEvent) -> None:

@@ -1,22 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import contextlib
-import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterator, cast
+from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
 from viser import _messages
 from viser._scene_api import SceneApi
-from viser._scene_handles import (
-    SceneNodePointerEvent,
-    ScenePointerEvent,
-    TransformControlsEvent,
-    _ClickableSceneNodeHandle,
-)
-from viser._threadpool_exceptions import print_threadpool_errors
-from viser.infra import ClientId, WebsockMessageHandler
+from viser.infra import WebsockMessageHandler
 
 from .. import _viser_private as impl
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
@@ -49,36 +40,16 @@ class SceneRecorder:
         self._timeline = timeline
         self._active_step: int | None = None
         self._pending_messages: list[_messages.Message] | None = None
-        self._transport = _TimelineTransport(self)
-        owner = _TimelineSceneOwner(server, self._transport)
+        self._transport = _TimelineTransport(server, self)
+        owner = _TimelineSceneOwner(self._transport)
         # SceneApi only reads the client-like fields defined on _TimelineSceneOwner.
         self.scene = SceneApi(
             owner,  # type: ignore[arg-type]
             thread_executor=server._thread_executor,
             event_loop=server.get_event_loop(),
         )
-        owner.scene = self.scene
+        self.scene._owner = server
         self._transport.start()
-        server._websock_server.register_handler(
-            _messages.SceneNodeClickMessage,
-            self._handle_node_click,
-        )
-        server._websock_server.register_handler(
-            _messages.TransformControlsUpdateMessage,
-            self._handle_transform_controls_update,
-        )
-        server._websock_server.register_handler(
-            _messages.TransformControlsDragStartMessage,
-            self._handle_transform_controls_drag_start,
-        )
-        server._websock_server.register_handler(
-            _messages.TransformControlsDragEndMessage,
-            self._handle_transform_controls_drag_end,
-        )
-        server._websock_server.register_handler(
-            _messages.ScenePointerMessage,
-            self._handle_scene_pointer,
-        )
 
     @property
     def active_step(self) -> int | None:
@@ -200,112 +171,11 @@ class SceneRecorder:
                 "server.at(t) blocks."
             )
 
-    async def _handle_node_click(
-        self,
-        client_id: ClientId,
-        message: _messages.SceneNodeClickMessage,
-    ) -> None:
-        handle = self.scene._handle_from_node_name.get(message.name)
-        client = self._server.get_clients().get(int(client_id))
-        if handle is None or client is None or not handle._impl.click_cb:
-            return
-        event = SceneNodePointerEvent(
-            client=client,
-            client_id=int(client_id),
-            event="click",
-            target=cast(_ClickableSceneNodeHandle, handle),
-            ray_origin=message.ray_origin,
-            ray_direction=message.ray_direction,
-            screen_pos=message.screen_pos,
-            instance_index=message.instance_index,
-        )
-        for callback in handle._impl.click_cb:
-            await self._dispatch_callback(callback, event)
-
-    async def _handle_transform_controls_update(
-        self,
-        client_id: ClientId,
-        message: _messages.TransformControlsUpdateMessage,
-    ) -> None:
-        handle = self.scene._handle_from_transform_controls_name.get(message.name)
-        if handle is None:
-            return
-        handle._impl.wxyz = np.array(message.wxyz)
-        handle._impl.position = np.array(message.position)
-        handle._impl_aux.last_updated = time.time()
-        event = TransformControlsEvent(
-            client=self._server.get_clients().get(int(client_id)),
-            client_id=int(client_id),
-            target=handle,
-        )
-        for callback in handle._impl_aux.update_cb:
-            await self._dispatch_callback(callback, event)
-        if handle._impl_aux.sync_cb is not None:
-            handle._impl_aux.sync_cb(client_id, handle)
-
-    async def _handle_transform_controls_drag_start(
-        self,
-        client_id: ClientId,
-        message: _messages.TransformControlsDragStartMessage,
-    ) -> None:
-        handle = self.scene._handle_from_transform_controls_name.get(message.name)
-        if handle is None:
-            return
-        event = TransformControlsEvent(
-            client=self._server.get_clients().get(int(client_id)),
-            client_id=int(client_id),
-            target=handle,
-        )
-        for callback in handle._impl_aux.drag_start_cb:
-            await self._dispatch_callback(callback, event)
-
-    async def _handle_transform_controls_drag_end(
-        self,
-        client_id: ClientId,
-        message: _messages.TransformControlsDragEndMessage,
-    ) -> None:
-        handle = self.scene._handle_from_transform_controls_name.get(message.name)
-        if handle is None:
-            return
-        event = TransformControlsEvent(
-            client=self._server.get_clients().get(int(client_id)),
-            client_id=int(client_id),
-            target=handle,
-        )
-        for callback in handle._impl_aux.drag_end_cb:
-            await self._dispatch_callback(callback, event)
-
-    async def _handle_scene_pointer(
-        self,
-        client_id: ClientId,
-        message: _messages.ScenePointerMessage,
-    ) -> None:
-        callback = self.scene._scene_pointer_cb
-        client = self._server.get_clients().get(int(client_id))
-        if callback is None or client is None:
-            return
-        event = ScenePointerEvent(
-            client=client,
-            client_id=int(client_id),
-            event_type=message.event_type,
-            ray_origin=message.ray_origin,
-            ray_direction=message.ray_direction,
-            screen_pos=message.screen_pos,
-        )
-        await self._dispatch_callback(callback, event)
-
-    async def _dispatch_callback(self, callback: Any, event: Any) -> None:
-        if asyncio.iscoroutinefunction(callback):
-            await callback(event)
-            return
-        self._server._thread_executor.submit(callback, event).add_done_callback(
-            print_threadpool_errors
-        )
-
 
 class _TimelineTransport(WebsockMessageHandler):
-    def __init__(self, recorder: SceneRecorder) -> None:
+    def __init__(self, server: Viser4dServer, recorder: SceneRecorder) -> None:
         super().__init__()
+        self._server = server
         self._recorder = recorder
         self._recording_enabled = False
 
@@ -326,16 +196,15 @@ class _TimelineTransport(WebsockMessageHandler):
     def atomic_end(self) -> None:
         pass
 
+    def register_handler(self, message_cls: type[Any], callback: Any) -> None:
+        self._server._websock_server.register_handler(message_cls, callback)
+
+    def unregister_handler(self, message_cls: type[Any], callback: Any = None) -> None:
+        self._server._websock_server.unregister_handler(message_cls, callback)
+
 
 class _TimelineSceneOwner:
     """Minimal client-like owner required by ``SceneApi``."""
 
-    scene: SceneApi
-
-    def __init__(self, server: Viser4dServer, transport: _TimelineTransport) -> None:
+    def __init__(self, transport: _TimelineTransport) -> None:
         self._websock_connection = transport
-        self._viser_server = server
-        self.client_id = -1
-
-    def flush(self) -> None:
-        pass
