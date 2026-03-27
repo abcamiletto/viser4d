@@ -26,6 +26,7 @@ def runtime_source() -> str:
 
 def client_runtime_config_payload(
     *,
+    client_id: int,
     num_steps: int,
     timeline_fps: float,
     speed: float,
@@ -40,6 +41,7 @@ def client_runtime_config_payload(
     timestep_sync_uuid: str,
 ) -> ClientRuntimeConfig:
     return ClientRuntimeConfig(
+        clientId=client_id,
         numSteps=num_steps,
         timelineFps=timeline_fps,
         speed=speed,

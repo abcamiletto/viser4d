@@ -48,6 +48,7 @@ export class TimelineRuntime {
   private viewer: ViewerLike | null = null;
   private playbackTimeSlider: Element | null = null;
   private config: RuntimeConfig = {
+    clientId: null,
     numSteps: 1,
     timelineFps: 30,
     speed: 1,
@@ -62,7 +63,7 @@ export class TimelineRuntime {
     timestepSyncUuid: null,
   };
   private timelineNodeNames = new Set<string>();
-  private stickySceneMessages = new Map<string, RuntimeMessage>();
+  private sceneOverlayMessages = new Map<string, RuntimeMessage>();
   private currentStep = 0;
   private playStartStep = 0;
   private playStartPerfTime = 0;
@@ -398,8 +399,13 @@ export class TimelineRuntime {
     }
   }
 
-  applyMessageUpdate(rawMessage: RuntimeMessage): void {
-    const message = normalizeTransportMessage(rawMessage);
+  applyMessageUpdate(payload: {
+    message: RuntimeMessage;
+    redundancyKey?: string | null;
+    clearNodeName?: string | null;
+    excludedClientId?: number | null;
+  }): void {
+    const message = normalizeTransportMessage(payload.message);
     const name = typeof message.name === "string" ? message.name : null;
     debugState.push("runtime.apply_message_update", {
       type: message.type,
@@ -410,7 +416,14 @@ export class TimelineRuntime {
       this.audio.applyLiveMessages(Math.floor(this.currentStep), [message]);
       return;
     }
-    this.cacheStickySceneMessage(message);
+    this.cacheSceneOverlayMessage(
+      message,
+      payload.redundancyKey ?? null,
+      payload.clearNodeName ?? null,
+    );
+    if (payload.excludedClientId === this.config.clientId) {
+      return;
+    }
     this.pushMessages([message]);
   }
 
@@ -532,24 +545,32 @@ export class TimelineRuntime {
       }
     }
     this.appliedStep = step;
-    this.reapplyStickySceneMessages();
+    this.reapplySceneOverlayMessages();
   }
 
-  private cacheStickySceneMessage(message: RuntimeMessage): void {
-    if (
-      message.type !== "SetSceneNodeClickableMessage"
-      || typeof message.name !== "string"
-    ) {
+  private cacheSceneOverlayMessage(
+    message: RuntimeMessage,
+    redundancyKey: string | null,
+    clearNodeName: string | null,
+  ): void {
+    if (redundancyKey === null) {
       return;
     }
-    this.stickySceneMessages.set(message.name, message);
+    if (clearNodeName !== null) {
+      for (const [existingKey, existingMessage] of this.sceneOverlayMessages) {
+        if (existingMessage.name === clearNodeName) {
+          this.sceneOverlayMessages.delete(existingKey);
+        }
+      }
+    }
+    this.sceneOverlayMessages.set(redundancyKey, message);
   }
 
-  private reapplyStickySceneMessages(): void {
-    if (this.stickySceneMessages.size === 0) {
+  private reapplySceneOverlayMessages(): void {
+    if (this.sceneOverlayMessages.size === 0) {
       return;
     }
-    this.pushMessages(Array.from(this.stickySceneMessages.values()));
+    this.pushMessages(Array.from(this.sceneOverlayMessages.values()));
   }
 
   seek(payload: { step: number }): void {

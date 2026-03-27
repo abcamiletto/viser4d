@@ -351,6 +351,23 @@ def test_timeline_click_callbacks_work_after_recording() -> None:
         server.stop()
 
 
+def test_timeline_handle_mutations_work_after_recording() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+
+        joint.position = (1.0, 2.0, 3.0)
+        joint.visible = False
+        joint.remove()
+
+        assert tuple(joint.position) == (1.0, 2.0, 3.0)
+        assert joint.visible is False
+    finally:
+        server.stop()
+
+
 def test_timeline_scene_pointer_callbacks_work_after_recording() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     clicked = threading.Event()

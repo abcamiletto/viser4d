@@ -40,6 +40,7 @@ class RuntimeConfig(TypedDict):
 
 
 class ClientRuntimeConfig(RuntimeConfig):
+    clientId: int | None
     timelineSliderUuid: str
     speedSliderUuid: str
     stepButtonsUuid: str

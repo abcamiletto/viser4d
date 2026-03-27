@@ -172,6 +172,7 @@ class ClientPlaybackHandle:
         self._send_runtime_call(
             "configure",
             client_runtime_config_payload(
+                client_id=self._client.client_id,
                 num_steps=self._server.num_steps,
                 timeline_fps=self._server.fps,
                 speed=speed,
