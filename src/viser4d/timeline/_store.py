@@ -173,6 +173,9 @@ class TimelineStore:
         self._pending_flushes: dict[int, Future[None]] = {}
         self._block_dir_root = tempfile.TemporaryDirectory(prefix="viser4d-timeline-")
         self._block_dir = Path(self._block_dir_root.name)
+        # Running checkpoint for eager incremental persistence during sequential recording.
+        self._eager_checkpoint = _CheckpointState()
+        self._eager_checkpoint_next_block = 0
 
     def validate_step(self, step: int) -> int:
         """Return ``step`` if it is in range, else raise ``IndexError``."""
@@ -272,6 +275,9 @@ class TimelineStore:
     def _block_path(self, block_index: int) -> Path:
         return self._block_dir / f"{block_index:08d}.msgpack.zst"
 
+    def _checkpoint_path(self, block_index: int) -> Path:
+        return self._block_dir / f"checkpoint_{block_index:08d}.msgpack.zst"
+
     def _validate_block_index(self, block_index: int) -> int:
         if block_index < 0 or block_index >= self.block_count:
             raise IndexError(
@@ -335,11 +341,28 @@ class TimelineStore:
             return
         block.dirty = False
         pending_flush = self._pending_flushes.get(block_index)
+        # Eagerly compute the checkpoint for block_index+1 while we still have
+        # the block data in hand, so seeks never need to replay prior blocks.
+        # Only possible when blocks are flushed in contiguous order from 0.
+        next_checkpoint: _CheckpointState | None = None
+        next_checkpoint_path: Path | None = None
+        next_block = block_index + 1
+        if block_index == self._eager_checkpoint_next_block and next_block < self.block_count:
+            for step in block.steps:
+                for key, message in step.scene_updates.items():
+                    self._apply_scene_message(self._eager_checkpoint, key, message)
+                for message in step.audio_updates:
+                    self._apply_audio_message(self._eager_checkpoint, message)
+            self._eager_checkpoint_next_block = next_block
+            next_checkpoint = self._copy_checkpoint(self._eager_checkpoint)
+            next_checkpoint_path = self._checkpoint_path(next_block)
         self._pending_flushes[block_index] = self._flush_executor.submit(
-            _write_block_file_after,
+            _write_block_and_checkpoint_after,
             pending_flush,
             self._block_path(block_index),
             block,
+            next_checkpoint_path,
+            next_checkpoint,
         )
 
     def _wait_for_pending_flush(self, block_index: int) -> None:
@@ -359,6 +382,11 @@ class TimelineStore:
         if cached is not None:
             self._checkpoint_cache.move_to_end(block_index)
             return self._copy_checkpoint(cached)
+        # Check disk before falling back to block replay.
+        disk_state = self._load_checkpoint_from_disk(block_index)
+        if disk_state is not None:
+            self._cache_checkpoint(block_index, disk_state)
+            return disk_state
         prior_blocks = [
             index for index in self._checkpoint_cache if index < block_index
         ]
@@ -373,6 +401,16 @@ class TimelineStore:
             self._apply_block_to_checkpoint(state, index)
             self._cache_checkpoint(index + 1, state)
         return self._copy_checkpoint(state)
+
+    def _load_checkpoint_from_disk(self, block_index: int) -> _CheckpointState | None:
+        path = self._checkpoint_path(block_index)
+        # Wait for any in-flight flush that might be writing this checkpoint.
+        pending = self._pending_flushes.get(block_index - 1) if block_index > 0 else None
+        if pending is not None and not pending.done():
+            pending.result()
+        if not path.exists():
+            return None
+        return _load_checkpoint_file(path)
 
     def _cache_checkpoint(self, block_index: int, state: _CheckpointState) -> None:
         self._checkpoint_cache[block_index] = self._copy_checkpoint(state)
@@ -542,14 +580,62 @@ def _write_block_file(path: Path, block: TimelineBlock) -> None:
     path.write_bytes(compressed)
 
 
-def _write_block_file_after(
+def _write_block_and_checkpoint_after(
     previous_flush: Future[None] | None,
-    path: Path,
+    block_path: Path,
     block: TimelineBlock,
+    checkpoint_path: Path | None,
+    checkpoint_state: _CheckpointState | None,
 ) -> None:
     if previous_flush is not None:
         previous_flush.result()
-    _write_block_file(path, block)
+    _write_block_file(block_path, block)
+    if checkpoint_path is not None and checkpoint_state is not None:
+        _write_checkpoint_file(checkpoint_path, checkpoint_state)
+
+
+def _write_checkpoint_file(path: Path, state: _CheckpointState) -> None:
+    audio_tracks = [
+        {
+            "name": name,
+            "sampleRate": track.sample_rate,
+            "waveform": track.waveform.tobytes(),
+            "dtype": track.waveform.dtype.str,
+            "ndim": track.waveform.ndim,
+            "shape": list(track.waveform.shape),
+            "volume": track.volume,
+        }
+        for name, track in sorted(state.audio_tracks.items())
+    ]
+    payload = {
+        "sceneUpdates": list(state.scene_updates.items()),
+        "keyToNode": list(state.key_to_node.items()),
+        "audioTracks": audio_tracks,
+    }
+    packed = msgspec.msgpack.encode(payload)
+    compressed = zstandard.ZstdCompressor(level=6).compress(packed)
+    path.write_bytes(compressed)
+
+
+def _load_checkpoint_file(path: Path) -> _CheckpointState:
+    raw = zstandard.ZstdDecompressor().decompress(path.read_bytes())
+    payload = msgspec.msgpack.decode(raw)
+    scene_updates: dict[str, StoredMessage] = dict(payload["sceneUpdates"])
+    key_to_node: dict[str, str | None] = dict(payload["keyToNode"])
+    audio_tracks: dict[str, _AudioTrackState] = {}
+    for td in payload["audioTracks"]:
+        arr = np.frombuffer(td["waveform"], dtype=np.dtype(td["dtype"]))
+        shape = tuple(td["shape"])
+        audio_tracks[td["name"]] = _AudioTrackState(
+            sample_rate=td["sampleRate"],
+            waveform=np.ascontiguousarray(arr.reshape(shape)),
+            volume=td["volume"],
+        )
+    return _CheckpointState(
+        scene_updates=scene_updates,
+        key_to_node=key_to_node,
+        audio_tracks=audio_tracks,
+    )
 
 
 def serialize_viser_recording(
