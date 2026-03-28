@@ -4,7 +4,7 @@ import {
   normalizeTransportMessage,
 } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
-import { isAudioMessage } from "../audio/messages";
+import { isAudioMessage, type AudioMessage } from "../audio/messages";
 import {
   findPlaybackTimeSlider,
   findViewer,
@@ -62,7 +62,6 @@ export class TimelineRuntime {
     timestepSyncUuid: null,
   };
   private timelineNodeNames = new Set<string>();
-  private baselineByName = new Map<string, RuntimeMessage[]>();
   private currentStep = 0;
   private playStartStep = 0;
   private playStartPerfTime = 0;
@@ -85,7 +84,7 @@ export class TimelineRuntime {
   private queueIngressConfigured = false;
   private guiMessageInterceptorInstalled = false;
   private playbackMonitorId: number | null = null;
-  // Rewinds are staged across frames: remove, rebuild baselines, then replay diffs.
+  // Rewinds are staged across frames: remove timeline nodes, then replay step data.
   private resetEpoch = 0;
   private resetTargetStep: number | null = null;
 
@@ -122,10 +121,6 @@ export class TimelineRuntime {
 
   private configureQueueIngress(): void {
     if (this.queueIngressConfigured) {
-      return;
-    }
-    if (this.getViewer().messageSource === "websocket") {
-      this.queueIngressConfigured = true;
       return;
     }
     // File playback and embedded recordings push msgpack-decoded transport
@@ -323,16 +318,6 @@ export class TimelineRuntime {
     sync(this.config.pauseButtonUuid, this.playing);
   }
 
-  private ensureStep(step: number): RuntimeMessage[] {
-    const bucket = this.stepMessages[step];
-    if (bucket) {
-      return bucket;
-    }
-    const created: RuntimeMessage[] = [];
-    this.stepMessages[step] = created;
-    return created;
-  }
-
   private anchorTransport(step: number, timestamp = performance.now()): void {
     this.currentStep = step;
     this.playStartStep = step;
@@ -345,7 +330,7 @@ export class TimelineRuntime {
 
   private applyStepMessages(step: number, messages: RuntimeMessage[]): void {
     const sceneMessages: RuntimeMessage[] = [];
-    const audioMessages = [];
+    const audioMessages: AudioMessage[] = [];
     for (const message of messages) {
       if (isAudioMessage(message)) {
         audioMessages.push(message);
@@ -382,28 +367,20 @@ export class TimelineRuntime {
     this.syncPlaybackButtons();
   }
 
-  setBaseline(payload: { name: string; messages: RuntimeMessage[] }): void {
-    const messages = payload.messages.map((message) =>
-      normalizeTransportMessage(message),
-    );
-    this.baselineByName.set(payload.name, messages);
-    this.timelineNodeNames.add(payload.name);
-  }
-
   preloadStep(payload: {
     step: number;
     messages: RuntimeMessage[];
-    nodeNames?: string[];
   }): void {
-    const messages = payload.messages.map((message) =>
-      normalizeTransportMessage(message),
-    );
-    this.stepMessages[payload.step] = this.ensureStep(payload.step).concat(
-      messages,
-    );
-    for (const name of payload.nodeNames || []) {
-      this.timelineNodeNames.add(name);
+    const messages: RuntimeMessage[] = [];
+    for (const rawMessage of payload.messages) {
+      const message = normalizeTransportMessage(rawMessage);
+      messages.push(message);
+      const name = typeof message.name === "string" ? message.name : null;
+      if (name && !isAudioMessage(message)) {
+        this.timelineNodeNames.add(name);
+      }
     }
+    this.stepMessages[payload.step] = messages;
   }
 
   applyMessageUpdate(rawMessage: RuntimeMessage): void {
@@ -515,21 +492,11 @@ export class TimelineRuntime {
       if (epoch !== this.resetEpoch) {
         return;
       }
-      // Recreate nodes in a separate frame so reused names remount cleanly.
-      for (const [name, messages] of this.baselineByName.entries()) {
-        this.timelineNodeNames.add(name);
-        this.pushMessages(messages);
+      const targetStep = this.resetTargetStep ?? 0;
+      this.resetTargetStep = null;
+      if (targetStep >= 0) {
+        this.applyThrough(targetStep);
       }
-      getWindow().requestAnimationFrame(() => {
-        if (epoch !== this.resetEpoch) {
-          return;
-        }
-        const targetStep = this.resetTargetStep ?? 0;
-        this.resetTargetStep = null;
-        if (targetStep >= 0) {
-          this.applyThrough(targetStep);
-        }
-      });
     });
   }
 
@@ -544,7 +511,7 @@ export class TimelineRuntime {
     }
     for (let index = this.appliedStep + 1; index <= step; index += 1) {
       const messages = this.stepMessages[index];
-      if (messages?.length) {
+      if (messages.length) {
         this.applyStepMessages(index, messages);
       }
     }

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import contextlib
 import inspect
 import threading
 from collections.abc import Awaitable
-from typing import TYPE_CHECKING, Callable, Iterator
+from contextlib import AbstractContextManager
+from typing import TYPE_CHECKING, Callable
 
 import viser
 from viser import _messages
@@ -16,7 +16,7 @@ from ._types import RuntimeMethod, RuntimePayload
 from ._runtime import make_runtime_message, runtime_source
 from ._validation import require_positive_float
 from .timeline._playback import ClientPlaybackHandle
-from .timeline._recording import SceneRecorder
+from .timeline._recording import SceneRecorder, TimelineContext
 from .timeline._store import TimelineStore
 
 if TYPE_CHECKING:
@@ -68,11 +68,14 @@ class Viser4dServer(viser.ViserServer):
             with self._client_playbacks_lock:
                 self._client_playbacks.pop(client.client_id, None)
 
-    @contextlib.contextmanager
-    def at(self, t: int) -> Iterator[None]:
-        """Record scene and audio operations for timestep ``t``."""
-        with self._recorder.at(t):
-            yield
+    def at(self, t: int) -> AbstractContextManager[TimelineContext]:
+        """Expose the timeline APIs for timestep ``t``.
+
+        Existing code can keep using ``server.scene`` inside the context. The
+        returned ``timeline`` object provides the same timeline-owned scene and
+        audio APIs explicitly.
+        """
+        return self._recorder.at(t)
 
     @property
     def fps(self) -> float:
@@ -157,6 +160,15 @@ class Viser4dServer(viser.ViserServer):
     ) -> None:
         message = make_runtime_message(method, payload)
         impl.queue_server_message(self, message)
+
+    def _send_runtime_call_to_client(
+        self,
+        client: ClientHandle,
+        method: RuntimeMethod,
+        payload: RuntimePayload,
+    ) -> None:
+        message = make_runtime_message(method, payload)
+        impl.queue_client_message(client, message)
 
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:
         with self._client_playbacks_lock:

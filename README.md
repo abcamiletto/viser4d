@@ -199,24 +199,26 @@ count).
 
 ## How it works
 
-Context determines behavior. `server.scene` is viser's normal scene API, but
-its websocket target is swapped while you're inside an `at(t)` context:
+Context determines behavior. Inside `server.at(t)`, `server.scene` and
+`server.audio` record timeline state. Outside `server.at(t)`, `server.scene`
+remains viser's live/static scene API:
 
 ```
 Inside at(t):                          Outside at(t):
 ─────────────                          ──────────────
-scene.add_frame(...)                   scene.add_frame(...)
-       │                                      │
-       ▼                                      ▼
-    records to Timeline                    forwards to live viser scene
+server.scene.add_frame(...)            server.scene.add_frame(...)
+server.audio.add_track(...)                   │
+       │                                      ▼
+       ▼                                   forwards to live viser scene
+    records to Timeline
 ```
 
-- **Inside `at(t)`**: Operations are recorded to a timeline, not executed.
-- **Outside `at(t)`**: Operations forward directly to viser's live scene.
+- **Inside `at(t)`**: Use `server.scene` and `server.audio` to record timeline state.
+- **Outside `at(t)`**: `server.scene` remains viser's live/static scene API.
 - **Client playback**: Each browser tab owns its own transport and playback state.
 - **Timestep callbacks**: `on_timestep_change(...)` aggregates committed client steps and passes the source client.
 - **Playback callbacks**: `on_playback_change(...)` reports per-client play/pause transitions.
-- **Audio**: Add timeline-synced tracks with `server.audio.add_track(...)`.
+- **Audio**: Add timeline-synced tracks with `server.audio.add_track(...)` inside `at(t)`.
 
 See `examples/` for more.
 

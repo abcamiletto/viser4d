@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import base64
-import inspect
 from dataclasses import dataclass, field
-from typing import Any, Iterator, cast
+from typing import Any, cast
 
 import msgspec
 import numpy as np
 import viser
 import zstandard
 from viser import _messages
-from viser.infra import WebsockMessageHandler
 
-from ..audio._messages import is_audio_message_type
+from ..audio._messages import is_audio_message, is_audio_message_type
 from .._types import (
     BinaryPayload,
     JSONValue,
@@ -62,10 +60,6 @@ def store_raw_messages(messages: list[_messages.Message]) -> list[StoredMessage]
     return [store_raw_message(message) for message in messages]
 
 
-def serialize_message(message: _messages.Message) -> SerializedMessage:
-    return serialize_stored_message(store_raw_message(message))
-
-
 def serialize_stored_message(message: StoredMessage) -> SerializedMessage:
     return cast(SerializedMessage, to_jsonable(message))
 
@@ -88,51 +82,22 @@ def is_scene_message(message: StoredMessage) -> bool:
     )
 
 
-_CREATE_SCENE_MESSAGE_TYPES = {
-    name
-    for name, obj in vars(_messages).items()
-    if inspect.isclass(obj)
-    and issubclass(obj, _messages.Message)
-    and obj is not _messages._CreateSceneNodeMessage
-    and issubclass(obj, _messages._CreateSceneNodeMessage)
-}
-
-
-def is_create_scene_message(message: StoredMessage) -> bool:
-    message_type = message.get("type")
-    return isinstance(message_type, str) and message_type in _CREATE_SCENE_MESSAGE_TYPES
-
-
 @dataclass
 class TimelineStep:
     """Recorded scene and audio updates for one timestep."""
 
-    scene_updates: list["TimelineUpdate"] = field(default_factory=list)
-    audio_updates: list["TimelineUpdate"] = field(default_factory=list)
-
-    @property
-    def node_names(self) -> set[str]:
-        return {update.name for update in self.scene_updates}
-
-
-@dataclass
-class TimelineUpdate:
-    """One ordered update attached to a named timeline object."""
-
-    name: str
-    message: StoredMessage
-
-
-TimelineNode = list[StoredMessage]
+    scene_updates: dict[str, StoredMessage] = field(default_factory=dict)
+    audio_updates: list[StoredMessage] = field(default_factory=list)
 
 
 class TimelineStore:
-    """In-memory storage for timestep messages and baseline scene state."""
+    """In-memory storage for timeline-owned nodes and per-step message snapshots."""
 
     def __init__(self, num_steps: int) -> None:
         self.num_steps = num_steps
         self.steps = [TimelineStep() for _ in range(num_steps)]
-        self.nodes: dict[str, TimelineNode] = {}
+        self._node_start_steps: dict[str, int] = {}
+        self._last_scene_steps: dict[str, int] = {}
 
     def validate_step(self, step: int) -> int:
         """Return ``step`` if it is in range, else raise ``IndexError``."""
@@ -147,73 +112,50 @@ class TimelineStore:
         return self.steps[self.validate_step(step)]
 
     def has_node(self, name: str) -> bool:
-        return name in self.nodes
+        return name in self._node_start_steps
 
-    def has_saved_baseline(self, name: str) -> bool:
-        return bool(self.nodes.get(name))
+    def messages_for_step(self, step: int) -> list[StoredMessage]:
+        step_state = self.step(step)
+        return list(step_state.scene_updates.values()) + step_state.audio_updates
 
-    def iter_node_names(self) -> Iterator[str]:
-        return iter(self.nodes)
-
-    def iter_baselines(self) -> Iterator[list[StoredMessage]]:
-        return iter(self.nodes.values())
-
-    def record_step(self, step: int, messages: list[StoredMessage]) -> TimelineStep:
+    def record_step(self, step: int, messages: list[_messages.Message]) -> None:
         """Store one timestep's scene and audio updates."""
         step_state = self.step(step)
         for message in messages:
-            if is_scene_message(message):
-                self._record_scene_message(step_state, message)
+            stored_message = store_raw_message(message)
+            key = message.redundancy_key()
+            name = extract_message_name(stored_message)
+            if is_scene_message(stored_message):
+                if name is not None and isinstance(
+                    message, _messages._CreateSceneNodeMessage
+                ):
+                    self._node_start_steps.setdefault(name, step)
+                self._last_scene_steps[key] = step
+                self._store_message(step_state.scene_updates, key, stored_message)
                 continue
-            if is_audio_message_type(message.get("type")):
-                track_name = extract_message_name(message)
-                if track_name is None:
-                    continue
-                self._record_audio_message(step_state, track_name, message)
-        return step_state
+            if is_audio_message(message):
+                step_state.audio_updates.append(stored_message)
 
-    def set_baseline(self, name: str, messages: list[StoredMessage]) -> None:
-        """Store the baseline scene messages for one timeline-owned node."""
-        self.nodes[name] = list(messages)
+    def record_live_scene_update(self, message: _messages.Message) -> int:
+        stored_message = store_raw_message(message)
+        name = extract_message_name(stored_message)
+        key = message.redundancy_key()
+        start_step = 0 if name is None else self._node_start_steps.get(name, 0)
+        last_scene_step = self._last_scene_steps.get(key)
+        if last_scene_step is not None:
+            start_step = max(start_step, last_scene_step)
+        self._store_message(self.step(start_step).scene_updates, key, stored_message)
+        self._last_scene_steps[key] = start_step
+        return start_step
 
-    def _record_audio_message(
+    def _store_message(
         self,
-        step_state: TimelineStep,
-        track_name: str,
+        bucket: dict[str, StoredMessage],
+        key: str,
         message: StoredMessage,
     ) -> None:
-        step_state.audio_updates.append(TimelineUpdate(track_name, message))
-
-    def _record_scene_message(
-        self,
-        step_state: TimelineStep,
-        message: StoredMessage,
-    ) -> None:
-        node_name = extract_message_name(message)
-        if node_name is None:
-            return
-        self.nodes.setdefault(node_name, [])
-        step_state.scene_updates.append(TimelineUpdate(node_name, message))
-
-
-class TimelineRecorder(WebsockMessageHandler):
-    """Temporary websocket sink used while recording a timestep."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.messages: list[_messages.Message] = []
-
-    def get_message_buffer(self) -> Any:
-        return self
-
-    def push(self, message: _messages.Message) -> None:
-        self.messages.append(message)
-
-    def atomic_start(self) -> None:
-        return
-
-    def atomic_end(self) -> None:
-        return
+        bucket.pop(key, None)
+        bucket[key] = message
 
 
 def serialize_viser_recording(
