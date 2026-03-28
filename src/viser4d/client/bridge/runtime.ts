@@ -94,10 +94,6 @@ export class TimelineRuntime {
   private queueIngressConfigured = false;
   private guiMessageInterceptorInstalled = false;
   private playbackMonitorId: number | null = null;
-  // Rewinds are staged across frames: remove timeline nodes, then replay step data.
-  private resetEpoch = 0;
-  private resetTargetStep: number | null = null;
-
   constructor() {
     this.playbackAudio.setStepRate(1);
     this.installWhenReady();
@@ -417,7 +413,7 @@ export class TimelineRuntime {
     this.loadedBlocks.set(payload.block, block);
     const activeBlock = this.getBlockIndex(Math.floor(this.currentStep));
     if (payload.block === activeBlock && this.appliedBlock === activeBlock) {
-      this.resetTimelineState(Math.floor(this.currentStep));
+      this.rebuildThrough(Math.floor(this.currentStep));
       return;
     }
     if (this.pendingStep !== null && this.getLoadedBlock(this.pendingStep)) {
@@ -560,35 +556,27 @@ export class TimelineRuntime {
     }
   }
 
-  private resetTimelineState(targetStep = 0): void {
+  private resetTimelineState(): void {
     debugState.push("runtime.reset_timeline_state", {
       currentStep: this.currentStep,
       appliedStep: this.appliedStep,
       playing: this.playing,
     });
-    const epoch = ++this.resetEpoch;
-    this.resetTargetStep = targetStep;
     this.removeRenderedTimelineNodes();
     this.audio.resetTimeline();
     this.appliedStep = -1;
     this.appliedBlock = -1;
-    getWindow().requestAnimationFrame(() => {
-      if (epoch !== this.resetEpoch) {
-        return;
-      }
-      const targetStep = this.resetTargetStep ?? 0;
-      this.resetTargetStep = null;
-      if (targetStep >= 0 && this.ensureStepLoaded(targetStep)) {
-        this.applyThrough(targetStep);
-      }
-    });
+  }
+
+  private rebuildThrough(step: number): void {
+    if (!this.ensureStepLoaded(step)) {
+      return;
+    }
+    this.resetTimelineState();
+    this.applyThrough(step);
   }
 
   private applyThrough(step: number): void {
-    if (this.resetTargetStep !== null) {
-      this.resetTargetStep = step;
-      return;
-    }
     if (!this.ensureStepLoaded(step)) {
       return;
     }
@@ -598,7 +586,7 @@ export class TimelineRuntime {
     }
     const blockIndex = this.getBlockIndex(step);
     if (this.appliedStep >= 0 && (blockIndex !== this.appliedBlock || step < this.appliedStep)) {
-      this.resetTimelineState(step);
+      this.rebuildThrough(step);
       return;
     }
     if (this.appliedStep < 0) {
@@ -632,7 +620,7 @@ export class TimelineRuntime {
   }
 
   refresh(): void {
-    this.resetTimelineState(Math.floor(this.currentStep));
+    this.rebuildThrough(Math.floor(this.currentStep));
   }
 
   private tick(timestamp: number): void {
@@ -652,8 +640,7 @@ export class TimelineRuntime {
         return;
       }
       this.anchorTransport(0, timestamp);
-      this.resetTimelineState();
-      this.applyThrough(0);
+      this.rebuildThrough(0);
       this.audio.play(0, this.getPlaybackFps());
       this.syncAdvancedTimesteps(previousStep, 0, true);
     } else {
