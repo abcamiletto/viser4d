@@ -189,8 +189,8 @@ class TimelineStore:
         """Return the storage bucket for one timestep."""
         with self._lock:
             step = self.validate_step(step)
-            block = self._load_block(self.block_index_for_step(step))
-            return block.steps[self._local_step_index(step)]
+            block = self._load_block(step // self.block_size)
+            return block.steps[step % self.block_size]
 
     def has_node(self, name: str) -> bool:
         with self._lock:
@@ -200,9 +200,9 @@ class TimelineStore:
         """Store one timestep's scene and audio updates."""
         with self._lock:
             step = self.validate_step(step)
-            block_index = self.block_index_for_step(step)
+            block_index = step // self.block_size
             block = self._load_block(block_index)
-            step_state = block.steps[self._local_step_index(step)]
+            step_state = block.steps[step % self.block_size]
             for message in messages:
                 stored_message = store_raw_message(message)
                 key = message.redundancy_key()
@@ -213,7 +213,8 @@ class TimelineStore:
                     ):
                         self._node_start_steps.setdefault(name, step)
                     self._last_scene_steps[key] = step
-                    self._store_message(step_state.scene_updates, key, stored_message)
+                    step_state.scene_updates.pop(key, None)
+                    step_state.scene_updates[key] = stored_message
                     continue
                 if is_audio_message(message):
                     step_state.audio_updates.append(stored_message)
@@ -229,10 +230,11 @@ class TimelineStore:
             last_scene_step = self._last_scene_steps.get(key)
             if last_scene_step is not None:
                 start_step = max(start_step, last_scene_step)
-            block_index = self.block_index_for_step(start_step)
+            block_index = start_step // self.block_size
             block = self._load_block(block_index)
-            step_state = block.steps[self._local_step_index(start_step)]
-            self._store_message(step_state.scene_updates, key, stored_message)
+            step_state = block.steps[start_step % self.block_size]
+            step_state.scene_updates.pop(key, None)
+            step_state.scene_updates[key] = stored_message
             self._last_scene_steps[key] = start_step
             block.dirty = True
             self._invalidate_checkpoints_after_block(block_index)
@@ -240,10 +242,6 @@ class TimelineStore:
 
     def block_index_for_step(self, step: int) -> int:
         return self.validate_step(step) // self.block_size
-
-    def block_start_step(self, block_index: int) -> int:
-        self._validate_block_index(block_index)
-        return block_index * self.block_size
 
     def block_payload(self, block_index: int) -> dict[str, object]:
         with self._lock:
@@ -263,15 +261,6 @@ class TimelineStore:
             ],
         }
 
-    def _store_message(
-        self,
-        bucket: dict[str, StoredMessage],
-        key: str,
-        message: StoredMessage,
-    ) -> None:
-        bucket.pop(key, None)
-        bucket[key] = message
-
     def _block_path(self, block_index: int) -> Path:
         return self._block_dir / f"{block_index:08d}.msgpack.zst"
 
@@ -284,13 +273,6 @@ class TimelineStore:
                 f"Block {block_index} is out of range for {self.block_count} blocks."
             )
         return block_index
-
-    def _local_step_index(self, step: int) -> int:
-        return self.validate_step(step) % self.block_size
-
-    def _block_step_count(self, block_index: int) -> int:
-        start = self.block_start_step(block_index)
-        return min(self.block_size, self.num_steps - start)
 
     def _load_block(self, block_index: int) -> TimelineBlock:
         block_index = self._validate_block_index(block_index)
@@ -322,11 +304,8 @@ class TimelineStore:
                 dirty=False,
             )
         else:
-            block = TimelineBlock(
-                steps=[
-                    TimelineStep() for _ in range(self._block_step_count(block_index))
-                ]
-            )
+            step_count = min(self.block_size, self.num_steps - block_index * self.block_size)
+            block = TimelineBlock(steps=[TimelineStep() for _ in range(step_count)])
         self._loaded_blocks[block_index] = block
         self._evict_loaded_blocks()
         return block
@@ -344,9 +323,8 @@ class TimelineStore:
         # Eagerly compute the checkpoint for block_index+1 while we still have
         # the block data in hand, so seeks never need to replay prior blocks.
         # Only possible when blocks are flushed in contiguous order from 0.
-        next_checkpoint: _CheckpointState | None = None
-        next_checkpoint_path: Path | None = None
         next_block = block_index + 1
+        checkpoint: tuple[Path, _CheckpointState] | None = None
         if block_index == self._eager_checkpoint_next_block and next_block < self.block_count:
             for step in block.steps:
                 for key, message in step.scene_updates.items():
@@ -354,27 +332,24 @@ class TimelineStore:
                 for message in step.audio_updates:
                     self._apply_audio_message(self._eager_checkpoint, message)
             self._eager_checkpoint_next_block = next_block
-            next_checkpoint = self._copy_checkpoint(self._eager_checkpoint)
-            next_checkpoint_path = self._checkpoint_path(next_block)
+            checkpoint = (self._checkpoint_path(next_block), self._copy_checkpoint(self._eager_checkpoint))
         self._pending_flushes[block_index] = self._flush_executor.submit(
             _write_block_and_checkpoint_after,
             pending_flush,
             self._block_path(block_index),
             block,
-            next_checkpoint_path,
-            next_checkpoint,
+            checkpoint,
         )
 
     def _wait_for_pending_flush(self, block_index: int) -> None:
         future = self._pending_flushes.pop(block_index, None)
-        if future is None:
-            return
-        future.result()
+        if future is not None:
+            future.result()
 
     def _invalidate_checkpoints_after_block(self, block_index: int) -> None:
-        stale = [index for index in self._checkpoint_cache if index > block_index]
-        for index in stale:
-            self._checkpoint_cache.pop(index, None)
+        stale = [i for i in self._checkpoint_cache if i > block_index]
+        for i in stale:
+            del self._checkpoint_cache[i]
 
     def _checkpoint_for_block(self, block_index: int) -> _CheckpointState:
         block_index = self._validate_block_index(block_index)
@@ -387,14 +362,11 @@ class TimelineStore:
         if disk_state is not None:
             self._cache_checkpoint(block_index, disk_state)
             return disk_state
-        prior_blocks = [
-            index for index in self._checkpoint_cache if index < block_index
-        ]
+        prior_blocks = [i for i in self._checkpoint_cache if i < block_index]
         base_index = max(prior_blocks, default=0)
-        base_state = self._checkpoint_cache.get(base_index)
         state = (
-            self._copy_checkpoint(base_state)
-            if base_state is not None
+            self._copy_checkpoint(self._checkpoint_cache[base_index])
+            if base_index in self._checkpoint_cache
             else _CheckpointState()
         )
         for index in range(base_index, block_index):
@@ -403,14 +375,13 @@ class TimelineStore:
         return self._copy_checkpoint(state)
 
     def _load_checkpoint_from_disk(self, block_index: int) -> _CheckpointState | None:
-        path = self._checkpoint_path(block_index)
         # Wait for any in-flight flush that might be writing this checkpoint.
-        pending = self._pending_flushes.get(block_index - 1) if block_index > 0 else None
-        if pending is not None and not pending.done():
-            pending.result()
-        if not path.exists():
-            return None
-        return _load_checkpoint_file(path)
+        if block_index > 0:
+            pending = self._pending_flushes.get(block_index - 1)
+            if pending is not None:
+                pending.result()
+        path = self._checkpoint_path(block_index)
+        return _load_checkpoint_file(path) if path.exists() else None
 
     def _cache_checkpoint(self, block_index: int, state: _CheckpointState) -> None:
         self._checkpoint_cache[block_index] = self._copy_checkpoint(state)
@@ -432,11 +403,7 @@ class TimelineStore:
             },
         )
 
-    def _apply_block_to_checkpoint(
-        self,
-        state: _CheckpointState,
-        block_index: int,
-    ) -> None:
+    def _apply_block_to_checkpoint(self, state: _CheckpointState, block_index: int) -> None:
         block = self._load_block(block_index)
         for step in block.steps:
             for key, message in step.scene_updates.items():
@@ -444,34 +411,23 @@ class TimelineStore:
             for message in step.audio_updates:
                 self._apply_audio_message(state, message)
 
-    def _apply_scene_message(
-        self,
-        state: _CheckpointState,
-        key: str,
-        message: StoredMessage,
-    ) -> None:
+    def _apply_scene_message(self, state: _CheckpointState, key: str, message: StoredMessage) -> None:
         name = extract_message_name(message)
         if message.get("type") == "RemoveSceneNodeMessage" and isinstance(name, str):
             prefix = f"{name}/"
             stale_keys = [
-                scene_key
-                for scene_key, node_name in state.key_to_node.items()
-                if node_name == name
-                or (isinstance(node_name, str) and node_name.startswith(prefix))
+                k for k, node in state.key_to_node.items()
+                if node == name or (isinstance(node, str) and node.startswith(prefix))
             ]
-            for stale_key in stale_keys:
-                state.scene_updates.pop(stale_key, None)
-                state.key_to_node.pop(stale_key, None)
+            for k in stale_keys:
+                del state.scene_updates[k]
+                del state.key_to_node[k]
             return
         state.scene_updates.pop(key, None)
         state.scene_updates[key] = message
         state.key_to_node[key] = name
 
-    def _apply_audio_message(
-        self,
-        state: _CheckpointState,
-        message: StoredMessage,
-    ) -> None:
+    def _apply_audio_message(self, state: _CheckpointState, message: StoredMessage) -> None:
         message_type = message.get("type")
         name = extract_message_name(message)
         if not isinstance(message_type, str) or not isinstance(name, str):
@@ -491,11 +447,9 @@ class TimelineStore:
             return
         if message_type == "SetAudioVolumeMessage":
             track.volume = stored_float(message["volume"])
-            return
-        if message_type == "SetAudioWaveformMessage":
+        elif message_type == "SetAudioWaveformMessage":
             track.waveform = _decode_audio_payload(stored_dict(message["waveform"]))
-            return
-        if message_type == "AppendAudioMessage":
+        elif message_type == "AppendAudioMessage":
             track.waveform = _append_audio_waveform(
                 track.waveform,
                 _decode_audio_payload(stored_dict(message["waveform"])),
@@ -516,13 +470,9 @@ class TimelineStore:
         scene_messages = list(unnamed_messages)
         for name in sorted(node_messages, key=_scene_node_sort_key):
             messages = node_messages[name]
-            create_messages = [
-                message for message in messages if _is_create_scene_message(message)
-            ]
+            create_messages = [m for m in messages if _is_create_scene_message(m)]
             scene_messages.extend(create_messages)
-            scene_messages.extend(
-                message for message in messages if not _is_create_scene_message(message)
-            )
+            scene_messages.extend(m for m in messages if not _is_create_scene_message(m))
         audio_messages = [
             store_raw_message(
                 AddAudioMessage(
@@ -580,20 +530,6 @@ def _write_block_file(path: Path, block: TimelineBlock) -> None:
     path.write_bytes(compressed)
 
 
-def _write_block_and_checkpoint_after(
-    previous_flush: Future[None] | None,
-    block_path: Path,
-    block: TimelineBlock,
-    checkpoint_path: Path | None,
-    checkpoint_state: _CheckpointState | None,
-) -> None:
-    if previous_flush is not None:
-        previous_flush.result()
-    _write_block_file(block_path, block)
-    if checkpoint_path is not None and checkpoint_state is not None:
-        _write_checkpoint_file(checkpoint_path, checkpoint_state)
-
-
 def _write_checkpoint_file(path: Path, state: _CheckpointState) -> None:
     audio_tracks = [
         {
@@ -601,7 +537,6 @@ def _write_checkpoint_file(path: Path, state: _CheckpointState) -> None:
             "sampleRate": track.sample_rate,
             "waveform": track.waveform.tobytes(),
             "dtype": track.waveform.dtype.str,
-            "ndim": track.waveform.ndim,
             "shape": list(track.waveform.shape),
             "volume": track.volume,
         }
@@ -624,8 +559,8 @@ def _load_checkpoint_file(path: Path) -> _CheckpointState:
     key_to_node: dict[str, str | None] = dict(payload["keyToNode"])
     audio_tracks: dict[str, _AudioTrackState] = {}
     for td in payload["audioTracks"]:
-        arr = np.frombuffer(td["waveform"], dtype=np.dtype(td["dtype"]))
         shape = tuple(td["shape"])
+        arr = np.frombuffer(td["waveform"], dtype=np.dtype(td["dtype"]))
         audio_tracks[td["name"]] = _AudioTrackState(
             sample_rate=td["sampleRate"],
             waveform=np.ascontiguousarray(arr.reshape(shape)),
@@ -636,6 +571,19 @@ def _load_checkpoint_file(path: Path) -> _CheckpointState:
         key_to_node=key_to_node,
         audio_tracks=audio_tracks,
     )
+
+
+def _write_block_and_checkpoint_after(
+    previous_flush: Future[None] | None,
+    block_path: Path,
+    block: TimelineBlock,
+    checkpoint: tuple[Path, _CheckpointState] | None,
+) -> None:
+    if previous_flush is not None:
+        previous_flush.result()
+    _write_block_file(block_path, block)
+    if checkpoint is not None:
+        _write_checkpoint_file(*checkpoint)
 
 
 def serialize_viser_recording(
