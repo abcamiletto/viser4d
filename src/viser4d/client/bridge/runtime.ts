@@ -93,7 +93,10 @@ export class TimelineRuntime {
   private playbackLastAppliedMessageTime = -1;
   private queueIngressConfigured = false;
   private guiMessageInterceptorInstalled = false;
-  private playbackMonitorId: number | null = null;
+  private queuePush:
+    | ((...messages: RuntimeMessage[]) => number)
+    | null = null;
+  private playbackMonitor: MutationObserver | null = null;
   constructor() {
     this.playbackAudio.setStepRate(1);
     this.installWhenReady();
@@ -118,7 +121,7 @@ export class TimelineRuntime {
       this.configureQueueIngress();
       this.installGuiMessageInterceptor();
       if (this.getViewer().messageSource !== "websocket") {
-        this.startPlaybackMonitor();
+        this.installPlaybackMonitor();
       }
     } catch {
       getWindow().requestAnimationFrame(() => this.installWhenReady());
@@ -133,6 +136,7 @@ export class TimelineRuntime {
     // messages directly into the viewer queue, so normalize them at ingress.
     const queue = this.getViewer().mutable.current.messageQueue;
     const originalPush = queue.push.bind(queue);
+    this.queuePush = originalPush;
     queue.push = (...messages: RuntimeMessage[]): number => {
       const forwarded: RuntimeMessage[] = [];
       for (const message of messages) {
@@ -145,6 +149,24 @@ export class TimelineRuntime {
       return originalPush(...forwarded);
     };
     this.queueIngressConfigured = true;
+  }
+
+  private installPlaybackMonitor(): void {
+    if (this.playbackMonitor) {
+      return;
+    }
+    const slider = this.getPlaybackTimeSlider();
+    if (!slider) {
+      throw new Error("[viser4d] Could not find the playback slider.");
+    }
+    this.playbackMonitor = new MutationObserver(() => {
+      this.syncPlaybackState();
+    });
+    this.playbackMonitor.observe(slider, {
+      attributes: true,
+      attributeFilter: ["aria-valuenow"],
+    });
+    this.syncPlaybackState();
   }
 
   private installGuiMessageInterceptor(): void {
@@ -235,17 +257,6 @@ export class TimelineRuntime {
     return true;
   }
 
-  private startPlaybackMonitor(): void {
-    if (this.playbackMonitorId !== null) {
-      return;
-    }
-    const tick = (): void => {
-      this.syncPlaybackState();
-      this.playbackMonitorId = getWindow().requestAnimationFrame(tick);
-    };
-    this.playbackMonitorId = getWindow().requestAnimationFrame(tick);
-  }
-
   private syncPlaybackState(): void {
     const nextTime = this.readPlaybackTime();
     if (nextTime === null) {
@@ -297,6 +308,10 @@ export class TimelineRuntime {
   }
 
   private pushMessages(messages: RuntimeMessage[]): void {
+    if (this.queuePush) {
+      this.queuePush(...messages);
+      return;
+    }
     this.getViewer().mutable.current.messageQueue.push(...messages);
   }
 
@@ -516,18 +531,6 @@ export class TimelineRuntime {
     this.sendTimestepToServer(step, force);
   }
 
-  private sendSpeedToServer(speed: number): void {
-    if (this.config.speedSyncUuid) {
-      this.sendGuiUpdate(this.config.speedSyncUuid, speed);
-    }
-  }
-
-  private sendPlaybackStateToServer(isPlaying: boolean): void {
-    if (this.config.playbackStateSyncUuid) {
-      this.sendGuiUpdate(this.config.playbackStateSyncUuid, isPlaying);
-    }
-  }
-
   private syncAdvancedTimesteps(
     previousStep: number,
     nextStep: number,
@@ -553,6 +556,18 @@ export class TimelineRuntime {
     }
     for (let step = 0; step <= nextDiscrete; step += 1) {
       this.sendTimestepToServer(step);
+    }
+  }
+
+  private sendSpeedToServer(speed: number): void {
+    if (this.config.speedSyncUuid) {
+      this.sendGuiUpdate(this.config.speedSyncUuid, speed);
+    }
+  }
+
+  private sendPlaybackStateToServer(isPlaying: boolean): void {
+    if (this.config.playbackStateSyncUuid) {
+      this.sendGuiUpdate(this.config.playbackStateSyncUuid, isPlaying);
     }
   }
 

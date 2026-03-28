@@ -1,6 +1,6 @@
 [project]
 name = "viser4d"
-version = "0.8.3"
+version = "0.8.4"
 description = "A viser extension with out-of-the-box support for the time dimension"
 readme = "README.md"
 license = "Apache-2.0"
