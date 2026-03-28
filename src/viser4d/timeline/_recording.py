@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterable, Iterator
 
 import numpy as np
 from viser import _messages
@@ -11,13 +11,12 @@ from viser.infra import WebsockMessageHandler
 
 from .. import _viser_private as impl
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
-from ..audio._messages import AddAudioMessage
+from ..audio._messages import AddAudioMessage, is_audio_message_type
 from .._runtime import make_runtime_message
 from .._types import StoredMessage
 from ._store import (
     TimelineStore,
     serialize_stored_message,
-    serialize_stored_messages,
     store_raw_message,
     store_raw_messages,
 )
@@ -78,7 +77,7 @@ class SceneRecorder:
         if not pending_messages:
             return
 
-        self._record_and_preload(step, store_raw_messages(pending_messages))
+        self._record_and_preload(step, pending_messages)
 
     def add_audio(
         self,
@@ -101,29 +100,39 @@ class SceneRecorder:
             waveform=audio_array_payload(state.waveform),
             volume=state.volume,
         )
-        stored_messages = store_raw_messages([message])
-        self._record_and_preload(self._active_step, stored_messages)
+        self._record_and_preload(self._active_step, [message])
         return handle
 
     def dispatch_audio_update(self, message: _messages.Message) -> None:
         """Route audio updates either into the active step or directly to clients."""
         if self._active_step is not None:
-            stored_messages = store_raw_messages([message])
-            self._record_and_preload(self._active_step, stored_messages)
+            self._record_and_preload(self._active_step, [message])
             return
         self._send_runtime_update(message)
 
     def _record_and_preload(
-        self, step: int, stored_messages: list[StoredMessage]
+        self,
+        step: int,
+        raw_messages: list[_messages.Message],
     ) -> None:
         """Store one timestep and preload its serialized updates into live runtimes."""
-        step_state = self._timeline.record_step(step, stored_messages)
-        payload = {
-            "step": step,
-            "messages": serialize_stored_messages(stored_messages),
-            "nodeNames": sorted(step_state.node_names),
-        }
-        self._server._send_runtime_call("preloadStep", payload)
+        stored_messages = store_raw_messages(raw_messages)
+        step_state = self._timeline.record_step(step, raw_messages, stored_messages)
+        scene_messages: list[tuple[str, StoredMessage]] = []
+        audio_messages: list[StoredMessage] = []
+        for raw_message, stored_message in zip(raw_messages, stored_messages):
+            if is_audio_message_type(stored_message.get("type")):
+                audio_messages.append(stored_message)
+                continue
+            scene_messages.append((raw_message.redundancy_key(), stored_message))
+        preload_message = self._make_preload_step_message(
+            step,
+            scene_messages=scene_messages,
+            audio_messages=audio_messages,
+            node_names=step_state.node_names,
+        )
+        for client in self._server.get_clients().values():
+            impl.queue_client_message(client, preload_message)
 
     def _push_timeline_message(self, message: _messages.Message) -> None:
         if self._active_step is None or self._pending_messages is None:
@@ -148,50 +157,67 @@ class SceneRecorder:
             },
         )
 
-    def sync_client_scene_overlays(self, client: ClientHandle) -> None:
-        """Prime one client's runtime cache with the latest live scene overlays."""
-        for redundancy_key, message in self._timeline.iter_live_scene_updates():
+    def sync_client_timeline(self, client: ClientHandle) -> None:
+        """Send the current timeline cache to one newly connected client."""
+        for step_index, step_state in enumerate(self._timeline.steps):
+            if not step_state.scene_updates and not step_state.audio_updates:
+                continue
             impl.queue_client_message(
                 client,
-                make_runtime_message(
-                    "cacheSceneOverlay",
-                    {
-                        "message": serialize_stored_message(message),
-                        "redundancyKey": redundancy_key,
-                        "clearNodeName": (
-                            message.get("name")
-                            if message.get("type") == "RemoveSceneNodeMessage"
-                            else None
-                        ),
-                    },
+                self._make_preload_step_message(
+                    step_index,
+                    scene_messages=step_state.scene_updates.items(),
+                    audio_messages=step_state.audio_updates,
+                    node_names=step_state.node_names,
                 ),
             )
 
     def _broadcast_live_scene_update(self, message: _messages.Message) -> None:
         stored_message = store_raw_message(message)
         redundancy_key = message.redundancy_key()
-        self._timeline.record_live_scene_update(
+        start_step = self._timeline.record_live_scene_update(
             stored_message,
+            name=getattr(message, "name", None),
             redundancy_key=redundancy_key,
         )
-        runtime_message = make_runtime_message(
-            "cacheSceneOverlay",
-            {
-                "message": serialize_stored_message(stored_message),
-                "redundancyKey": redundancy_key,
-                "clearNodeName": (
-                    message.name
-                    if isinstance(message, _messages.RemoveSceneNodeMessage)
-                    else None
-                ),
-            },
+        preload_message = self._make_preload_step_message(
+            start_step,
+            scene_messages=((redundancy_key, stored_message),),
         )
-        excluded_client_id = message.excluded_self_client
         for client in self._server.get_clients().values():
-            impl.queue_client_message(client, runtime_message)
-            if excluded_client_id == client.client_id:
+            impl.queue_client_message(client, preload_message)
+            if message.excluded_self_client == client.client_id:
+                continue
+            playback = self._server.get_client_playback(client.client_id)
+            if playback is None or playback.current_timestep < start_step:
                 continue
             impl.queue_client_message(client, message)
+
+    def _make_preload_step_message(
+        self,
+        step: int,
+        *,
+        scene_messages: Iterable[tuple[str, StoredMessage]],
+        audio_messages: Iterable[StoredMessage] = (),
+        node_names: set[str] | None = None,
+    ) -> _messages.RunJavascriptMessage:
+        return make_runtime_message(
+            "preloadStep",
+            {
+                "step": step,
+                "sceneMessages": [
+                    {
+                        "redundancyKey": redundancy_key,
+                        "message": serialize_stored_message(message),
+                    }
+                    for redundancy_key, message in scene_messages
+                ],
+                "audioMessages": [
+                    serialize_stored_message(message) for message in audio_messages
+                ],
+                "nodeNames": [] if node_names is None else sorted(node_names),
+            },
+        )
 
     def _validate_create_message(self, message: _messages.Message) -> None:
         if not isinstance(message, _messages._CreateSceneNodeMessage):

@@ -52,7 +52,6 @@ class ClientRuntimeConfig(RuntimeConfig):
 
 RuntimeMethod: TypeAlias = Literal[
     "applyMessageUpdate",
-    "cacheSceneOverlay",
     "configure",
     "pause",
     "play",

@@ -60,19 +60,13 @@ class ExportBuilder:
                 continue
             recording.append((0.0, message))
         fps = self._server.fps
-        live_scene_updates = tuple(
-            message for _, message in self._timeline.iter_live_scene_updates()
-        )
         for step in range(end + 1):
             time = 0.0 if step <= start else (step - start) / fps
             step_state = self._timeline.step(step)
+            recording.extend((time, message) for message in step_state.scene_updates.values())
             recording.extend(
-                (time, update.message) for update in step_state.scene_updates
-            )
-            recording.extend((time, message) for message in live_scene_updates)
-            recording.extend(
-                (time, _with_playback_time(update.message, playback_time=time))
-                for update in step_state.audio_updates
+                (time, _with_playback_time(message, playback_time=time))
+                for message in step_state.audio_updates
             )
 
         blob = serialize_viser_recording(

@@ -4,7 +4,7 @@ import {
   normalizeTransportMessage,
 } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
-import { isAudioMessage } from "../audio/messages";
+import { type AudioMessage, isAudioMessage } from "../audio/messages";
 import {
   findPlaybackTimeSlider,
   findViewer,
@@ -40,8 +40,13 @@ const debugState = {
   },
 };
 
+type TimelineStepMessages = {
+  scene: Map<string, RuntimeMessage>;
+  audio: AudioMessage[];
+};
+
 export class TimelineRuntime {
-  stepMessages: RuntimeMessage[][] = [];
+  stepMessages: TimelineStepMessages[] = [];
   appliedStep = -1;
   readonly debug = debugState;
 
@@ -62,7 +67,6 @@ export class TimelineRuntime {
     timestepSyncUuid: null,
   };
   private timelineNodeNames = new Set<string>();
-  private sceneOverlayMessages = new Map<string, RuntimeMessage>();
   private currentStep = 0;
   private playStartStep = 0;
   private playStartPerfTime = 0;
@@ -323,12 +327,15 @@ export class TimelineRuntime {
     sync(this.config.pauseButtonUuid, this.playing);
   }
 
-  private ensureStep(step: number): RuntimeMessage[] {
+  private ensureStep(step: number): TimelineStepMessages {
     const bucket = this.stepMessages[step];
     if (bucket) {
       return bucket;
     }
-    const created: RuntimeMessage[] = [];
+    const created: TimelineStepMessages = {
+      scene: new Map<string, RuntimeMessage>(),
+      audio: [],
+    };
     this.stepMessages[step] = created;
     return created;
   }
@@ -343,16 +350,10 @@ export class TimelineRuntime {
     this.audio.seek(this.currentStep, this.getPlaybackFps(), this.playing);
   }
 
-  private applyStepMessages(step: number, messages: RuntimeMessage[]): void {
-    const sceneMessages: RuntimeMessage[] = [];
-    const audioMessages = [];
-    for (const message of messages) {
-      if (isAudioMessage(message)) {
-        audioMessages.push(message);
-      } else {
-        sceneMessages.push(message);
-      }
-    }
+  private applyStepMessages(step: number): void {
+    const stepMessages = this.ensureStep(step);
+    const sceneMessages = Array.from(stepMessages.scene.values());
+    const audioMessages = stepMessages.audio;
     if (sceneMessages.length) {
       this.pushMessages(sceneMessages);
     }
@@ -375,7 +376,10 @@ export class TimelineRuntime {
     this.config = { ...this.config, ...config };
     this.audio.setStepRate(this.config.timelineFps);
     while (this.stepMessages.length < this.config.numSteps) {
-      this.stepMessages.push([]);
+      this.stepMessages.push({
+        scene: new Map<string, RuntimeMessage>(),
+        audio: [],
+      });
     }
     debugState.push("runtime.configure", this.config);
     this.syncAudioTransport();
@@ -384,15 +388,25 @@ export class TimelineRuntime {
 
   preloadStep(payload: {
     step: number;
-    messages: RuntimeMessage[];
+    sceneMessages?: Array<{
+      redundancyKey: string;
+      message: RuntimeMessage;
+    }>;
+    audioMessages?: RuntimeMessage[];
     nodeNames?: string[];
   }): void {
-    const messages = payload.messages.map((message) =>
-      normalizeTransportMessage(message),
-    );
-    this.stepMessages[payload.step] = this.ensureStep(payload.step).concat(
-      messages,
-    );
+    const stepMessages = this.ensureStep(payload.step);
+    for (const entry of payload.sceneMessages || []) {
+      stepMessages.scene.delete(entry.redundancyKey);
+      stepMessages.scene.set(
+        entry.redundancyKey,
+        normalizeTransportMessage(entry.message),
+      );
+    }
+    const audioMessages = (payload.audioMessages || [])
+      .map((message) => normalizeTransportMessage(message))
+      .filter(isAudioMessage);
+    stepMessages.audio = stepMessages.audio.concat(audioMessages);
     for (const name of payload.nodeNames || []) {
       this.timelineNodeNames.add(name);
     }
@@ -413,19 +427,6 @@ export class TimelineRuntime {
       return;
     }
     this.pushMessages([message]);
-  }
-
-  cacheSceneOverlay(payload: {
-    message: RuntimeMessage;
-    redundancyKey?: string | null;
-    clearNodeName?: string | null;
-  }): void {
-    const message = normalizeTransportMessage(payload.message);
-    this.cacheSceneOverlayMessage(
-      message,
-      payload.redundancyKey ?? null,
-      payload.clearNodeName ?? null,
-    );
   }
 
   private syncTimelineSlider(step: number, force = false): void {
@@ -540,38 +541,9 @@ export class TimelineRuntime {
       return;
     }
     for (let index = this.appliedStep + 1; index <= step; index += 1) {
-      const messages = this.stepMessages[index];
-      if (messages?.length) {
-        this.applyStepMessages(index, messages);
-      }
+      this.applyStepMessages(index);
     }
     this.appliedStep = step;
-    this.reapplySceneOverlayMessages();
-  }
-
-  private cacheSceneOverlayMessage(
-    message: RuntimeMessage,
-    redundancyKey: string | null,
-    clearNodeName: string | null,
-  ): void {
-    if (redundancyKey === null) {
-      return;
-    }
-    if (clearNodeName !== null) {
-      for (const [existingKey, existingMessage] of this.sceneOverlayMessages) {
-        if (existingMessage.name === clearNodeName) {
-          this.sceneOverlayMessages.delete(existingKey);
-        }
-      }
-    }
-    this.sceneOverlayMessages.set(redundancyKey, message);
-  }
-
-  private reapplySceneOverlayMessages(): void {
-    if (this.sceneOverlayMessages.size === 0) {
-      return;
-    }
-    this.pushMessages(Array.from(this.sceneOverlayMessages.values()));
   }
 
   seek(payload: { step: number }): void {

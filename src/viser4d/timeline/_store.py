@@ -64,10 +64,6 @@ def serialize_stored_message(message: StoredMessage) -> SerializedMessage:
     return cast(SerializedMessage, to_jsonable(message))
 
 
-def serialize_stored_messages(messages: list[StoredMessage]) -> list[SerializedMessage]:
-    return [serialize_stored_message(message) for message in messages]
-
-
 def extract_message_name(message: StoredMessage) -> str | None:
     name = message.get("name")
     return name if isinstance(name, str) and name else None
@@ -86,20 +82,16 @@ def is_scene_message(message: StoredMessage) -> bool:
 class TimelineStep:
     """Recorded scene and audio updates for one timestep."""
 
-    scene_updates: list["TimelineUpdate"] = field(default_factory=list)
-    audio_updates: list["TimelineUpdate"] = field(default_factory=list)
+    scene_updates: dict[str, StoredMessage] = field(default_factory=dict)
+    audio_updates: list[StoredMessage] = field(default_factory=list)
 
     @property
     def node_names(self) -> set[str]:
-        return {update.name for update in self.scene_updates}
-
-
-@dataclass
-class TimelineUpdate:
-    """One ordered update attached to a named timeline object."""
-
-    name: str
-    message: StoredMessage
+        return {
+            name
+            for message in self.scene_updates.values()
+            if (name := extract_message_name(message)) is not None
+        }
 
 
 class TimelineStore:
@@ -109,7 +101,8 @@ class TimelineStore:
         self.num_steps = num_steps
         self.steps = [TimelineStep() for _ in range(num_steps)]
         self.node_names: set[str] = set()
-        self.live_scene_updates: dict[str, StoredMessage] = {}
+        self._node_start_steps: dict[str, int] = {}
+        self._last_scene_steps: dict[str, int] = {}
 
     def validate_step(self, step: int) -> int:
         """Return ``step`` if it is in range, else raise ``IndexError``."""
@@ -126,61 +119,80 @@ class TimelineStore:
     def has_node(self, name: str) -> bool:
         return name in self.node_names
 
-    def record_step(self, step: int, messages: list[StoredMessage]) -> TimelineStep:
+    def record_step(
+        self,
+        step: int,
+        raw_messages: list[_messages.Message],
+        stored_messages: list[StoredMessage],
+    ) -> TimelineStep:
         """Store one timestep's scene and audio updates."""
         step_state = self.step(step)
-        for message in messages:
+        for raw_message, message in zip(raw_messages, stored_messages):
             if is_scene_message(message):
-                self._record_scene_message(step_state, message)
+                self._record_scene_message(step, step_state, raw_message, message)
                 continue
             if is_audio_message_type(message.get("type")):
-                track_name = extract_message_name(message)
-                if track_name is None:
+                if extract_message_name(message) is None:
                     continue
-                self._record_audio_message(step_state, track_name, message)
+                self._record_audio_message(step_state, message)
         return step_state
 
     def record_live_scene_update(
         self,
         message: StoredMessage,
         *,
+        name: str | None,
         redundancy_key: str,
-    ) -> None:
-        """Store the latest live scene overlay keyed by viser's redundancy key."""
-        clear_node_name = (
-            extract_message_name(message)
-            if message.get("type") == "RemoveSceneNodeMessage"
-            else None
-        )
-        if clear_node_name is not None:
-            for key, update in list(self.live_scene_updates.items()):
-                if extract_message_name(update) == clear_node_name:
-                    self.live_scene_updates.pop(key)
-        self.live_scene_updates.pop(redundancy_key, None)
-        self.live_scene_updates[redundancy_key] = message
-
-    def iter_live_scene_updates(self) -> tuple[tuple[str, StoredMessage], ...]:
-        """Return the current live scene overlay snapshot in replay order."""
-        return tuple(self.live_scene_updates.items())
+    ) -> int:
+        """Store one live scene update and return the step where it starts."""
+        start_step = self._scene_update_step(name, redundancy_key)
+        self._store_scene_message(self.step(start_step), redundancy_key, message)
+        self._last_scene_steps[redundancy_key] = start_step
+        if name is not None:
+            self.node_names.add(name)
+        return start_step
 
     def _record_audio_message(
         self,
         step_state: TimelineStep,
-        track_name: str,
         message: StoredMessage,
     ) -> None:
-        step_state.audio_updates.append(TimelineUpdate(track_name, message))
+        step_state.audio_updates.append(message)
 
     def _record_scene_message(
         self,
+        step: int,
         step_state: TimelineStep,
+        raw_message: _messages.Message,
         message: StoredMessage,
     ) -> None:
         node_name = extract_message_name(message)
-        if node_name is None:
-            return
-        self.node_names.add(node_name)
-        step_state.scene_updates.append(TimelineUpdate(node_name, message))
+        if node_name is not None:
+            self.node_names.add(node_name)
+        self._last_scene_steps[raw_message.redundancy_key()] = step
+        if node_name is not None and isinstance(
+            raw_message, _messages._CreateSceneNodeMessage
+        ):
+            self._node_start_steps.setdefault(node_name, step)
+        self._store_scene_message(step_state, raw_message.redundancy_key(), message)
+
+    def _scene_update_step(self, name: str | None, redundancy_key: str) -> int:
+        start_step = 0
+        if name is not None:
+            start_step = self._node_start_steps.get(name, 0)
+        last_scene_step = self._last_scene_steps.get(redundancy_key)
+        if last_scene_step is not None:
+            start_step = max(start_step, last_scene_step)
+        return start_step
+
+    def _store_scene_message(
+        self,
+        step_state: TimelineStep,
+        redundancy_key: str,
+        message: StoredMessage,
+    ) -> None:
+        step_state.scene_updates.pop(redundancy_key, None)
+        step_state.scene_updates[redundancy_key] = message
 
 
 def serialize_viser_recording(

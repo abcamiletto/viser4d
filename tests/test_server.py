@@ -403,6 +403,64 @@ def test_serialize_includes_live_timeline_scene_overlays() -> None:
         server.stop()
 
 
+def test_serialize_later_recorded_updates_override_live_scene_overlays() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+
+        joint.position = (5.0, 0.0, 0.0)
+
+        with server.at(1):
+            joint.position = (1.0, 0.0, 0.0)
+
+        recording = _decode_serialized_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        exported_positions = [
+            cast(
+                tuple[float, float, float],
+                tuple(cast(list[object], message["position"])),
+            )
+            for _time, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert exported_positions[-2:] == [(5.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    finally:
+        server.stop()
+
+
+def test_serialize_same_step_recorded_updates_override_live_scene_updates() -> None:
+    server = viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
+
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+
+        joint.position = (5.0, 0.0, 0.0)
+
+        with server.at(0):
+            joint.position = (1.0, 0.0, 0.0)
+
+        recording = _decode_serialized_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        exported_positions = [
+            cast(
+                tuple[float, float, float],
+                tuple(cast(list[object], message["position"])),
+            )
+            for _time, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert exported_positions[-1] == (1.0, 0.0, 0.0)
+    finally:
+        server.stop()
+
+
 def test_timeline_scene_pointer_callbacks_work_after_recording() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     clicked = threading.Event()
