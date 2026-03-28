@@ -19,9 +19,9 @@ for i in range(60):
     angle = i * (2.0 * np.pi / 60.0)
     position = np.array([2.0 * np.cos(angle), 2.0 * np.sin(angle), 1.0])
     wxyz = tf.SO3.from_z_radians(angle).wxyz
-    with server.at(i):
+    with server.at(i) as timeline:
         if frustum is None:
-            frustum = server.scene.add_camera_frustum(
+            frustum = timeline.scene.add_camera_frustum(
                 "/camera",
                 fov=60.0,
                 aspect=16 / 9,

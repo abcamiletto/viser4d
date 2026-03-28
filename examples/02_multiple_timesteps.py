@@ -12,8 +12,8 @@ args = parser.parse_args()
 server = viser4d.Viser4dServer(num_steps=4, fps=1, port=args.port)
 
 for t in range(4):
-    with server.at(t):
-        server.scene.add_point_cloud(
+    with server.at(t) as timeline:
+        timeline.scene.add_point_cloud(
             f"/batch/{t}",
             points=np.random.uniform(-1.0, 1.0, size=(100, 3)),
             colors=(0, 200, 255),

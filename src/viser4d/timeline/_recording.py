@@ -1,68 +1,78 @@
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Iterator
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
 from viser import _messages
+from viser._scene_api import SceneApi
+from viser.infra import WebsockMessageHandler
 
 from .. import _viser_private as impl
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
-from .._types import StoredMessage
 from ._store import (
     TimelineRecorder,
-    TimelineStep,
     TimelineStore,
-    extract_message_name,
-    is_create_scene_message,
-    is_scene_message,
+    store_raw_message,
     serialize_stored_message,
     serialize_stored_messages,
-    store_raw_message,
-    store_raw_messages,
 )
 
 if TYPE_CHECKING:
+    from ..audio import AudioApi
     from .._server import Viser4dServer
+    from viser._viser import ClientHandle
+
+
+@dataclass(frozen=True)
+class TimelineContext:
+    scene: SceneApi
+    audio: AudioApi
 
 
 class SceneRecorder:
-    """Capture per-timestep scene and audio edits from the live viser API."""
+    """Capture scene and audio edits into the timeline store."""
 
     def __init__(self, server: Viser4dServer, timeline: TimelineStore) -> None:
         self._server = server
         self._timeline = timeline
         self._active_step: int | None = None
+        self._step_recorder: TimelineRecorder | None = None
+        self._transport = _TimelineTransport(server, self)
+        owner = _TimelineSceneOwner(self._transport)
+        self.scene = SceneApi(
+            owner,  # type: ignore[arg-type]
+            thread_executor=server._thread_executor,
+            event_loop=server.get_event_loop(),
+        )
+        # Reuse viser's existing server-owned client lookup for inbound events.
+        self.scene._owner = server
+        self._transport.start()
 
     @property
     def active_step(self) -> int | None:
         return self._active_step
 
     @contextlib.contextmanager
-    def at(self, t: int) -> Iterator[None]:
-        """Record scene changes performed inside the context for timestep ``t``."""
-        step = self._timeline.validate_step(t)
-        recorder = TimelineRecorder()
-
-        # Static scene nodes should stay outside the timeline model.
-        timeline_names = set(self._timeline.iter_node_names())
-
-        self._active_step = step
+    def at(self, t: int) -> Iterator[TimelineContext]:
+        if self._active_step is not None:
+            raise RuntimeError("Nested server.at(t) blocks are not supported.")
+        self._active_step = self._timeline.validate_step(t)
+        self._step_recorder = TimelineRecorder()
         try:
-            with impl.scene_recording_interface(self._server.scene, recorder):
-                yield
+            yield TimelineContext(scene=self.scene, audio=self._server.audio)
         finally:
+            recorder = self._step_recorder
+            self._step_recorder = None
+            active_step = self._active_step
             self._active_step = None
 
-        if not recorder.messages:
+        if recorder is None or active_step is None or not recorder.messages:
             return
 
-        stored_messages = store_raw_messages(recorder.messages)
-        _validate_messages(stored_messages, timeline_names)
-        step_store = self._record_and_preload(step, stored_messages)
-        for node_name in step_store.node_names:
-            self._register_timeline_node(node_name)
+        self._record_step(active_step, recorder.messages)
 
     def add_audio(
         self,
@@ -71,7 +81,6 @@ class SceneRecorder:
         data: np.ndarray,
         sample_rate: int,
     ) -> AudioHandle:
-        """Create a timeline-owned audio track for the active timestep."""
         state = AudioState(
             name=name,
             sample_rate=sample_rate,
@@ -79,84 +88,131 @@ class SceneRecorder:
         )
         handle = AudioHandle(self._server, state)
         assert self._active_step is not None
-        message = AddAudioMessage(
-            name=name,
-            sampleRate=state.sample_rate,
-            waveform=audio_array_payload(state.waveform),
-            volume=state.volume,
+        self._record_step(
+            self._active_step,
+            [
+                AddAudioMessage(
+                    name=name,
+                    sampleRate=state.sample_rate,
+                    waveform=audio_array_payload(state.waveform),
+                    volume=state.volume,
+                )
+            ],
         )
-        stored_messages = store_raw_messages([message])
-        self._record_and_preload(self._active_step, stored_messages)
         return handle
 
     def dispatch_audio_update(self, message: _messages.Message) -> None:
-        """Route audio updates either into the active step or directly to clients."""
         if self._active_step is not None:
-            stored_messages = store_raw_messages([message])
-            self._record_and_preload(self._active_step, stored_messages)
+            self._record_step(self._active_step, [message])
             return
-        stored_message = store_raw_message(message)
         self._server._send_runtime_call(
-            "applyMessageUpdate", serialize_stored_message(stored_message)
+            "applyMessageUpdate",
+            serialize_stored_message(store_raw_message(message)),
         )
 
-    def _register_timeline_node(self, name: str) -> None:
-        if self._timeline.has_saved_baseline(name):
-            return
-        baseline = self._collect_live_messages_for_name(name)
-        if not baseline:
-            return
-        # Baseline messages rebuild the node before step-local diffs are replayed.
-        self._timeline.set_baseline(name, baseline)
-        messages = serialize_stored_messages(baseline)
-        self._server._send_runtime_call(
-            "setBaseline",
-            {"name": name, "messages": messages},
-        )
+    def sync_client_timeline(self, client: ClientHandle) -> None:
+        for step in range(self._timeline.num_steps):
+            messages = self._timeline.messages_for_step(step)
+            if not messages:
+                continue
+            self._server._send_runtime_call_to_client(
+                client,
+                "preloadStep",
+                {"step": step, "messages": serialize_stored_messages(messages)},
+            )
 
-    def _record_and_preload(
-        self, step: int, stored_messages: list[StoredMessage]
-    ) -> TimelineStep:
-        """Store one timestep and preload its serialized updates into live runtimes."""
-        step_state = self._timeline.record_step(step, stored_messages)
+    def _record_step(self, step: int, messages: list[_messages.Message]) -> None:
+        self._validate_step_messages(messages)
+        self._timeline.record_step(step, messages)
+        self._broadcast_step_cache(step)
+
+    def _record_baseline_message(self, message: _messages.Message) -> None:
+        if isinstance(message, _messages._CreateSceneNodeMessage):
+            raise RuntimeError(
+                "Timeline scene nodes can only be created inside server.at(t)."
+            )
+        start_step = self._timeline.record_baseline(message)
+        self._broadcast_scene_message(message, start_step)
+        self._broadcast_step_cache(start_step)
+
+    def _broadcast_step_cache(self, step: int) -> None:
         payload = {
             "step": step,
-            "messages": serialize_stored_messages(stored_messages),
-            "nodeNames": sorted(step_state.node_names),
+            "messages": serialize_stored_messages(
+                self._timeline.messages_for_step(step)
+            ),
         }
-        self._server._send_runtime_call("preloadStep", payload)
-        return step_state
+        for client in self._server.get_clients().values():
+            self._server._send_runtime_call_to_client(client, "preloadStep", payload)
 
-    def _collect_live_messages_for_name(self, name: str) -> list[StoredMessage]:
-        return [
-            message
-            for message in store_raw_messages(impl.broadcast_messages(self._server))
-            if is_scene_message(message) and message.get("name") == name
-        ]
+    def _broadcast_scene_message(
+        self, message: _messages.Message, start_step: int
+    ) -> None:
+        for client in self._server.get_clients().values():
+            if message.excluded_self_client == client.client_id:
+                continue
+            playback = self._server.get_client_playback(client.client_id)
+            if playback is None or playback.current_timestep < start_step:
+                continue
+            impl.queue_client_message(client, message)
 
-
-def _validate_messages(
-    stored_messages: list[StoredMessage],
-    timeline_names: set[str],
-) -> None:
-    """Make sure that recorded messages only modify timeline-owned nodes."""
-    for stored_message in stored_messages:
-        if not is_scene_message(stored_message):
-            continue
-        name = extract_message_name(stored_message)
-        if name is None:
-            continue
-        if is_create_scene_message(stored_message):
-            if name in timeline_names:
+    def _validate_step_messages(self, messages: list[_messages.Message]) -> None:
+        created_names: set[str] = set()
+        for message in messages:
+            if not isinstance(message, _messages._CreateSceneNodeMessage):
+                continue
+            name = message.name
+            if name in self._server.scene._handle_from_node_name:
+                raise RuntimeError(
+                    f"Cannot create timeline node {name!r} because a static scene node "
+                    "with the same name already exists."
+                )
+            if self._timeline.has_node(name) or name in created_names:
                 raise RuntimeError(
                     f"Cannot create timeline node {name!r} more than once. "
                     "Create it once and update the returned handle inside later "
                     "server.at(t) blocks."
                 )
-            timeline_names.add(name)
-            continue
-        if name in timeline_names:
-            continue
-        raise RuntimeError(
-            f"Cannot modify static scene node {name!r} inside server.at(t)."
-        )
+            created_names.add(name)
+
+
+class _TimelineTransport(WebsockMessageHandler):
+    def __init__(self, server: Viser4dServer, recorder: SceneRecorder) -> None:
+        super().__init__()
+        self._server = server
+        self._recorder = recorder
+        self._started = False
+
+    def start(self) -> None:
+        self._started = True
+
+    def get_message_buffer(self) -> Any:
+        return self
+
+    def push(self, message: _messages.Message) -> None:
+        if not self._started:
+            return
+        recorder = self._recorder._step_recorder
+        if recorder is not None:
+            recorder.push(message)
+            return
+        self._recorder._record_baseline_message(message)
+
+    def atomic_start(self) -> None:
+        pass
+
+    def atomic_end(self) -> None:
+        pass
+
+    def register_handler(self, message_cls: type[Any], callback: Any) -> None:
+        self._server._websock_server.register_handler(message_cls, callback)
+
+    def unregister_handler(self, message_cls: type[Any], callback: Any = None) -> None:
+        self._server._websock_server.unregister_handler(message_cls, callback)
+
+
+class _TimelineSceneOwner:
+    """Minimal client-like owner required by ``SceneApi``."""
+
+    def __init__(self, transport: _TimelineTransport) -> None:
+        self._websock_connection = transport

@@ -46,9 +46,9 @@ speed = rng.uniform(0.4, 1.8, size=num_objects).astype(np.float32)
 amp = rng.uniform(0.05, 0.35, size=num_objects).astype(np.float32)
 
 handles = []
-with server.at(0):
+with server.at(0) as timeline:
     for i in range(num_objects):
-        handle = server.scene.add_frame(
+        handle = timeline.scene.add_frame(
             f"/heavy/{i}",
             axes_length=0.045,
             axes_radius=0.0025,
@@ -61,7 +61,7 @@ churn_count = min(30, num_objects)
 
 for step in range(num_steps):
     t = (step / num_steps) * (2.0 * np.pi)
-    with server.at(step):
+    with server.at(step) as timeline:
         for i, handle in enumerate(handles):
             theta = t * speed[i] + phase[i]
             oscillation = amp[i]
@@ -76,8 +76,8 @@ for step in range(num_steps):
         if step % 4 == 0:
             for i in range(churn_count):
                 name = f"/churn/{i}"
-                server.scene.remove_by_name(name)
-                pulse = server.scene.add_frame(
+                timeline.scene.remove_by_name(name)
+                pulse = timeline.scene.add_frame(
                     name,
                     axes_length=0.07,
                     axes_radius=0.003,

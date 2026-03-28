@@ -104,6 +104,7 @@ class ClientPlaybackHandle:
             self._sync_playback_from_client(bool(self._playback_state_sync.value))
 
         self._sync_runtime_config()
+        self._server._recorder.sync_client_timeline(client)
         # New clients need the initial timeline scene state before playback starts.
         self.seek(self._current_timestep)
 

@@ -3,11 +3,21 @@ import time
 from types import SimpleNamespace
 from typing import cast
 
+import msgspec
 import numpy as np
 import pytest
+import zstandard
 
 import viser4d
 from viser4d.timeline import ClientPlaybackHandle
+
+
+def _deserialize_recording(blob: bytes) -> dict[str, object]:
+    packed_size = int.from_bytes(blob[:8], "little")
+    packed = zstandard.ZstdDecompressor().decompress(
+        blob[8:], max_output_size=packed_size
+    )
+    return cast(dict[str, object], msgspec.msgpack.decode(packed))
 
 
 def test_audio_requires_timestep_context() -> None:
@@ -43,9 +53,9 @@ def test_fps_and_speed_must_be_positive() -> None:
 def test_timeline_operations_serialize_and_playback_commands() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
-        with server.at(0):
-            frame = server.scene.add_frame("/frame")
-            audio = server.audio.add_track(
+        with server.at(0) as timeline:
+            frame = timeline.scene.add_frame("/frame")
+            audio = timeline.audio.add_track(
                 "/audio",
                 data=np.array([0, 1, 2], dtype=np.int16),
                 sample_rate=16_000,
@@ -60,6 +70,30 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
 
         assert server.serialize()
         assert server.serialize(start_timestep=1, end_timestep=1)
+    finally:
+        server.stop()
+
+
+def test_same_step_scene_updates_serialize_latest_value_once() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+        with server.at(0):
+            joint.position = (1.0, 0.0, 0.0)
+        with server.at(0):
+            joint.position = (2.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        positions = [
+            tuple(cast(list[float], message["position"]))
+            for _, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert positions == [(2.0, 0.0, 0.0)]
     finally:
         server.stop()
 
@@ -266,13 +300,13 @@ def test_server_exposes_client_playbacks() -> None:
         server.stop()
 
 
-def test_at_rejects_updates_to_static_scene_nodes() -> None:
+def test_at_rejects_static_name_collisions() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        joint = server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
-        with pytest.raises(RuntimeError, match="Cannot modify static scene node"):
-            with server.at(0):
-                joint.position = (1.0, 0.0, 0.0)
+        server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+        with pytest.raises(RuntimeError, match="static scene node"):
+            with server.at(0) as timeline:
+                timeline.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
     finally:
         server.stop()
 
@@ -280,12 +314,12 @@ def test_at_rejects_updates_to_static_scene_nodes() -> None:
 def test_at_rejects_recreating_timeline_nodes() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0):
-            server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
+        with server.at(0) as timeline:
+            timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
 
         with pytest.raises(RuntimeError, match="Cannot create timeline node"):
-            with server.at(1):
-                server.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
+            with server.at(1) as timeline:
+                timeline.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
     finally:
         server.stop()
 
@@ -309,8 +343,8 @@ def test_stop_unblocks_sleep_forever() -> None:
 def test_audio_waveform_reflects_appended_data() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0):
-            audio = server.audio.add_track(
+        with server.at(0) as timeline:
+            audio = timeline.audio.add_track(
                 "/audio",
                 data=np.array([1, 2], dtype=np.int16),
                 sample_rate=16_000,
@@ -328,15 +362,15 @@ def test_audio_waveform_reflects_appended_data() -> None:
 def test_audio_rejects_non_mono_or_stereo_shapes() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0):
+        with server.at(0) as timeline:
             with pytest.raises(ValueError, match="mono or stereo"):
-                server.audio.add_track(
+                timeline.audio.add_track(
                     "/audio",
                     data=np.zeros((2, 2, 2), dtype=np.float32),
                     sample_rate=16_000,
                 )
             with pytest.raises(ValueError, match="mono or stereo"):
-                server.audio.add_track(
+                timeline.audio.add_track(
                     "/audio-3ch",
                     data=np.zeros((4, 3), dtype=np.float32),
                     sample_rate=16_000,
@@ -348,8 +382,8 @@ def test_audio_rejects_non_mono_or_stereo_shapes() -> None:
 def test_stereo_audio_append_preserves_channel_layout() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0):
-            audio = server.audio.add_track(
+        with server.at(0) as timeline:
+            audio = timeline.audio.add_track(
                 "/audio",
                 data=np.array([[1, 10], [2, 20]], dtype=np.int16),
                 sample_rate=16_000,
@@ -362,5 +396,56 @@ def test_stereo_audio_append_preserves_channel_layout() -> None:
 
         with pytest.raises(ValueError, match="channel count"):
             audio.append(np.array([5, 6], dtype=np.int16))
+    finally:
+        server.stop()
+
+
+def test_post_recording_timeline_updates_serialize_from_baseline() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+
+        joint.position = (2.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        positions = [
+            tuple(cast(list[float], message["position"]))
+            for _, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert positions == [(2.0, 0.0, 0.0)]
+    finally:
+        server.stop()
+
+
+def test_late_created_timeline_nodes_keep_their_creation_step() -> None:
+    server = viser4d.Viser4dServer(num_steps=6, fps=1.0, port=0, verbose=False)
+    try:
+        with server.at(5) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+
+        joint.position = (2.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+
+        creation_times = [
+            time
+            for time, message in messages
+            if message.get("type") == "FrameMessage" and message.get("name") == "/joint"
+        ]
+        position_times = [
+            time
+            for time, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert creation_times == [5.0]
+        assert position_times == [5.0]
     finally:
         server.stop()

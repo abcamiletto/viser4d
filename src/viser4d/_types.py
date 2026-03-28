@@ -58,7 +58,6 @@ RuntimeMethod: TypeAlias = Literal[
     "preloadStep",
     "refresh",
     "seek",
-    "setBaseline",
     "setSpeed",
 ]
 
