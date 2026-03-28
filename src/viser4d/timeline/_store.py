@@ -107,19 +107,12 @@ class TimelineStep:
     audio_updates: dict[str, StoredMessage] = field(default_factory=dict)
 
 
-@dataclass
-class BaselineUpdate:
-    start_step: int
-    message: StoredMessage
-
-
 class TimelineStore:
     """In-memory storage for timeline-owned nodes and per-step message snapshots."""
 
     def __init__(self, num_steps: int) -> None:
         self.num_steps = num_steps
         self.steps = [TimelineStep() for _ in range(num_steps)]
-        self.baseline: dict[str, BaselineUpdate] = {}
         self._node_start_steps: dict[str, int] = {}
         self._last_scene_steps: dict[str, int] = {}
 
@@ -138,19 +131,9 @@ class TimelineStore:
     def has_node(self, name: str) -> bool:
         return name in self._node_start_steps
 
-    def scene_messages_for_step(self, step: int) -> list[StoredMessage]:
-        step_state = self.step(step)
-        messages = list(step_state.scene_updates.values())
-        messages.extend(
-            update.message
-            for update in self.baseline.values()
-            if update.start_step == step
-        )
-        return messages
-
     def messages_for_step(self, step: int) -> list[StoredMessage]:
         step_state = self.step(step)
-        return self.scene_messages_for_step(step) + list(
+        return list(step_state.scene_updates.values()) + list(
             step_state.audio_updates.values()
         )
 
@@ -170,7 +153,7 @@ class TimelineStore:
             if name is not None and is_audio_message_type(stored_message.get("type")):
                 self._store_message(step_state.audio_updates, key, stored_message)
 
-    def record_baseline(self, message: _messages.Message) -> int:
+    def record_live_scene_update(self, message: _messages.Message) -> int:
         stored_message = store_raw_message(message)
         name = extract_message_name(stored_message)
         key = message.redundancy_key()
@@ -178,11 +161,7 @@ class TimelineStore:
         last_scene_step = self._last_scene_steps.get(key)
         if last_scene_step is not None:
             start_step = max(start_step, last_scene_step)
-        self._store_message(
-            self.baseline,
-            key,
-            BaselineUpdate(start_step=start_step, message=stored_message),
-        )
+        self._store_message(self.step(start_step).scene_updates, key, stored_message)
         self._last_scene_steps[key] = start_step
         return start_step
 

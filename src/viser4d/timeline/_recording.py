@@ -126,12 +126,12 @@ class SceneRecorder:
         self._timeline.record_step(step, messages)
         self._broadcast_step_cache(step)
 
-    def _record_baseline_message(self, message: _messages.Message) -> None:
+    def _record_live_scene_message(self, message: _messages.Message) -> None:
         if isinstance(message, _messages._CreateSceneNodeMessage):
             raise RuntimeError(
                 "Timeline scene nodes can only be created inside server.at(t)."
             )
-        start_step = self._timeline.record_baseline(message)
+        start_step = self._timeline.record_live_scene_update(message)
         self._broadcast_scene_message(message, start_step)
         self._broadcast_step_cache(start_step)
 
@@ -196,7 +196,7 @@ class _TimelineTransport(WebsockMessageHandler):
         if recorder is not None:
             recorder.push(message)
             return
-        self._recorder._record_baseline_message(message)
+        self._recorder._record_live_scene_message(message)
 
     def atomic_start(self) -> None:
         pass

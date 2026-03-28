@@ -62,11 +62,10 @@ class ExportBuilder:
         fps = self._server.fps
         for step in range(end + 1):
             time = 0.0 if step <= start else (step - start) / fps
-            recording.extend(
-                (time, message)
-                for message in self._timeline.scene_messages_for_step(step)
-            )
             step_state = self._timeline.step(step)
+            recording.extend(
+                (time, message) for message in step_state.scene_updates.values()
+            )
             recording.extend(
                 (time, _with_playback_time(message, playback_time=time))
                 for message in step_state.audio_updates.values()

@@ -400,7 +400,7 @@ def test_stereo_audio_append_preserves_channel_layout() -> None:
         server.stop()
 
 
-def test_post_recording_timeline_updates_serialize_from_baseline() -> None:
+def test_post_recording_timeline_updates_serialize_from_live_step_cache() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
