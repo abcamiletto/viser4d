@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 import threading
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import viser
-from viser._gui_handles import GuiInputHandle
 
 from .. import _viser_private as impl
 from .._types import RuntimeMethod, RuntimePayload
@@ -22,8 +20,6 @@ if TYPE_CHECKING:
     from viser._viser import ClientHandle
 
     from .._server import Viser4dServer
-
-_T = TypeVar("_T")
 
 
 class ClientPlaybackHandle:
@@ -48,9 +44,18 @@ class ClientPlaybackHandle:
         self._current_timestep = 0
         self._lock = threading.RLock()
         self._create_gui(brand_color)
-        self._bind_sync(self._timestep_sync, self._sync_from_client)
-        self._bind_sync(self._speed_sync, self._sync_speed_from_client)
-        self._bind_sync(self._playback_state_sync, self._sync_playback_from_client)
+
+        @self._timestep_sync.on_update
+        def _sync_timestep(_event: Any) -> None:
+            self._sync_from_client(int(self._timestep_sync.value))
+
+        @self._speed_sync.on_update
+        def _sync_speed(_event: Any) -> None:
+            self._sync_speed_from_client(float(self._speed_sync.value))
+
+        @self._playback_state_sync.on_update
+        def _sync_playback(_event: Any) -> None:
+            self._sync_playback_from_client(bool(self._playback_state_sync.value))
 
         self._sync_runtime_config()
         self._server._recorder.sync_client_timeline(client)
@@ -153,15 +158,6 @@ class ClientPlaybackHandle:
                 return
             self._is_playing = is_playing
         self._server._dispatch_playback_change(self._client, is_playing)
-
-    def _bind_sync(
-        self,
-        control: GuiInputHandle[_T],
-        sync: Callable[[_T], None],
-    ) -> None:
-        @control.on_update
-        def _sync(_event: Any) -> None:
-            sync(control.value)
 
     def _create_gui(self, brand_color: tuple[int, int, int] | None) -> None:
         max_step = self._server.num_steps - 1
