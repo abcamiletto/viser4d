@@ -2,9 +2,11 @@ import type { RuntimeMessage, RuntimeValue } from "../binary";
 
 export type RuntimeConfig = {
   numSteps: number;
+  blockSize: number;
   timelineFps: number;
   speed: number;
   loop: boolean;
+  blockRequestSyncUuid: string | null;
   timelineSliderUuid: string | null;
   speedSliderUuid: string | null;
   stepButtonsUuid: string | null;

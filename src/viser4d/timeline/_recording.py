@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterator
 
@@ -16,13 +17,11 @@ from ._store import (
     TimelineStore,
     store_raw_message,
     serialize_stored_message,
-    serialize_stored_messages,
 )
 
 if TYPE_CHECKING:
     from ..audio import AudioApi
     from .._server import Viser4dServer
-    from viser._viser import ClientHandle
 
 
 @dataclass(frozen=True)
@@ -34,12 +33,17 @@ class TimelineContext:
 class SceneRecorder:
     """Capture scene and audio edits into the timeline store."""
 
+    _CLIENT_REFRESH_DELAY_SECONDS = 0.05
+
     def __init__(self, server: Viser4dServer, timeline: TimelineStore) -> None:
         self._server = server
         self._live_scene = server.scene
         self._timeline = timeline
         self._active_step: int | None = None
         self._pending_messages: list[_messages.Message] | None = None
+        self._pending_refresh_from_block: int | None = None
+        self._refresh_timer: threading.Timer | None = None
+        self._refresh_lock = threading.Lock()
         self._transport = _TimelineTransport(server, self)
         owner = _TimelineSceneOwner(self._transport)
         self.scene = SceneApi(
@@ -113,21 +117,18 @@ class SceneRecorder:
             serialize_stored_message(store_raw_message(message)),
         )
 
-    def sync_client_timeline(self, client: ClientHandle) -> None:
-        for step in range(self._timeline.num_steps):
-            messages = self._timeline.messages_for_step(step)
-            if not messages:
-                continue
-            self._server._send_runtime_call_to_client(
-                client,
-                "preloadStep",
-                {"step": step, "messages": serialize_stored_messages(messages)},
-            )
+    def close(self) -> None:
+        with self._refresh_lock:
+            timer = self._refresh_timer
+            self._refresh_timer = None
+            self._pending_refresh_from_block = None
+        if timer is not None:
+            timer.cancel()
 
     def _record_step(self, step: int, messages: list[_messages.Message]) -> None:
         self._validate_step_messages(messages)
         self._timeline.record_step(step, messages)
-        self._broadcast_step_cache(step)
+        self._queue_client_block_refresh(self._timeline.block_index_for_step(step))
 
     def _record_live_scene_message(self, message: _messages.Message) -> None:
         if isinstance(message, _messages._CreateSceneNodeMessage):
@@ -136,17 +137,42 @@ class SceneRecorder:
             )
         start_step = self._timeline.record_live_scene_update(message)
         self._broadcast_scene_message(message, start_step)
-        self._broadcast_step_cache(start_step)
+        self._queue_client_block_refresh(
+            self._timeline.block_index_for_step(start_step)
+        )
 
-    def _broadcast_step_cache(self, step: int) -> None:
-        payload = {
-            "step": step,
-            "messages": serialize_stored_messages(
-                self._timeline.messages_for_step(step)
-            ),
-        }
-        for client in self._server.get_clients().values():
-            self._server._send_runtime_call_to_client(client, "preloadStep", payload)
+    def _queue_client_block_refresh(self, changed_block: int) -> None:
+        with self._refresh_lock:
+            pending_block = self._pending_refresh_from_block
+            if pending_block is None or changed_block < pending_block:
+                self._pending_refresh_from_block = changed_block
+            if self._refresh_timer is not None:
+                self._refresh_timer.cancel()
+            timer = threading.Timer(
+                self._CLIENT_REFRESH_DELAY_SECONDS,
+                self._flush_client_block_refreshes,
+            )
+            timer.daemon = True
+            self._refresh_timer = timer
+            timer.start()
+
+    def _flush_client_block_refreshes(self) -> None:
+        with self._refresh_lock:
+            changed_block = self._pending_refresh_from_block
+            self._pending_refresh_from_block = None
+            self._refresh_timer = None
+        if changed_block is None:
+            return
+        payloads: dict[int, dict[str, object]] = {}
+        for playback in self._server.get_client_playbacks().values():
+            for block_index in sorted(playback._loaded_blocks):
+                if block_index < changed_block:
+                    continue
+                payload = payloads.get(block_index)
+                if payload is None:
+                    payload = self._timeline.block_payload(block_index)
+                    payloads[block_index] = payload
+                playback._send_runtime_call("loadBlock", payload)
 
     def _broadcast_scene_message(
         self, message: _messages.Message, start_step: int

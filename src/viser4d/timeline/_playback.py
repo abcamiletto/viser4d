@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
 import viser
@@ -42,8 +43,14 @@ class ClientPlaybackHandle:
         self._loop = False
         self._is_playing = False
         self._current_timestep = 0
+        self._loaded_blocks: set[int] = set()
+        self._pending_block_loads: set[int] = set()
         self._lock = threading.RLock()
         self._create_gui(brand_color)
+
+        @self._block_request_sync.on_update
+        def _request_blocks(_event: Any) -> None:
+            self._sync_requested_step(int(self._block_request_sync.value))
 
         @self._timestep_sync.on_update
         def _sync_timestep(_event: Any) -> None:
@@ -58,7 +65,7 @@ class ClientPlaybackHandle:
             self._sync_playback_from_client(bool(self._playback_state_sync.value))
 
         self._sync_runtime_config()
-        self._server._recorder.sync_client_timeline(client)
+        self._sync_loaded_blocks(self._current_timestep, force=True)
         # New clients need the initial timeline scene state before playback starts.
         self.seek(self._current_timestep)
 
@@ -101,11 +108,13 @@ class ClientPlaybackHandle:
         t = self._require_timestep(t)
         with self._lock:
             self._current_timestep = t
+        self._sync_loaded_blocks(t)
         self._timeline_slider.value = t
         self._send_runtime_call("seek", {"step": t})
 
     def refresh(self) -> None:
         """Redraw this client's current timestep from recorded timeline state."""
+        self._sync_loaded_blocks(self.current_timestep)
         self._send_runtime_call("refresh", {})
 
     def set_speed(self, speed: float) -> None:
@@ -125,9 +134,11 @@ class ClientPlaybackHandle:
             "configure",
             client_runtime_config_payload(
                 num_steps=self._server.num_steps,
+                block_size=self._server._timeline.block_size,
                 timeline_fps=self._server.fps,
                 speed=speed,
                 loop=loop,
+                block_request_sync_uuid=impl.gui_uuid(self._block_request_sync),
                 timeline_slider_uuid=impl.gui_uuid(self._timeline_slider),
                 speed_slider_uuid=impl.gui_uuid(self._speed_slider),
                 step_buttons_uuid=impl.gui_uuid(self._step_buttons),
@@ -146,7 +157,11 @@ class ClientPlaybackHandle:
         timestep = self._require_timestep(timestep)
         with self._lock:
             self._current_timestep = timestep
+        self._sync_loaded_blocks(timestep)
         self._server._dispatch_timestep_change(self._client, timestep)
+
+    def _sync_requested_step(self, timestep: int) -> None:
+        self._sync_loaded_blocks(self._require_timestep(timestep), force=True)
 
     def _sync_speed_from_client(self, speed: float) -> None:
         with self._lock:
@@ -162,6 +177,14 @@ class ClientPlaybackHandle:
     def _create_gui(self, brand_color: tuple[int, int, int] | None) -> None:
         max_step = self._server.num_steps - 1
         client = self._client
+        self._block_request_sync = client.gui.add_number(
+            "__viser4d_block_request_sync__",
+            self._current_timestep,
+            min=0,
+            max=max_step,
+            step=1,
+            visible=False,
+        )
         self._speed_sync = client.gui.add_number(
             "__viser4d_speed_sync__",
             self._speed,
@@ -214,6 +237,60 @@ class ClientPlaybackHandle:
         raise ValueError(
             f"timestep must be in [0, {self._server.num_steps - 1}], got {timestep}."
         )
+
+    def _desired_blocks(self, timestep: int) -> set[int]:
+        timeline = self._server._timeline
+        current = timeline.block_index_for_step(timestep)
+        blocks = {current}
+        if current + 1 < timeline.block_count:
+            blocks.add(current + 1)
+        return blocks
+
+    def _sync_loaded_blocks(
+        self,
+        timestep: int,
+        *,
+        force: bool = False,
+    ) -> None:
+        desired_blocks = self._desired_blocks(timestep)
+        with self._lock:
+            loaded_blocks = set(self._loaded_blocks)
+            self._loaded_blocks = desired_blocks
+        for block_index in sorted(desired_blocks):
+            if force or block_index not in loaded_blocks:
+                self._queue_block_load(block_index)
+        for block_index in sorted(loaded_blocks - desired_blocks):
+            self._send_runtime_call("evictBlock", {"block": block_index})
+
+    def _queue_block_load(self, block_index: int) -> None:
+        with self._lock:
+            if block_index in self._pending_block_loads:
+                return
+            self._pending_block_loads.add(block_index)
+        future = self._server._thread_executor.submit(
+            self._server._timeline.block_payload,
+            block_index,
+        )
+        future.add_done_callback(
+            lambda done_future: self._server.get_event_loop().call_soon_threadsafe(
+                self._finish_block_load,
+                block_index,
+                done_future,
+            )
+        )
+
+    def _finish_block_load(
+        self,
+        block_index: int,
+        future: Future[RuntimePayload],
+    ) -> None:
+        with self._lock:
+            self._pending_block_loads.discard(block_index)
+            should_send = block_index in self._loaded_blocks
+        payload = future.result()
+        if not should_send:
+            return
+        self._send_runtime_call("loadBlock", payload)
 
     def _send_runtime_call(
         self, method: RuntimeMethod, payload: RuntimePayload
