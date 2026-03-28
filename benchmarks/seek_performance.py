@@ -24,15 +24,16 @@ from viser4d.timeline._store import TimelineStore
 # Config
 # ---------------------------------------------------------------------------
 
-NUM_OBJECTS = 200       # scene objects per step (frames with position/rotation)
-NUM_STEPS = 512         # total timeline steps
-BLOCK_SIZE = 64         # default in TimelineStore
+NUM_OBJECTS = 200  # scene objects per step (frames with position/rotation)
+NUM_STEPS = 512  # total timeline steps
+BLOCK_SIZE = 64  # default in TimelineStore
 FPS = 30.0
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class SeekResult:
@@ -107,16 +108,20 @@ def time_seek(store: TimelineStore, block_index: int) -> SeekResult:
 
 def disk_usage_kb(store: TimelineStore) -> tuple[float, float]:
     """Return (block_files_kb, checkpoint_files_kb) on disk."""
-    block_kb = sum(
-        p.stat().st_size for p in store._block_dir.glob("????????.msgpack.zst")
-    ) / 1024
-    ckpt_kb = sum(
-        p.stat().st_size for p in store._block_dir.glob("checkpoint_*.msgpack.zst")
-    ) / 1024
+    block_kb = (
+        sum(p.stat().st_size for p in store._block_dir.glob("????????.msgpack.zst"))
+        / 1024
+    )
+    ckpt_kb = (
+        sum(p.stat().st_size for p in store._block_dir.glob("checkpoint_*.msgpack.zst"))
+        / 1024
+    )
     return block_kb, ckpt_kb
 
 
-def run_benchmark(num_steps: int = NUM_STEPS, num_objects: int = NUM_OBJECTS) -> list[SeekResult]:
+def run_benchmark(
+    num_steps: int = NUM_STEPS, num_objects: int = NUM_OBJECTS
+) -> list[SeekResult]:
     print(f"Recording {num_steps} steps × {num_objects} objects …", flush=True)
     server = record_heavy_scene(num_steps, num_objects)
     store: TimelineStore = server._timeline
@@ -126,17 +131,23 @@ def run_benchmark(num_steps: int = NUM_STEPS, num_objects: int = NUM_OBJECTS) ->
 
     block_count = store.block_count
     block_kb, ckpt_kb = disk_usage_kb(store)
-    print(f"Timeline: {num_steps} steps, {block_count} blocks of {BLOCK_SIZE} steps each")
+    print(
+        f"Timeline: {num_steps} steps, {block_count} blocks of {BLOCK_SIZE} steps each"
+    )
     print(f"Disk: {block_kb:.0f} KB blocks  +  {ckpt_kb:.0f} KB checkpoints")
 
     # Sample: first, quarter, half, three-quarters, last block
-    sample_indices = sorted(set([
-        0,
-        block_count // 4,
-        block_count // 2,
-        3 * block_count // 4,
-        block_count - 1,
-    ]))
+    sample_indices = sorted(
+        set(
+            [
+                0,
+                block_count // 4,
+                block_count // 2,
+                3 * block_count // 4,
+                block_count - 1,
+            ]
+        )
+    )
     print(f"Seeking to blocks: {sample_indices}\n")
 
     results = []

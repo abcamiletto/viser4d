@@ -304,7 +304,9 @@ class TimelineStore:
                 dirty=False,
             )
         else:
-            step_count = min(self.block_size, self.num_steps - block_index * self.block_size)
+            step_count = min(
+                self.block_size, self.num_steps - block_index * self.block_size
+            )
             block = TimelineBlock(steps=[TimelineStep() for _ in range(step_count)])
         self._loaded_blocks[block_index] = block
         self._evict_loaded_blocks()
@@ -325,14 +327,20 @@ class TimelineStore:
         # Only possible when blocks are flushed in contiguous order from 0.
         next_block = block_index + 1
         checkpoint: tuple[Path, _CheckpointState] | None = None
-        if block_index == self._eager_checkpoint_next_block and next_block < self.block_count:
+        if (
+            block_index == self._eager_checkpoint_next_block
+            and next_block < self.block_count
+        ):
             for step in block.steps:
                 for key, message in step.scene_updates.items():
                     self._apply_scene_message(self._eager_checkpoint, key, message)
                 for message in step.audio_updates:
                     self._apply_audio_message(self._eager_checkpoint, message)
             self._eager_checkpoint_next_block = next_block
-            checkpoint = (self._checkpoint_path(next_block), self._copy_checkpoint(self._eager_checkpoint))
+            checkpoint = (
+                self._checkpoint_path(next_block),
+                self._copy_checkpoint(self._eager_checkpoint),
+            )
         self._pending_flushes[block_index] = self._flush_executor.submit(
             _write_block_and_checkpoint_after,
             pending_flush,
@@ -403,7 +411,9 @@ class TimelineStore:
             },
         )
 
-    def _apply_block_to_checkpoint(self, state: _CheckpointState, block_index: int) -> None:
+    def _apply_block_to_checkpoint(
+        self, state: _CheckpointState, block_index: int
+    ) -> None:
         block = self._load_block(block_index)
         for step in block.steps:
             for key, message in step.scene_updates.items():
@@ -411,12 +421,15 @@ class TimelineStore:
             for message in step.audio_updates:
                 self._apply_audio_message(state, message)
 
-    def _apply_scene_message(self, state: _CheckpointState, key: str, message: StoredMessage) -> None:
+    def _apply_scene_message(
+        self, state: _CheckpointState, key: str, message: StoredMessage
+    ) -> None:
         name = extract_message_name(message)
         if message.get("type") == "RemoveSceneNodeMessage" and isinstance(name, str):
             prefix = f"{name}/"
             stale_keys = [
-                k for k, node in state.key_to_node.items()
+                k
+                for k, node in state.key_to_node.items()
                 if node == name or (isinstance(node, str) and node.startswith(prefix))
             ]
             for k in stale_keys:
@@ -427,7 +440,9 @@ class TimelineStore:
         state.scene_updates[key] = message
         state.key_to_node[key] = name
 
-    def _apply_audio_message(self, state: _CheckpointState, message: StoredMessage) -> None:
+    def _apply_audio_message(
+        self, state: _CheckpointState, message: StoredMessage
+    ) -> None:
         message_type = message.get("type")
         name = extract_message_name(message)
         if not isinstance(message_type, str) or not isinstance(name, str):
@@ -472,7 +487,9 @@ class TimelineStore:
             messages = node_messages[name]
             create_messages = [m for m in messages if _is_create_scene_message(m)]
             scene_messages.extend(create_messages)
-            scene_messages.extend(m for m in messages if not _is_create_scene_message(m))
+            scene_messages.extend(
+                m for m in messages if not _is_create_scene_message(m)
+            )
         audio_messages = [
             store_raw_message(
                 AddAudioMessage(
