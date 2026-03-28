@@ -144,16 +144,28 @@ handle state only changes once the client reports the result back.
 `ClientPlaybackHandle.speed` is the tab's current playback-speed factor. If you
 need the effective playback FPS, compute `server.fps * playback.speed`.
 
+Each handle also exposes per-client control methods that mirror the server-wide
+commands but apply only to that one tab:
+
+```python
+playback.seek(t)            # jump to a specific timestep
+playback.play(speed=2.0)    # start playback at 2× speed
+playback.pause()            # pause
+playback.set_speed(0.5)     # update speed without starting playback
+playback.refresh()          # redraw current timestep from recorded state
+```
+
 ## Server playback commands
 
-`server.play(...)` starts each connected client from that client's own current
-timestep. Calling `server.play()` with no `speed` preserves each client's own
-current playback speed. Passing `speed=...` to `server.play(...)` overrides the
-connected clients only.
+`server.play(speed=..., loop=...)` starts each connected client from that
+client's own current timestep. Omitting `speed` preserves each client's current
+speed; passing it overrides the connected clients only. `loop=True` enables
+looping; omitting it preserves each client's current loop state.
 `server.pause()` pauses each connected client wherever it currently is.
-`server.set_playback_speed(...)` updates the connected clients' playback speed
-without starting playback.
-Neither method changes the base timeline step rate used for audio timing or
+`server.set_playback_speed(...)` updates speed without starting playback.
+`server.refresh()` redraws the current timestep on all connected clients, which
+is useful after updating recorded scene data while paused.
+None of these change the base timeline step rate used for audio timing or
 export; set that with `fps=` when you construct the server. New clients always
 start paused at timestep `0` with speed `1.0`.
 
@@ -195,7 +207,8 @@ for _ in range(120):
 ```
 
 `AudioHandle.append(...)` extends the same track contiguously (same channel
-count).
+count). `AudioHandle.volume` is a readable and writable float in `[0, 1]` that
+controls playback gain, useful for attaching a GUI slider.
 
 ## How it works
 
