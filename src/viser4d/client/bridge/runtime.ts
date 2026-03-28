@@ -576,33 +576,51 @@ export class TimelineRuntime {
     this.applyThrough(step);
   }
 
-  private applyThrough(step: number): void {
+  private advanceThrough(step: number): void {
     if (!this.ensureStepLoaded(step)) {
       return;
     }
-    const block = this.getLoadedBlock(step);
-    if (!block) {
-      return;
+    if (this.appliedStep < 0) {
+      const block = this.getLoadedBlock(step);
+      if (!block) {
+        return;
+      }
+      const blockIndex = this.getBlockIndex(step);
+      this.applyBlockCheckpoint(blockIndex, block);
+      this.appliedBlock = blockIndex;
+      this.appliedStep = this.getBlockStartStep(blockIndex) - 1;
     }
+    let nextStep = this.appliedStep + 1;
+    while (nextStep <= step) {
+      if (!this.ensureStepLoaded(nextStep)) {
+        return;
+      }
+      const block = this.getLoadedBlock(nextStep);
+      if (!block) {
+        return;
+      }
+      const blockIndex = this.getBlockIndex(nextStep);
+      const blockStart = this.getBlockStartStep(blockIndex);
+      const blockEnd = Math.min(step, blockStart + block.stepMessages.length - 1);
+      for (let index = nextStep; index <= blockEnd; index += 1) {
+        const messages = block.stepMessages[index - blockStart] ?? [];
+        if (messages.length) {
+          this.applyStepMessages(index, messages);
+        }
+      }
+      this.appliedBlock = blockIndex;
+      this.appliedStep = blockEnd;
+      nextStep = blockEnd + 1;
+    }
+  }
+
+  private applyThrough(step: number): void {
     const blockIndex = this.getBlockIndex(step);
     if (this.appliedStep >= 0 && (blockIndex !== this.appliedBlock || step < this.appliedStep)) {
       this.rebuildThrough(step);
       return;
     }
-    if (this.appliedStep < 0) {
-      this.applyBlockCheckpoint(blockIndex, block);
-      this.appliedStep = this.getBlockStartStep(blockIndex) - 1;
-    }
-    const blockStart = this.getBlockStartStep(blockIndex);
-    const start = Math.max(this.appliedStep + 1, blockStart);
-    for (let index = start; index <= step; index += 1) {
-      const messages = block.stepMessages[index - blockStart] ?? [];
-      if (messages.length) {
-        this.applyStepMessages(index, messages);
-      }
-    }
-    this.appliedBlock = blockIndex;
-    this.appliedStep = step;
+    this.advanceThrough(step);
   }
 
   seek(payload: { step: number }): void {
@@ -645,7 +663,7 @@ export class TimelineRuntime {
       this.syncAdvancedTimesteps(previousStep, 0, true);
     } else {
       this.currentStep = next;
-      this.applyThrough(Math.floor(this.currentStep));
+      this.advanceThrough(Math.floor(this.currentStep));
       this.syncAdvancedTimesteps(previousStep, this.currentStep);
     }
     this.rafId = getWindow().requestAnimationFrame((nextTimestamp) =>
