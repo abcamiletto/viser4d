@@ -76,13 +76,10 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
 
 def test_at_preserves_server_scene_backwards_compatibility() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
-    live_scene = server.scene
     try:
-        with server.at(0) as timeline:
-            assert server.scene is timeline.scene
+        with server.at(0):
             joint = server.scene.add_frame("/joint")
-
-        assert server.scene is live_scene
+        server.scene.add_frame("/static")
 
         joint.position = (2.0, 0.0, 0.0)
 
@@ -99,9 +96,15 @@ def test_at_preserves_server_scene_backwards_compatibility() -> None:
             if message.get("type") == "SetPositionMessage"
             and message.get("name") == "/joint"
         ]
+        static_times = [
+            time
+            for time, message in messages
+            if message.get("type") == "FrameMessage" and message.get("name") == "/static"
+        ]
 
         assert creation_times == [0.0]
         assert positions == [(2.0, 0.0, 0.0)]
+        assert static_times == [0.0]
     finally:
         server.stop()
 
@@ -460,7 +463,7 @@ def test_same_step_audio_events_serialize_without_deduping() -> None:
         server.stop()
 
 
-def test_post_recording_timeline_updates_serialize_from_live_step_cache() -> None:
+def test_post_recording_timeline_updates_persist_in_serialization() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
