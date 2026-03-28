@@ -34,7 +34,10 @@ class Viser4dServer(viser.ViserServer):
 
         self.num_steps = num_steps
         self._timeline_fps = require_positive_float("fps", fps)
-        self._timeline = TimelineStore(self.num_steps)
+        self._timeline = TimelineStore(
+            self.num_steps,
+            flush_executor=self._thread_executor,
+        )
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
         self._timestep_callbacks: list[
@@ -150,6 +153,8 @@ class Viser4dServer(viser.ViserServer):
     def stop(self) -> None:
         """Shut down the underlying viser server."""
         self._stop_event.set()
+        self._recorder.close()
+        self._timeline.close()
         super().stop()
 
     def _dispatch_audio_update(self, message: _messages.Message) -> None:

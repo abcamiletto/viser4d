@@ -27,9 +27,11 @@ def runtime_source() -> str:
 def client_runtime_config_payload(
     *,
     num_steps: int,
+    block_size: int,
     timeline_fps: float,
     speed: float,
     loop: bool,
+    block_request_sync_uuid: str,
     timeline_slider_uuid: str,
     speed_slider_uuid: str,
     step_buttons_uuid: str,
@@ -41,9 +43,11 @@ def client_runtime_config_payload(
 ) -> ClientRuntimeConfig:
     return ClientRuntimeConfig(
         numSteps=num_steps,
+        blockSize=block_size,
         timelineFps=timeline_fps,
         speed=speed,
         loop=loop,
+        blockRequestSyncUuid=block_request_sync_uuid,
         timelineSliderUuid=timeline_slider_uuid,
         speedSliderUuid=speed_slider_uuid,
         stepButtonsUuid=step_buttons_uuid,

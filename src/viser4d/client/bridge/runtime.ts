@@ -40,8 +40,12 @@ const debugState = {
   },
 };
 
+type LoadedBlock = {
+  checkpointMessages: RuntimeMessage[];
+  stepMessages: RuntimeMessage[][];
+};
+
 export class TimelineRuntime {
-  stepMessages: RuntimeMessage[][] = [];
   appliedStep = -1;
   readonly debug = debugState;
 
@@ -49,9 +53,11 @@ export class TimelineRuntime {
   private playbackTimeSlider: Element | null = null;
   private config: RuntimeConfig = {
     numSteps: 1,
+    blockSize: 64,
     timelineFps: 30,
     speed: 1,
     loop: false,
+    blockRequestSyncUuid: null,
     timelineSliderUuid: null,
     speedSliderUuid: null,
     stepButtonsUuid: null,
@@ -61,7 +67,11 @@ export class TimelineRuntime {
     playbackStateSyncUuid: null,
     timestepSyncUuid: null,
   };
-  private timelineNodeNames = new Set<string>();
+  private loadedBlocks = new Map<number, LoadedBlock>();
+  private renderedTimelineNodes = new Set<string>();
+  private appliedBlock = -1;
+  private pendingStep: number | null = null;
+  private requestedBlocks = new Set<number>();
   private currentStep = 0;
   private playStartStep = 0;
   private playStartPerfTime = 0;
@@ -335,6 +345,7 @@ export class TimelineRuntime {
       if (isAudioMessage(message)) {
         audioMessages.push(message);
       } else {
+        this.trackTimelineNode(message);
         sceneMessages.push(message);
       }
     }
@@ -356,31 +367,72 @@ export class TimelineRuntime {
     );
   }
 
+  private getBlockIndex(step: number): number {
+    return Math.floor(step / this.config.blockSize);
+  }
+
+  private getBlockStartStep(block: number): number {
+    return block * this.config.blockSize;
+  }
+
+  private getLoadedBlock(step: number): LoadedBlock | null {
+    return this.loadedBlocks.get(this.getBlockIndex(step)) ?? null;
+  }
+
+  private ensureStepLoaded(step: number): boolean {
+    if (this.getLoadedBlock(step)) {
+      return true;
+    }
+    this.pendingStep = step;
+    const block = this.getBlockIndex(step);
+    if (!this.requestedBlocks.has(block) && this.config.blockRequestSyncUuid) {
+      this.requestedBlocks.add(block);
+      this.sendGuiUpdate(this.config.blockRequestSyncUuid, step);
+    }
+    return false;
+  }
+
   configure(config: Partial<RuntimeConfig>): void {
     this.config = { ...this.config, ...config };
     this.audio.setStepRate(this.config.timelineFps);
-    while (this.stepMessages.length < this.config.numSteps) {
-      this.stepMessages.push([]);
-    }
     debugState.push("runtime.configure", this.config);
     this.syncAudioTransport();
     this.syncPlaybackButtons();
   }
 
-  preloadStep(payload: {
-    step: number;
-    messages: RuntimeMessage[];
+  loadBlock(payload: {
+    block: number;
+    checkpointMessages: RuntimeMessage[];
+    stepMessages: RuntimeMessage[][];
   }): void {
-    const messages: RuntimeMessage[] = [];
-    for (const rawMessage of payload.messages) {
-      const message = normalizeTransportMessage(rawMessage);
-      messages.push(message);
-      const name = typeof message.name === "string" ? message.name : null;
-      if (name && !isAudioMessage(message)) {
-        this.timelineNodeNames.add(name);
-      }
+    const block: LoadedBlock = {
+      checkpointMessages: payload.checkpointMessages.map((message) =>
+        normalizeTransportMessage(message),
+      ),
+      stepMessages: payload.stepMessages.map((messages) =>
+        messages.map((message) => normalizeTransportMessage(message)),
+      ),
+    };
+    this.requestedBlocks.delete(payload.block);
+    this.loadedBlocks.set(payload.block, block);
+    const activeBlock = this.getBlockIndex(Math.floor(this.currentStep));
+    if (payload.block === activeBlock && this.appliedBlock === activeBlock) {
+      this.resetTimelineState(Math.floor(this.currentStep));
+      return;
     }
-    this.stepMessages[payload.step] = messages;
+    if (this.pendingStep !== null && this.getLoadedBlock(this.pendingStep)) {
+      const pendingStep = this.pendingStep;
+      this.pendingStep = null;
+      this.seek({ step: pendingStep });
+    }
+  }
+
+  evictBlock(payload: { block: number }): void {
+    if (payload.block === this.appliedBlock) {
+      return;
+    }
+    this.loadedBlocks.delete(payload.block);
+    this.requestedBlocks.delete(payload.block);
   }
 
   applyMessageUpdate(rawMessage: RuntimeMessage): void {
@@ -396,6 +448,42 @@ export class TimelineRuntime {
       return;
     }
     this.pushMessages([message]);
+  }
+
+  private trackTimelineNode(message: RuntimeMessage): void {
+    const name = typeof message.name === "string" ? message.name : null;
+    if (!name) {
+      return;
+    }
+    if (message.type === "RemoveSceneNodeMessage") {
+      const prefix = `${name}/`;
+      for (const nodeName of Array.from(this.renderedTimelineNodes)) {
+        if (nodeName === name || nodeName.startsWith(prefix)) {
+          this.renderedTimelineNodes.delete(nodeName);
+        }
+      }
+      return;
+    }
+    this.renderedTimelineNodes.add(name);
+  }
+
+  private removeRenderedTimelineNodes(): void {
+    if (!this.renderedTimelineNodes.size) {
+      return;
+    }
+    this.pushMessages(
+      Array.from(this.renderedTimelineNodes).map((name) => ({
+        type: "RemoveSceneNodeMessage",
+        name,
+      })),
+    );
+    this.renderedTimelineNodes.clear();
+  }
+
+  private applyBlockCheckpoint(blockIndex: number, block: LoadedBlock): void {
+    if (block.checkpointMessages.length) {
+      this.applyStepMessages(this.getBlockStartStep(blockIndex), block.checkpointMessages);
+    }
   }
 
   private syncTimelineSlider(step: number, force = false): void {
@@ -480,21 +568,17 @@ export class TimelineRuntime {
     });
     const epoch = ++this.resetEpoch;
     this.resetTargetStep = targetStep;
-    this.pushMessages(
-      Array.from(this.timelineNodeNames).map((name) => ({
-        type: "RemoveSceneNodeMessage",
-        name,
-      })),
-    );
+    this.removeRenderedTimelineNodes();
     this.audio.resetTimeline();
     this.appliedStep = -1;
+    this.appliedBlock = -1;
     getWindow().requestAnimationFrame(() => {
       if (epoch !== this.resetEpoch) {
         return;
       }
       const targetStep = this.resetTargetStep ?? 0;
       this.resetTargetStep = null;
-      if (targetStep >= 0) {
+      if (targetStep >= 0 && this.ensureStepLoaded(targetStep)) {
         this.applyThrough(targetStep);
       }
     });
@@ -505,16 +589,31 @@ export class TimelineRuntime {
       this.resetTargetStep = step;
       return;
     }
-    if (step < this.appliedStep) {
+    if (!this.ensureStepLoaded(step)) {
+      return;
+    }
+    const block = this.getLoadedBlock(step);
+    if (!block) {
+      return;
+    }
+    const blockIndex = this.getBlockIndex(step);
+    if (this.appliedStep >= 0 && (blockIndex !== this.appliedBlock || step < this.appliedStep)) {
       this.resetTimelineState(step);
       return;
     }
-    for (let index = this.appliedStep + 1; index <= step; index += 1) {
-      const messages = this.stepMessages[index];
+    if (this.appliedStep < 0) {
+      this.applyBlockCheckpoint(blockIndex, block);
+      this.appliedStep = this.getBlockStartStep(blockIndex) - 1;
+    }
+    const blockStart = this.getBlockStartStep(blockIndex);
+    const start = Math.max(this.appliedStep + 1, blockStart);
+    for (let index = start; index <= step; index += 1) {
+      const messages = block.stepMessages[index - blockStart] ?? [];
       if (messages.length) {
         this.applyStepMessages(index, messages);
       }
     }
+    this.appliedBlock = blockIndex;
     this.appliedStep = step;
   }
 
@@ -523,6 +622,9 @@ export class TimelineRuntime {
     this.currentStep = step;
     if (this.playing) {
       this.anchorTransport(step);
+    }
+    if (!this.ensureStepLoaded(step)) {
+      return;
     }
     this.applyThrough(step);
     this.audio.seek(step, this.getPlaybackFps(), this.playing);

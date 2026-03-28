@@ -34,12 +34,14 @@ class AudioArrayPayload(TypedDict):
 
 class RuntimeConfig(TypedDict):
     numSteps: int
+    blockSize: int
     timelineFps: float
     speed: float
     loop: bool
 
 
 class ClientRuntimeConfig(RuntimeConfig):
+    blockRequestSyncUuid: str
     timelineSliderUuid: str
     speedSliderUuid: str
     stepButtonsUuid: str
@@ -53,9 +55,10 @@ class ClientRuntimeConfig(RuntimeConfig):
 RuntimeMethod: TypeAlias = Literal[
     "applyMessageUpdate",
     "configure",
+    "evictBlock",
+    "loadBlock",
     "pause",
     "play",
-    "preloadStep",
     "refresh",
     "seek",
     "setSpeed",
