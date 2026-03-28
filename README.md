@@ -212,9 +212,9 @@ controls playback gain, useful for attaching a GUI slider.
 
 ## How it works
 
-Context determines behavior. Inside `server.at(t)`, `server.scene` and
-`server.audio` record timeline state. Outside `server.at(t)`, `server.scene`
-remains viser's live/static scene API:
+**Server-side recording.** Context determines behavior. Inside `server.at(t)`,
+`server.scene` and `server.audio` record timeline state. Outside `server.at(t)`,
+`server.scene` remains viser's live/static scene API:
 
 ```
 Inside at(t):                          Outside at(t):
@@ -226,9 +226,21 @@ server.audio.add_track(...)                   │
     records to Timeline
 ```
 
+Recorded messages are grouped into fixed-size blocks in the timeline store.
+
+**Client-side playback.** When a browser tab connects, the server injects a
+JavaScript runtime (`TimelineRuntime`) alongside the normal viser viewer. Each
+tab manages its own independent transport: play, pause, seek, and speed are
+all client-local. The runtime fetches timeline blocks from the server on demand
+— only the blocks needed for the current playback position are requested. At
+each timestep the runtime replays the recorded viser messages for that step
+(and any prior steps in the same block that haven't been applied yet), keeping
+the rendered scene in sync with the timeline position.
+
 - **Inside `at(t)`**: Use `server.scene` and `server.audio` to record timeline state.
 - **Outside `at(t)`**: `server.scene` remains viser's live/static scene API.
 - **Client playback**: Each browser tab owns its own transport and playback state.
+- **Block streaming**: Timeline data is fetched block-by-block as the client plays or scrubs.
 - **Timestep callbacks**: `on_timestep_change(...)` aggregates committed client steps and passes the source client.
 - **Playback callbacks**: `on_playback_change(...)` reports per-client play/pause transitions.
 - **Audio**: Add timeline-synced tracks with `server.audio.add_track(...)` inside `at(t)`.
