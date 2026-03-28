@@ -99,7 +99,8 @@ def test_at_preserves_server_scene_backwards_compatibility() -> None:
         static_times = [
             time
             for time, message in messages
-            if message.get("type") == "FrameMessage" and message.get("name") == "/static"
+            if message.get("type") == "FrameMessage"
+            and message.get("name") == "/static"
         ]
 
         assert creation_times == [0.0]

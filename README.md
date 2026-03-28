@@ -16,9 +16,9 @@ import viser4d
 
 server = viser4d.Viser4dServer(num_steps=10, fps=10)
 
-with server.at(0) as timeline:
+with server.at(0):
     points = np.random.uniform(-1.0, 1.0, size=(200, 3))
-    point_cloud = timeline.scene.add_point_cloud(
+    point_cloud = server.scene.add_point_cloud(
         "/points",
         points=points,
         colors=(255, 200, 0),
@@ -70,8 +70,8 @@ def get_next_points() -> np.ndarray:
     # Replace with your real sensor/network/pipeline frame source.
     return np.random.normal(size=(400, 3)).astype(np.float32)
 
-with server.at(0) as timeline:
-    point_cloud = timeline.scene.add_point_cloud(
+with server.at(0):
+    point_cloud = server.scene.add_point_cloud(
         "/stream/points",
         points=get_next_points(),
     )
@@ -182,8 +182,8 @@ import viser4d
 
 server = viser4d.Viser4dServer(num_steps=300, fps=30)
 
-with server.at(0) as timeline:
-    audio = timeline.audio.add_track(
+with server.at(0):
+    audio = server.audio.add_track(
         "/stream/audio",
         data=np.zeros(1600, dtype=np.float32),
         sample_rate=16000,
@@ -199,26 +199,26 @@ count).
 
 ## How it works
 
-Context determines behavior. Inside `server.at(t)`, the timeline-owned scene is
-available both as `server.scene` for backwards compatibility and as the explicit
-`timeline.scene` handle returned by the context manager:
+Context determines behavior. Inside `server.at(t)`, `server.scene` and
+`server.audio` record timeline state. Outside `server.at(t)`, `server.scene`
+remains viser's live/static scene API:
 
 ```
 Inside at(t):                          Outside at(t):
 ─────────────                          ──────────────
 server.scene.add_frame(...)            server.scene.add_frame(...)
-timeline.scene.add_frame(...)                 │
-       │                                      │
-       ▼                                      ▼
-    records to Timeline                    forwards to live viser scene
+server.audio.add_track(...)                   │
+       │                                      ▼
+       ▼                                   forwards to live viser scene
+    records to Timeline
 ```
 
-- **Inside `at(t)`**: Use either `server.scene` or `timeline.scene` to record timeline state.
+- **Inside `at(t)`**: Use `server.scene` and `server.audio` to record timeline state.
 - **Outside `at(t)`**: `server.scene` remains viser's live/static scene API.
 - **Client playback**: Each browser tab owns its own transport and playback state.
 - **Timestep callbacks**: `on_timestep_change(...)` aggregates committed client steps and passes the source client.
 - **Playback callbacks**: `on_playback_change(...)` reports per-client play/pause transitions.
-- **Audio**: Add timeline-synced tracks with either `server.audio.add_track(...)` or `timeline.audio.add_track(...)` inside `at(t)`.
+- **Audio**: Add timeline-synced tracks with `server.audio.add_track(...)` inside `at(t)`.
 
 See `examples/` for more.
 
