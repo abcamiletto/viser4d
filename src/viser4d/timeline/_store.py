@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import inspect
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -10,9 +9,8 @@ import numpy as np
 import viser
 import zstandard
 from viser import _messages
-from viser.infra import WebsockMessageHandler
 
-from ..audio._messages import is_audio_message_type
+from ..audio._messages import is_audio_message, is_audio_message_type
 from .._types import (
     BinaryPayload,
     JSONValue,
@@ -84,27 +82,12 @@ def is_scene_message(message: StoredMessage) -> bool:
     )
 
 
-_CREATE_SCENE_MESSAGE_TYPES = {
-    name
-    for name, obj in vars(_messages).items()
-    if inspect.isclass(obj)
-    and issubclass(obj, _messages.Message)
-    and obj is not _messages._CreateSceneNodeMessage
-    and issubclass(obj, _messages._CreateSceneNodeMessage)
-}
-
-
-def is_create_scene_message(message: StoredMessage) -> bool:
-    message_type = message.get("type")
-    return isinstance(message_type, str) and message_type in _CREATE_SCENE_MESSAGE_TYPES
-
-
 @dataclass
 class TimelineStep:
     """Recorded scene and audio updates for one timestep."""
 
     scene_updates: dict[str, StoredMessage] = field(default_factory=dict)
-    audio_updates: dict[str, StoredMessage] = field(default_factory=dict)
+    audio_updates: list[StoredMessage] = field(default_factory=list)
 
 
 class TimelineStore:
@@ -133,9 +116,7 @@ class TimelineStore:
 
     def messages_for_step(self, step: int) -> list[StoredMessage]:
         step_state = self.step(step)
-        return list(step_state.scene_updates.values()) + list(
-            step_state.audio_updates.values()
-        )
+        return list(step_state.scene_updates.values()) + step_state.audio_updates
 
     def record_step(self, step: int, messages: list[_messages.Message]) -> None:
         """Store one timestep's scene and audio updates."""
@@ -145,13 +126,15 @@ class TimelineStore:
             key = message.redundancy_key()
             name = extract_message_name(stored_message)
             if is_scene_message(stored_message):
-                if name is not None and is_create_scene_message(stored_message):
+                if name is not None and isinstance(
+                    message, _messages._CreateSceneNodeMessage
+                ):
                     self._node_start_steps.setdefault(name, step)
                 self._last_scene_steps[key] = step
                 self._store_message(step_state.scene_updates, key, stored_message)
                 continue
-            if name is not None and is_audio_message_type(stored_message.get("type")):
-                self._store_message(step_state.audio_updates, key, stored_message)
+            if is_audio_message(message):
+                step_state.audio_updates.append(stored_message)
 
     def record_live_scene_update(self, message: _messages.Message) -> int:
         stored_message = store_raw_message(message)
@@ -167,32 +150,12 @@ class TimelineStore:
 
     def _store_message(
         self,
-        bucket: dict[str, Any],
+        bucket: dict[str, StoredMessage],
         key: str,
-        message: Any,
+        message: StoredMessage,
     ) -> None:
         bucket.pop(key, None)
         bucket[key] = message
-
-
-class TimelineRecorder(WebsockMessageHandler):
-    """Temporary websocket sink used while recording a timestep."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.messages: list[_messages.Message] = []
-
-    def get_message_buffer(self) -> Any:
-        return self
-
-    def push(self, message: _messages.Message) -> None:
-        self.messages.append(message)
-
-    def atomic_start(self) -> None:
-        return
-
-    def atomic_end(self) -> None:
-        return
 
 
 def serialize_viser_recording(

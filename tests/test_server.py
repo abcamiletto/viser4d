@@ -432,6 +432,34 @@ def test_stereo_audio_append_preserves_channel_layout() -> None:
         server.stop()
 
 
+def test_same_step_audio_events_serialize_without_deduping() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0) as timeline:
+            audio = timeline.audio.add_track(
+                "/audio",
+                data=np.array([1, 2], dtype=np.int16),
+                sample_rate=16_000,
+            )
+
+        with server.at(1):
+            audio.append(np.array([3, 4], dtype=np.int16))
+            audio.append(np.array([5, 6], dtype=np.int16))
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        append_messages = [
+            message
+            for _, message in messages
+            if message.get("type") == "AppendAudioMessage"
+            and message.get("name") == "/audio"
+        ]
+
+        assert len(append_messages) == 2
+    finally:
+        server.stop()
+
+
 def test_post_recording_timeline_updates_serialize_from_live_step_cache() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:

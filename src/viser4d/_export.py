@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 from viser import _messages
 
 from . import _viser_private as impl
-from .audio._messages import is_audio_message_type
 from ._types import StoredMessage
 from ._runtime import RUNTIME_MARKER, runtime_source
 from .timeline._store import (
@@ -67,8 +66,8 @@ class ExportBuilder:
                 (time, message) for message in step_state.scene_updates.values()
             )
             recording.extend(
-                (time, _with_playback_time(message, playback_time=time))
-                for message in step_state.audio_updates.values()
+                (time, {**message, "__viserPlaybackTime": time})
+                for message in step_state.audio_updates
             )
 
         blob = serialize_viser_recording(
@@ -76,11 +75,3 @@ class ExportBuilder:
             duration_seconds=max(end - start, 0) / fps,
         )
         return blob
-
-
-def _with_playback_time(
-    message: StoredMessage, *, playback_time: float
-) -> StoredMessage:
-    if not is_audio_message_type(message.get("type")):
-        return message
-    return {**message, "__viserPlaybackTime": playback_time}

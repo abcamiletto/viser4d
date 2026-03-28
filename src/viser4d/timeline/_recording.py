@@ -13,7 +13,6 @@ from .. import _viser_private as impl
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
 from ._store import (
-    TimelineRecorder,
     TimelineStore,
     store_raw_message,
     serialize_stored_message,
@@ -40,7 +39,7 @@ class SceneRecorder:
         self._live_scene = server.scene
         self._timeline = timeline
         self._active_step: int | None = None
-        self._step_recorder: TimelineRecorder | None = None
+        self._pending_messages: list[_messages.Message] | None = None
         self._transport = _TimelineTransport(server, self)
         owner = _TimelineSceneOwner(self._transport)
         self.scene = SceneApi(
@@ -61,22 +60,22 @@ class SceneRecorder:
         if self._active_step is not None:
             raise RuntimeError("Nested server.at(t) blocks are not supported.")
         self._active_step = self._timeline.validate_step(t)
-        self._step_recorder = TimelineRecorder()
+        self._pending_messages = []
         previous_scene = self._server.scene
         self._server.scene = self.scene
         try:
             yield TimelineContext(scene=self.scene, audio=self._server.audio)
         finally:
             self._server.scene = previous_scene
-            recorder = self._step_recorder
-            self._step_recorder = None
+            pending_messages = self._pending_messages
+            self._pending_messages = None
             active_step = self._active_step
             self._active_step = None
 
-        if recorder is None or active_step is None or not recorder.messages:
+        if pending_messages is None or active_step is None or not pending_messages:
             return
 
-        self._record_step(active_step, recorder.messages)
+        self._record_step(active_step, pending_messages)
 
     def add_audio(
         self,
@@ -196,9 +195,9 @@ class _TimelineTransport(WebsockMessageHandler):
     def push(self, message: _messages.Message) -> None:
         if not self._started:
             return
-        recorder = self._recorder._step_recorder
-        if recorder is not None:
-            recorder.push(message)
+        pending_messages = self._recorder._pending_messages
+        if pending_messages is not None:
+            pending_messages.append(message)
             return
         self._recorder._record_live_scene_message(message)
 
