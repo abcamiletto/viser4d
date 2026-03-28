@@ -199,24 +199,26 @@ count).
 
 ## How it works
 
-Context determines behavior. `server.scene` is viser's normal live/static scene
-API, while `timeline.scene` is a timeline-only scene exposed by `server.at(t)`:
+Context determines behavior. Inside `server.at(t)`, the timeline-owned scene is
+available both as `server.scene` for backwards compatibility and as the explicit
+`timeline.scene` handle returned by the context manager:
 
 ```
 Inside at(t):                          Outside at(t):
 ─────────────                          ──────────────
-timeline.scene.add_frame(...)          server.scene.add_frame(...)
+server.scene.add_frame(...)            server.scene.add_frame(...)
+timeline.scene.add_frame(...)                 │
        │                                      │
        ▼                                      ▼
     records to Timeline                    forwards to live viser scene
 ```
 
-- **Inside `at(t)`**: Use `timeline.scene` and `timeline.audio` to record timeline state.
+- **Inside `at(t)`**: Use either `server.scene` or `timeline.scene` to record timeline state.
 - **Outside `at(t)`**: `server.scene` remains viser's live/static scene API.
 - **Client playback**: Each browser tab owns its own transport and playback state.
 - **Timestep callbacks**: `on_timestep_change(...)` aggregates committed client steps and passes the source client.
 - **Playback callbacks**: `on_playback_change(...)` reports per-client play/pause transitions.
-- **Audio**: Add timeline-synced tracks with `timeline.audio.add_track(...)`.
+- **Audio**: Add timeline-synced tracks with either `server.audio.add_track(...)` or `timeline.audio.add_track(...)` inside `at(t)`.
 
 See `examples/` for more.
 

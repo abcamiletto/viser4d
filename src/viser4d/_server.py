@@ -69,7 +69,12 @@ class Viser4dServer(viser.ViserServer):
                 self._client_playbacks.pop(client.client_id, None)
 
     def at(self, t: int) -> AbstractContextManager[TimelineContext]:
-        """Expose the timeline APIs for timestep ``t``."""
+        """Expose the timeline APIs for timestep ``t``.
+
+        Existing code can keep using ``server.scene`` inside the context. The
+        returned ``timeline`` object provides the same timeline-owned scene and
+        audio APIs explicitly.
+        """
         return self._recorder.at(t)
 
     @property

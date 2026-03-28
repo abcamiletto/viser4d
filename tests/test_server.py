@@ -74,6 +74,38 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
         server.stop()
 
 
+def test_at_preserves_server_scene_backwards_compatibility() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    live_scene = server.scene
+    try:
+        with server.at(0) as timeline:
+            assert server.scene is timeline.scene
+            joint = server.scene.add_frame("/joint")
+
+        assert server.scene is live_scene
+
+        joint.position = (2.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        creation_times = [
+            time
+            for time, message in messages
+            if message.get("type") == "FrameMessage" and message.get("name") == "/joint"
+        ]
+        positions = [
+            tuple(cast(list[float], message["position"]))
+            for _, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert creation_times == [0.0]
+        assert positions == [(2.0, 0.0, 0.0)]
+    finally:
+        server.stop()
+
+
 def test_same_step_scene_updates_serialize_latest_value_once() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:

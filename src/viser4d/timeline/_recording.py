@@ -37,6 +37,7 @@ class SceneRecorder:
 
     def __init__(self, server: Viser4dServer, timeline: TimelineStore) -> None:
         self._server = server
+        self._live_scene = server.scene
         self._timeline = timeline
         self._active_step: int | None = None
         self._step_recorder: TimelineRecorder | None = None
@@ -61,9 +62,12 @@ class SceneRecorder:
             raise RuntimeError("Nested server.at(t) blocks are not supported.")
         self._active_step = self._timeline.validate_step(t)
         self._step_recorder = TimelineRecorder()
+        previous_scene = self._server.scene
+        self._server.scene = self.scene
         try:
             yield TimelineContext(scene=self.scene, audio=self._server.audio)
         finally:
+            self._server.scene = previous_scene
             recorder = self._step_recorder
             self._step_recorder = None
             active_step = self._active_step
@@ -162,7 +166,7 @@ class SceneRecorder:
             if not isinstance(message, _messages._CreateSceneNodeMessage):
                 continue
             name = message.name
-            if name in self._server.scene._handle_from_node_name:
+            if name in self._live_scene._handle_from_node_name:
                 raise RuntimeError(
                     f"Cannot create timeline node {name!r} because a static scene node "
                     "with the same name already exists."
