@@ -30,28 +30,22 @@ def _normalize_audio_array(array: np.ndarray) -> np.ndarray:
     )
 
 
-def _audio_layout(array: np.ndarray) -> tuple[int, int]:
-    if array.ndim == 1:
-        return (1, int(array.shape[0]))
-    return (int(array.shape[1]), int(array.shape[0]))
-
-
-def _audio_samples_for_transport(array: np.ndarray) -> np.ndarray:
+def _to_float32(array: np.ndarray) -> np.ndarray:
+    """Normalize and convert audio samples to float32 for transport."""
     arr = _normalize_audio_array(array)
     if np.issubdtype(arr.dtype, np.signedinteger):
         info = np.iinfo(arr.dtype)
-        scale = max(abs(info.min), info.max)
-        return arr.astype(np.float32) / float(scale)
+        return arr.astype(np.float32) / float(max(abs(info.min), info.max))
     if np.issubdtype(arr.dtype, np.unsignedinteger):
-        info = np.iinfo(arr.dtype)
-        midpoint = info.max / 2.0
+        midpoint = np.iinfo(arr.dtype).max / 2.0
         return (arr.astype(np.float32) - midpoint) / midpoint
     return arr.astype(np.float32, copy=False)
 
 
 def audio_array_payload(array: np.ndarray) -> AudioArrayPayload:
-    arr = _audio_samples_for_transport(array)
-    num_channels, num_frames = _audio_layout(arr)
+    arr = _to_float32(array)
+    num_channels = 1 if arr.ndim == 1 else int(arr.shape[1])
+    num_frames = int(arr.shape[0])
     return {
         "dtype": str(arr.dtype),
         "numChannels": num_channels,
@@ -95,7 +89,7 @@ class AudioState:
 
     def append_chunk(self, data: np.ndarray) -> np.ndarray:
         chunk = _normalize_audio_array(data)
-        if _audio_layout(chunk)[0] != _audio_layout(self._chunks[0])[0]:
+        if chunk.shape[1:] != self._chunks[0].shape[1:]:
             raise ValueError("Audio append must preserve channel count.")
         self._chunks.append(chunk)
         self._waveform_cache = None
