@@ -59,12 +59,9 @@ class SceneRecorder:
             raise RuntimeError("Nested server.at(t) blocks are not supported.")
         self._active_step = self._timeline.validate_step(t)
         self._pending_messages = []
-        previous_scene = self._server.scene
-        self._server.scene = self.scene
         try:
             yield TimelineContext(scene=self.scene, audio=self._server.audio)
         finally:
-            self._server.scene = previous_scene
             pending_messages = self._pending_messages
             self._pending_messages = None
             active_step = self._active_step

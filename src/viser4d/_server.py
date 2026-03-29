@@ -25,6 +25,21 @@ if TYPE_CHECKING:
 class Viser4dServer(viser.ViserServer):
     """Viser server with timestep recording, playback, and synced audio."""
 
+    # Override the parent's plain ``scene`` attribute with a property so that
+    # ``server.scene`` transparently returns the timeline-owned scene API while
+    # inside a ``server.at(t)`` block.  Outside of ``at()``, it returns the
+    # regular live scene.
+    @property
+    def scene(self) -> impl.SceneApi:
+        recorder = self.__dict__.get("_recorder")
+        if recorder is not None and recorder.active_step is not None:
+            return recorder.scene
+        return self._live_scene
+
+    @scene.setter
+    def scene(self, value: impl.SceneApi) -> None:
+        self._live_scene = value
+
     def __init__(self, num_steps: int, fps: float = 30.0, **kwargs) -> None:
         """Initialize the timeline runtime and client playback state."""
         if num_steps < 1:
