@@ -85,7 +85,7 @@ class Viser4dServer(viser.ViserServer):
         """Timeline step rate used for recording, audio timing, and export."""
         return self._timeline_fps
 
-    def play(self, speed: float | None = None, loop: bool = False) -> None:
+    def play(self, speed: float | None = None, loop: bool | None = None) -> None:
         """Ask connected clients to play from their own current timesteps."""
         next_speed = None
         if speed is not None:

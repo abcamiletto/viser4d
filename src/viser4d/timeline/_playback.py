@@ -71,32 +71,25 @@ class ClientPlaybackHandle:
 
     @property
     def speed(self) -> float:
-        with self._lock:
-            return self._speed
-
-    @property
-    def loop(self) -> bool:
-        with self._lock:
-            return self._loop
+        return self._speed
 
     @property
     def is_playing(self) -> bool:
-        with self._lock:
-            return self._is_playing
+        return self._is_playing
 
     @property
     def current_timestep(self) -> int:
-        with self._lock:
-            return self._current_timestep
+        return self._current_timestep
 
-    def play(self, speed: float | None = None, loop: bool = False) -> None:
+    def play(self, speed: float | None = None, loop: bool | None = None) -> None:
         """Start playback on this client."""
         with self._lock:
             if speed is not None:
                 self._speed = require_positive_float("speed", speed)
-            self._loop = bool(loop)
+            if loop is not None:
+                self._loop = bool(loop)
             payload = {"speed": self._speed, "loop": self._loop}
-        self._set_speed_slider_value(payload["speed"])
+        self._speed_slider.value = payload["speed"]
         self._send_runtime_call("play", payload)
 
     def pause(self) -> None:
@@ -122,7 +115,7 @@ class ClientPlaybackHandle:
         with self._lock:
             self._speed = require_positive_float("speed", speed)
             payload = {"speed": self._speed, "loop": self._loop}
-        self._set_speed_slider_value(payload["speed"])
+        self._speed_slider.value = payload["speed"]
         self._send_runtime_call("setSpeed", payload)
 
     def _sync_runtime_config(self) -> None:
@@ -149,9 +142,6 @@ class ClientPlaybackHandle:
                 timestep_sync_uuid=impl.gui_uuid(self._timestep_sync),
             ),
         )
-        max_step = self._server.num_steps - 1
-        self._timeline_slider.max = max_step
-        self._timestep_sync.max = max_step
 
     def _sync_from_client(self, timestep: int) -> None:
         timestep = self._require_timestep(timestep)
@@ -238,28 +228,19 @@ class ClientPlaybackHandle:
             f"timestep must be in [0, {self._server.num_steps - 1}], got {timestep}."
         )
 
-    def _desired_blocks(self, timestep: int) -> set[int]:
+    def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
         timeline = self._server._timeline
-        current = timeline.block_index_for_step(timestep)
-        blocks = {current}
-        if current + 1 < timeline.block_count:
-            blocks.add(current + 1)
-        return blocks
-
-    def _sync_loaded_blocks(
-        self,
-        timestep: int,
-        *,
-        force: bool = False,
-    ) -> None:
-        desired_blocks = self._desired_blocks(timestep)
+        current_block = timeline.block_index_for_step(timestep)
+        desired = {current_block}
+        if current_block + 1 < timeline.block_count:
+            desired.add(current_block + 1)
         with self._lock:
-            loaded_blocks = set(self._loaded_blocks)
-            self._loaded_blocks = desired_blocks
-        for block_index in sorted(desired_blocks):
-            if force or block_index not in loaded_blocks:
+            previous = set(self._loaded_blocks)
+            self._loaded_blocks = desired
+        for block_index in sorted(desired):
+            if force or block_index not in previous:
                 self._queue_block_load(block_index)
-        for block_index in sorted(loaded_blocks - desired_blocks):
+        for block_index in sorted(previous - desired):
             self._send_runtime_call("evictBlock", {"block": block_index})
 
     def _queue_block_load(self, block_index: int) -> None:
@@ -298,18 +279,9 @@ class ClientPlaybackHandle:
         message = make_runtime_message(method, payload)
         impl.queue_client_message(self._client, message)
 
-    def _set_speed_slider_value(self, speed: float) -> None:
-        if self._speed_slider.value == speed:
-            return
-        self._speed_slider.value = speed
-
 
 def _pause_button_color(
     brand_color: tuple[int, int, int] | None,
 ) -> tuple[int, int, int]:
-    base_color = _DEFAULT_PRIMARY_COLOR if brand_color is None else brand_color
-    return (
-        int(base_color[0] * 0.85),
-        int(base_color[1] * 0.85),
-        int(base_color[2] * 0.85),
-    )
+    r, g, b = _DEFAULT_PRIMARY_COLOR if brand_color is None else brand_color
+    return (int(r * 0.85), int(g * 0.85), int(b * 0.85))
