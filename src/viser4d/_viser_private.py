@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from concurrent.futures import Executor
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import viser
 from viser import _messages
 from viser._scene_api import SceneApi
-from viser._viser import ClientHandle
-from viser.infra import WebsockMessageHandler
+from viser._viser import ClientHandle as ClientHandle
+from viser.infra import WebsockMessageHandler as WebsockMessageHandler
 
 # Re-exported types – other modules import these instead of reaching into
 # viser internals directly.
@@ -29,7 +29,7 @@ def run_javascript_message(source: str) -> Message:
 def create_scene_api(
     owner: object,
     *,
-    thread_executor: Executor,
+    thread_executor: ThreadPoolExecutor,
     event_loop: asyncio.AbstractEventLoop,
 ) -> SceneApi:
     return SceneApi(
@@ -95,7 +95,7 @@ def unregister_message_handler(
     server._websock_server.unregister_handler(message_cls, callback)
 
 
-def server_thread_executor(server: viser.ViserServer) -> Executor:
+def server_thread_executor(server: viser.ViserServer) -> ThreadPoolExecutor:
     return server._thread_executor
 
 

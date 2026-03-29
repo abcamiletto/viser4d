@@ -168,9 +168,7 @@ class SceneRecorder:
                     payloads[block_index] = payload
                 playback._send_runtime_call("loadBlock", payload)
 
-    def _broadcast_scene_message(
-        self, message: impl.Message, start_step: int
-    ) -> None:
+    def _broadcast_scene_message(self, message: impl.Message, start_step: int) -> None:
         for client in self._server.get_clients().values():
             if message.excluded_self_client == client.client_id:
                 continue

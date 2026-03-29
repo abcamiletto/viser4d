@@ -111,9 +111,7 @@ class TimelineStore:
                 key = message.redundancy_key()
                 name = extract_message_name(stored_message)
                 if is_scene_message(stored_message):
-                    if name is not None and impl.is_create_scene_node_message(
-                        message
-                    ):
+                    if name is not None and impl.is_create_scene_node_message(message):
                         self._node_start_steps.setdefault(name, step)
                     self._last_scene_steps[key] = step
                     step_state.scene_updates.pop(key, None)

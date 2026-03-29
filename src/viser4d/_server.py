@@ -51,9 +51,7 @@ class Viser4dServer(viser.ViserServer):
         self.audio = AudioApi(self)
 
         # Load the browser runtime once so live clients can handle timeline/audio messages.
-        impl.queue_server_message(
-            self, impl.run_javascript_message(runtime_source())
-        )
+        impl.queue_server_message(self, impl.run_javascript_message(runtime_source()))
 
         @self.on_client_connect
         def _attach_playback(client: ClientHandle) -> None:
