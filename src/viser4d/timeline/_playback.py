@@ -12,7 +12,7 @@ from .._runtime import client_runtime_config_payload, make_runtime_message
 from .._validation import require_positive_float
 
 if TYPE_CHECKING:
-    from viser._viser import ClientHandle
+    from .._viser_private import ClientHandle
     from .._server import Viser4dServer
 
 
@@ -213,7 +213,7 @@ class ClientPlaybackHandle:
             if block_index in self._pending_block_loads:
                 return
             self._pending_block_loads.add(block_index)
-        future = self._server._thread_executor.submit(
+        future = impl.server_thread_executor(self._server).submit(
             self._server._timeline.block_payload, block_index
         )
         future.add_done_callback(

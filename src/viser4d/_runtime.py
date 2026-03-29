@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import pathlib
 
-from viser import _messages
-
 from . import _client_autobuild
+from . import _viser_private as impl
 from ._types import ClientRuntimeConfig, RuntimeMethod, RuntimePayload
 
 
@@ -62,7 +61,7 @@ def client_runtime_config_payload(
 def make_runtime_message(
     method: RuntimeMethod,
     payload: RuntimePayload,
-) -> _messages.RunJavascriptMessage:
+) -> impl.Message:
     source = (
         RUNTIME_MARKER
         + f"""
@@ -80,4 +79,4 @@ def make_runtime_message(
 }})();
 """
     )
-    return _messages.RunJavascriptMessage(source)
+    return impl.run_javascript_message(source)

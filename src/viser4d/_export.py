@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from viser import _messages
-
 from . import _viser_private as impl
 from ._types import StoredMessage
 from ._runtime import RUNTIME_MARKER, runtime_source
@@ -47,7 +45,7 @@ class ExportBuilder:
             )
 
         # Bootstrap playback with the injected runtime before any timeline messages arrive.
-        runtime_source_message = _messages.RunJavascriptMessage(runtime_source())
+        runtime_source_message = impl.run_javascript_message(runtime_source())
         runtime_message = store_raw_message(runtime_source_message)
         recording: list[tuple[float, StoredMessage]] = [(0.0, runtime_message)]
         for message in store_raw_messages(impl.broadcast_messages(self._server)):
