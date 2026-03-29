@@ -11,6 +11,7 @@ import numpy as np
 import viser
 import zstandard
 
+from .. import _viser_private as impl
 from .._types import (
     BinaryPayload,
     JSONValue,
@@ -60,12 +61,12 @@ def to_jsonable(value: StoredValue) -> JSONValue:
     return cast(JSONValue, value)
 
 
-def store_raw_message(message: viser._messages.Message) -> StoredMessage:
+def store_raw_message(message: impl.Message) -> StoredMessage:
     """Capture one viser message in the timeline's canonical storage form."""
     return cast(StoredMessage, to_stored(message.as_serializable_dict()))
 
 
-def store_raw_messages(messages: list[viser._messages.Message]) -> list[StoredMessage]:
+def store_raw_messages(messages: list[impl.Message]) -> list[StoredMessage]:
     return [store_raw_message(message) for message in messages]
 
 

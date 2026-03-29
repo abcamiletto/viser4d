@@ -13,8 +13,8 @@ from typing import cast
 
 import msgspec
 import zstandard
-from viser import _messages
 
+from .. import _viser_private as impl
 from ..audio._messages import is_audio_message
 from .._types import StoredMessage
 from ._checkpoint import (
@@ -99,7 +99,7 @@ class TimelineStore:
         with self._lock:
             return name in self._node_start_steps
 
-    def record_step(self, step: int, messages: list[_messages.Message]) -> None:
+    def record_step(self, step: int, messages: list[impl.Message]) -> None:
         """Store one timestep's scene and audio updates."""
         with self._lock:
             step = self.validate_step(step)
@@ -111,8 +111,8 @@ class TimelineStore:
                 key = message.redundancy_key()
                 name = extract_message_name(stored_message)
                 if is_scene_message(stored_message):
-                    if name is not None and isinstance(
-                        message, _messages._CreateSceneNodeMessage
+                    if name is not None and impl.is_create_scene_node_message(
+                        message
                     ):
                         self._node_start_steps.setdefault(name, step)
                     self._last_scene_steps[key] = step
@@ -124,7 +124,7 @@ class TimelineStore:
             block.dirty = True
             self._invalidate_checkpoints_after_block(block_index)
 
-    def record_live_scene_update(self, message: _messages.Message) -> int:
+    def record_live_scene_update(self, message: impl.Message) -> int:
         with self._lock:
             stored_message = store_raw_message(message)
             name = extract_message_name(stored_message)

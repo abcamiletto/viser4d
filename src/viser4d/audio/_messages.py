@@ -3,13 +3,13 @@ from __future__ import annotations
 import dataclasses
 import uuid
 
-from viser import _messages
 from typing_extensions import override
 
+from .. import _viser_private as impl
 from .._types import AudioArrayPayload
 
 
-class _AudioMessage(_messages.Message):
+class _AudioMessage(impl.Message):
     name: str
 
 

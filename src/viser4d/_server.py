@@ -7,7 +7,6 @@ from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Callable
 
 import viser
-from viser import _messages
 
 from . import _viser_private as impl
 from .audio import AudioApi
@@ -20,7 +19,7 @@ from .timeline._recording import SceneRecorder, TimelineContext
 from .timeline._store import TimelineStore
 
 if TYPE_CHECKING:
-    from viser._viser import ClientHandle
+    from ._viser_private import ClientHandle
 
 
 class Viser4dServer(viser.ViserServer):
@@ -36,7 +35,7 @@ class Viser4dServer(viser.ViserServer):
         self._timeline_fps = require_positive_float("fps", fps)
         self._timeline = TimelineStore(
             self.num_steps,
-            flush_executor=self._thread_executor,
+            flush_executor=impl.server_thread_executor(self),
         )
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
@@ -53,7 +52,7 @@ class Viser4dServer(viser.ViserServer):
 
         # Load the browser runtime once so live clients can handle timeline/audio messages.
         impl.queue_server_message(
-            self, _messages.RunJavascriptMessage(runtime_source())
+            self, impl.run_javascript_message(runtime_source())
         )
 
         @self.on_client_connect
@@ -157,7 +156,7 @@ class Viser4dServer(viser.ViserServer):
         self._timeline.close()
         super().stop()
 
-    def _dispatch_audio_update(self, message: _messages.Message) -> None:
+    def _dispatch_audio_update(self, message: impl.Message) -> None:
         self._recorder.dispatch_audio_update(message)
 
     def _send_runtime_call(
@@ -165,15 +164,6 @@ class Viser4dServer(viser.ViserServer):
     ) -> None:
         message = make_runtime_message(method, payload)
         impl.queue_server_message(self, message)
-
-    def _send_runtime_call_to_client(
-        self,
-        client: ClientHandle,
-        method: RuntimeMethod,
-        payload: RuntimePayload,
-    ) -> None:
-        message = make_runtime_message(method, payload)
-        impl.queue_client_message(client, message)
 
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:
         with self._client_playbacks_lock:
@@ -183,13 +173,13 @@ class Viser4dServer(viser.ViserServer):
         for callback in list(self._timestep_callbacks):
             maybe_awaitable = callback(client, timestep)
             if inspect.isawaitable(maybe_awaitable):
-                self._event_loop.create_task(_await_callback(maybe_awaitable))
+                self.get_event_loop().create_task(_await_callback(maybe_awaitable))
 
     def _dispatch_playback_change(self, client: ClientHandle, is_playing: bool) -> None:
         for callback in list(self._playback_callbacks):
             maybe_awaitable = callback(client, is_playing)
             if inspect.isawaitable(maybe_awaitable):
-                self._event_loop.create_task(_await_callback(maybe_awaitable))
+                self.get_event_loop().create_task(_await_callback(maybe_awaitable))
 
 
 async def _await_callback(awaitable: Awaitable[None]) -> None:
