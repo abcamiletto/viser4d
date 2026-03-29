@@ -164,12 +164,14 @@ class TimelineStore:
 
     def close(self) -> None:
         with self._lock:
-            for block_index, block in list(self._loaded_blocks.items()):
-                self._flush_block(block_index, block)
-            self._loaded_blocks.clear()
-            for block_index in tuple(self._pending_flushes):
-                self._wait_for_pending_flush(block_index)
-            self._block_dir_root.cleanup()
+            try:
+                for block_index, block in list(self._loaded_blocks.items()):
+                    self._flush_block(block_index, block)
+                self._loaded_blocks.clear()
+                for block_index in tuple(self._pending_flushes):
+                    self._wait_for_pending_flush(block_index)
+            finally:
+                self._block_dir_root.cleanup()
 
     def _block_path(self, block_index: int) -> Path:
         return self._block_dir / f"{block_index:08d}.msgpack.zst"

@@ -76,6 +76,12 @@ class ClientPlaybackHandle:
         self.seek(self._current_timestep)
 
     @property
+    def loaded_blocks(self) -> set[int]:
+        """Return a snapshot of the currently loaded block indices."""
+        with self._lock:
+            return set(self._loaded_blocks)
+
+    @property
     def speed(self) -> float:
         return self._speed
 

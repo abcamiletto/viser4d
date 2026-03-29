@@ -184,16 +184,12 @@ class Viser4dServer(viser.ViserServer):
 
     def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
-            maybe_awaitable = callback(client, timestep)
-            if inspect.isawaitable(maybe_awaitable):
-                self.get_event_loop().create_task(_await_callback(maybe_awaitable))
+            result = callback(client, timestep)
+            if inspect.isawaitable(result):
+                self.get_event_loop().create_task(result)
 
     def _dispatch_playback_change(self, client: ClientHandle, is_playing: bool) -> None:
         for callback in list(self._playback_callbacks):
-            maybe_awaitable = callback(client, is_playing)
-            if inspect.isawaitable(maybe_awaitable):
-                self.get_event_loop().create_task(_await_callback(maybe_awaitable))
-
-
-async def _await_callback(awaitable: Awaitable[None]) -> None:
-    await awaitable
+            result = callback(client, is_playing)
+            if inspect.isawaitable(result):
+                self.get_event_loop().create_task(result)

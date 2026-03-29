@@ -59,15 +59,18 @@ def broadcast_messages(server: viser.ViserServer) -> list[Message]:
     ]
 
 
+_THEME_PRIMARY_COLOR_INDEX = 8
+
+
 def playback_brand_color(
     server: viser.ViserServer,
 ) -> tuple[int, int, int] | None:
     for message in reversed(broadcast_messages(server)):
         if isinstance(message, _messages.ThemeConfigurationMessage):
             colors = message.colors
-            if colors is None:
+            if colors is None or len(colors) <= _THEME_PRIMARY_COLOR_INDEX:
                 return None
-            return _hex_to_rgb(colors[8])
+            return _hex_to_rgb(colors[_THEME_PRIMARY_COLOR_INDEX])
     return None
 
 

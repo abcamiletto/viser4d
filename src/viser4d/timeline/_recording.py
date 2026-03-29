@@ -38,6 +38,7 @@ class SceneRecorder:
         self._pending_refresh_from_block: int | None = None
         self._refresh_timer: threading.Timer | None = None
         self._refresh_lock = threading.Lock()
+        self._at_lock = threading.Lock()
         self._transport = _TimelineTransport(server, self)
         owner = _TimelineSceneOwner(self._transport)
         self.scene = impl.create_scene_api(
@@ -55,8 +56,8 @@ class SceneRecorder:
 
     @contextlib.contextmanager
     def at(self, t: int) -> Iterator[TimelineContext]:
-        if self._active_step is not None:
-            raise RuntimeError("Nested server.at(t) blocks are not supported.")
+        if not self._at_lock.acquire(blocking=False):
+            raise RuntimeError("Concurrent server.at(t) blocks are not supported.")
         self._active_step = self._timeline.validate_step(t)
         self._pending_messages = []
         try:
@@ -66,6 +67,7 @@ class SceneRecorder:
             self._pending_messages = None
             active_step = self._active_step
             self._active_step = None
+            self._at_lock.release()
 
         if pending_messages is None or active_step is None or not pending_messages:
             return
@@ -98,6 +100,14 @@ class SceneRecorder:
             ],
         )
         return handle
+
+    def route_message(self, message: impl.Message) -> None:
+        """Route a message to the pending recording batch or the live scene."""
+        pending_messages = self._pending_messages
+        if pending_messages is not None:
+            pending_messages.append(message)
+            return
+        self._record_live_scene_message(message)
 
     def dispatch_audio_update(self, message: impl.Message) -> None:
         if self._active_step is not None:
@@ -156,7 +166,7 @@ class SceneRecorder:
             return
         payloads: dict[int, dict[str, object]] = {}
         for playback in self._server.get_client_playbacks().values():
-            for block_index in sorted(playback._loaded_blocks):
+            for block_index in sorted(playback.loaded_blocks):
                 if block_index < changed_block:
                     continue
                 payload = payloads.get(block_index)
@@ -210,11 +220,7 @@ class _TimelineTransport(impl.WebsockMessageHandler):
     def push(self, message: impl.Message) -> None:
         if not self._started:
             return
-        pending_messages = self._recorder._pending_messages
-        if pending_messages is not None:
-            pending_messages.append(message)
-            return
-        self._recorder._record_live_scene_message(message)
+        self._recorder.route_message(message)
 
     def atomic_start(self) -> None:
         pass
