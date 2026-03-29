@@ -68,20 +68,20 @@ export class TimelineRuntime {
   private lastLocalSliderStep = -1;
   private lastSyncedStep = -1;
 
-  private readonly audio = new AudioRuntime(
+  private readonly audio: AudioRuntime = new AudioRuntime(
     () => this.engine.getTransportStep(),
     (event, payload) => debugState.push(event, payload),
   );
-  private readonly blocks = new BlockCache((uuid, value) =>
+  private readonly blocks: BlockCache = new BlockCache((uuid, value) =>
     this.sendGuiUpdate(uuid, value),
   );
-  private readonly scene = new SceneApplicator(
+  private readonly scene: SceneApplicator = new SceneApplicator(
     (messages) => this.pushMessages(messages),
     this.audio,
     this.blocks,
     new Set<string>(),
   );
-  private readonly engine = new PlaybackEngine(
+  private readonly engine: PlaybackEngine = new PlaybackEngine(
     this.config,
     this.scene,
     this.blocks,
