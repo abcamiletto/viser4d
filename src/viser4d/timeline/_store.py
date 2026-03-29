@@ -80,10 +80,6 @@ class TimelineStore:
         self._eager_checkpoint = CheckpointState()
         self._eager_checkpoint_next_block = 0
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def validate_step(self, step: int) -> int:
         """Return ``step`` if it is in range, else raise ``IndexError``."""
         if step < 0 or step >= self.num_steps:
@@ -177,10 +173,6 @@ class TimelineStore:
                 self._wait_for_pending_flush(block_index)
             self._block_dir_root.cleanup()
 
-    # ------------------------------------------------------------------
-    # Block I/O
-    # ------------------------------------------------------------------
-
     def _block_path(self, block_index: int) -> Path:
         return self._block_dir / f"{block_index:08d}.msgpack.zst"
 
@@ -270,10 +262,6 @@ class TimelineStore:
         if future is not None:
             future.result()
 
-    # ------------------------------------------------------------------
-    # Checkpoint cache
-    # ------------------------------------------------------------------
-
     def _invalidate_checkpoints_after_block(self, block_index: int) -> None:
         stale = [i for i in self._checkpoint_cache if i > block_index]
         for i in stale:
@@ -317,11 +305,6 @@ class TimelineStore:
         self._checkpoint_cache.move_to_end(block_index)
         while len(self._checkpoint_cache) > self._max_cached_checkpoints:
             self._checkpoint_cache.popitem(last=False)
-
-
-# ---------------------------------------------------------------------------
-# Block file I/O (called from executor threads)
-# ---------------------------------------------------------------------------
 
 
 def _write_block_file(path: Path, block: TimelineBlock) -> None:

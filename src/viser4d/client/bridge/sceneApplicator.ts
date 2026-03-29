@@ -1,7 +1,3 @@
-/**
- * Applies timeline messages to the scene and tracks rendered timeline nodes.
- */
-
 import type { RuntimeMessage } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { isAudioMessage, type AudioMessage } from "../audio/messages";
@@ -14,6 +10,7 @@ export class SceneApplicator {
   constructor(
     private pushMessages: (messages: RuntimeMessage[]) => void,
     private audio: AudioRuntime,
+    private blocks: BlockCache,
     private renderedTimelineNodes: Set<string>,
   ) {}
 
@@ -36,29 +33,6 @@ export class SceneApplicator {
     }
   }
 
-  removeRenderedTimelineNodes(): void {
-    if (!this.renderedTimelineNodes.size) {
-      return;
-    }
-    this.pushMessages(
-      Array.from(this.renderedTimelineNodes).map((name) => ({
-        type: "RemoveSceneNodeMessage",
-        name,
-      })),
-    );
-    this.renderedTimelineNodes.clear();
-  }
-
-  applyBlockCheckpoint(
-    blockIndex: number,
-    block: LoadedBlock,
-    blockSize: number,
-  ): void {
-    if (block.checkpointMessages.length) {
-      this.applyStepMessages(blockIndex * blockSize, block.checkpointMessages);
-    }
-  }
-
   resetState(): void {
     this.removeRenderedTimelineNodes();
     this.audio.resetTimeline();
@@ -66,42 +40,51 @@ export class SceneApplicator {
     this.appliedBlock = -1;
   }
 
-  /**
-   * Apply steps forward from the current applied position to `step`.
-   * Assumes checkpoint is already applied if appliedStep < 0.
-   */
-  advanceThrough(
-    step: number,
-    blockCache: BlockCache,
-    blockSize: number,
-    blockRequestSyncUuid: string | null,
-  ): void {
-    if (!blockCache.ensureStepLoaded(step, blockSize, blockRequestSyncUuid)) {
+  rebuildThrough(step: number): void {
+    if (!this.blocks.ensureStepLoaded(step)) {
+      return;
+    }
+    this.resetState();
+    this.applyThrough(step);
+  }
+
+  applyThrough(step: number): void {
+    const blockIndex = this.blocks.blockIndexOf(step);
+    if (
+      this.appliedStep >= 0 &&
+      (blockIndex !== this.appliedBlock || step < this.appliedStep)
+    ) {
+      this.rebuildThrough(step);
+      return;
+    }
+    this.advanceThrough(step);
+  }
+
+  advanceThrough(step: number): void {
+    if (!this.blocks.ensureStepLoaded(step)) {
       return;
     }
     if (this.appliedStep < 0) {
-      const block = blockCache.getBlock(step, blockSize);
+      const block = this.blocks.getBlock(step);
       if (!block) {
         return;
       }
-      const blockIndex = blockCache.getBlockIndex(step, blockSize);
-      this.applyBlockCheckpoint(blockIndex, block, blockSize);
+      const blockIndex = this.blocks.blockIndexOf(step);
+      this.applyBlockCheckpoint(blockIndex, block);
       this.appliedBlock = blockIndex;
-      this.appliedStep = blockCache.getBlockStartStep(blockIndex, blockSize) - 1;
+      this.appliedStep = this.blocks.blockStartStep(blockIndex) - 1;
     }
     let nextStep = this.appliedStep + 1;
     while (nextStep <= step) {
-      if (
-        !blockCache.ensureStepLoaded(nextStep, blockSize, blockRequestSyncUuid)
-      ) {
+      if (!this.blocks.ensureStepLoaded(nextStep)) {
         return;
       }
-      const block = blockCache.getBlock(nextStep, blockSize);
+      const block = this.blocks.getBlock(nextStep);
       if (!block) {
         return;
       }
-      const blockIndex = blockCache.getBlockIndex(nextStep, blockSize);
-      const blockStart = blockCache.getBlockStartStep(blockIndex, blockSize);
+      const blockIndex = this.blocks.blockIndexOf(nextStep);
+      const blockStart = this.blocks.blockStartStep(blockIndex);
       const blockEnd = Math.min(
         step,
         blockStart + block.stepMessages.length - 1,
@@ -118,38 +101,29 @@ export class SceneApplicator {
     }
   }
 
-  /**
-   * Apply from checkpoint through `step`. Rebuilds if the target is in a
-   * different block or before the current position.
-   */
-  applyThrough(
-    step: number,
-    blockCache: BlockCache,
-    blockSize: number,
-    blockRequestSyncUuid: string | null,
+  private applyBlockCheckpoint(
+    blockIndex: number,
+    block: LoadedBlock,
   ): void {
-    const blockIndex = blockCache.getBlockIndex(step, blockSize);
-    if (
-      this.appliedStep >= 0 &&
-      (blockIndex !== this.appliedBlock || step < this.appliedStep)
-    ) {
-      this.rebuildThrough(step, blockCache, blockSize, blockRequestSyncUuid);
-      return;
+    if (block.checkpointMessages.length) {
+      this.applyStepMessages(
+        this.blocks.blockStartStep(blockIndex),
+        block.checkpointMessages,
+      );
     }
-    this.advanceThrough(step, blockCache, blockSize, blockRequestSyncUuid);
   }
 
-  rebuildThrough(
-    step: number,
-    blockCache: BlockCache,
-    blockSize: number,
-    blockRequestSyncUuid: string | null,
-  ): void {
-    if (!blockCache.ensureStepLoaded(step, blockSize, blockRequestSyncUuid)) {
+  private removeRenderedTimelineNodes(): void {
+    if (!this.renderedTimelineNodes.size) {
       return;
     }
-    this.resetState();
-    this.applyThrough(step, blockCache, blockSize, blockRequestSyncUuid);
+    this.pushMessages(
+      Array.from(this.renderedTimelineNodes).map((name) => ({
+        type: "RemoveSceneNodeMessage",
+        name,
+      })),
+    );
+    this.renderedTimelineNodes.clear();
   }
 
   private trackTimelineNode(message: RuntimeMessage): void {

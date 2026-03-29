@@ -6,8 +6,9 @@ import base64
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-import viser
 import msgspec
+import numpy as np
+import viser
 import zstandard
 
 from .._types import (
@@ -20,11 +21,6 @@ from .._types import (
 from ..audio._messages import is_audio_message_type
 
 
-# ---------------------------------------------------------------------------
-# Data containers
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class TimelineStep:
     """Recorded scene and audio updates for one timestep."""
@@ -33,17 +29,14 @@ class TimelineStep:
     audio_updates: list[StoredMessage] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Stored ↔ transport conversions
-# ---------------------------------------------------------------------------
-
-
 def to_stored(value: Any) -> StoredValue:
     """Convert a viser's serializable payload into the timeline storage form."""
     if isinstance(value, memoryview):
         return value.tobytes()
     if isinstance(value, (bytes, bytearray)):
         return bytes(value)
+    if isinstance(value, np.ndarray):
+        return value.tobytes()
     if isinstance(value, (tuple, list)):
         return [to_stored(item) for item in value]
     if isinstance(value, dict):
@@ -86,11 +79,6 @@ def serialize_stored_messages(
     return [serialize_stored_message(message) for message in messages]
 
 
-# ---------------------------------------------------------------------------
-# Stored value accessors
-# ---------------------------------------------------------------------------
-
-
 def stored_int(value: StoredValue) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise TypeError(f"Expected int-like stored value, got {type(value).__name__}.")
@@ -111,11 +99,6 @@ def stored_dict(value: StoredValue) -> dict[str, StoredValue]:
     return cast(dict[str, StoredValue], value)
 
 
-# ---------------------------------------------------------------------------
-# Message introspection
-# ---------------------------------------------------------------------------
-
-
 def extract_message_name(message: StoredMessage) -> str | None:
     name = message.get("name")
     return name if isinstance(name, str) and name else None
@@ -128,11 +111,6 @@ def is_scene_message(message: StoredMessage) -> bool:
         and not message_type.startswith("Gui")
         and not is_audio_message_type(message_type)
     )
-
-
-# ---------------------------------------------------------------------------
-# Viser recording serialization
-# ---------------------------------------------------------------------------
 
 
 def serialize_viser_recording(

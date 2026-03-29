@@ -23,11 +23,6 @@ from ._messages_util import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class AudioTrackState:
     sample_rate: int
@@ -40,11 +35,6 @@ class CheckpointState:
     scene_updates: dict[str, StoredMessage] = field(default_factory=dict)
     key_to_node: dict[str, str | None] = field(default_factory=dict)
     audio_tracks: dict[str, AudioTrackState] = field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Mutation
-# ---------------------------------------------------------------------------
 
 
 def apply_scene_message(
@@ -105,11 +95,6 @@ def apply_steps(state: CheckpointState, steps: list[TimelineStep]) -> None:
             apply_audio_message(state, message)
 
 
-# ---------------------------------------------------------------------------
-# Copy and serialization
-# ---------------------------------------------------------------------------
-
-
 def copy_checkpoint(state: CheckpointState) -> CheckpointState:
     return CheckpointState(
         scene_updates=dict(state.scene_updates),
@@ -158,11 +143,6 @@ def checkpoint_messages(state: CheckpointState) -> list[StoredMessage]:
     return scene_messages + audio_messages
 
 
-# ---------------------------------------------------------------------------
-# Disk persistence
-# ---------------------------------------------------------------------------
-
-
 def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
     audio_tracks = [
         {
@@ -204,11 +184,6 @@ def load_checkpoint_file(path: Path) -> CheckpointState:
         key_to_node=key_to_node,
         audio_tracks=audio_tracks,
     )
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 
 def _scene_node_sort_key(name: str) -> tuple[int, str]:

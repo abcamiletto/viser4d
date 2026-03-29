@@ -1,8 +1,3 @@
-/**
- * Playback state machine: play, pause, seek, tick loop, transport timing.
- */
-
-import type { RuntimeValue } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { BlockCache } from "./blockCache";
 import { SceneApplicator } from "./sceneApplicator";
@@ -19,7 +14,6 @@ export type PlaybackCallbacks = {
   syncPlaybackButtons(): void;
   sendPlaybackStateToServer(isPlaying: boolean): void;
   sendSpeedToServer(speed: number): void;
-  onDebug(event: string, payload: RuntimeValue): void;
 };
 
 export class PlaybackEngine {
@@ -32,7 +26,7 @@ export class PlaybackEngine {
   constructor(
     private config: RuntimeConfig,
     private scene: SceneApplicator,
-    private blockCache: BlockCache,
+    private blocks: BlockCache,
     private audio: AudioRuntime,
     private callbacks: PlaybackCallbacks,
   ) {}
@@ -64,9 +58,7 @@ export class PlaybackEngine {
     this.callbacks.sendSpeedToServer(payload.speed);
     this.callbacks.sendPlaybackStateToServer(true);
     this.callbacks.syncPlaybackButtons();
-    this.rafId = getWindow().requestAnimationFrame((timestamp) =>
-      this.tick(timestamp),
-    );
+    this.rafId = getWindow().requestAnimationFrame((ts) => this.tick(ts));
   }
 
   pause(): void {
@@ -92,32 +84,16 @@ export class PlaybackEngine {
     if (this.playing) {
       this.anchorTransport(step);
     }
-    if (
-      !this.blockCache.ensureStepLoaded(
-        step,
-        this.config.blockSize,
-        this.config.blockRequestSyncUuid,
-      )
-    ) {
+    if (!this.blocks.ensureStepLoaded(step)) {
       return;
     }
-    this.scene.applyThrough(
-      step,
-      this.blockCache,
-      this.config.blockSize,
-      this.config.blockRequestSyncUuid,
-    );
+    this.scene.applyThrough(step);
     this.audio.seek(step, this.getPlaybackFps(), this.playing);
     this.callbacks.syncTimestepToServer(step, true);
   }
 
   refresh(): void {
-    this.scene.rebuildThrough(
-      Math.floor(this.currentStep),
-      this.blockCache,
-      this.config.blockSize,
-      this.config.blockRequestSyncUuid,
-    );
+    this.scene.rebuildThrough(Math.floor(this.currentStep));
   }
 
   setSpeed(payload: { speed: number; loop: boolean }): void {
@@ -164,26 +140,14 @@ export class PlaybackEngine {
         return;
       }
       this.anchorTransport(0, timestamp);
-      this.scene.rebuildThrough(
-        0,
-        this.blockCache,
-        this.config.blockSize,
-        this.config.blockRequestSyncUuid,
-      );
+      this.scene.rebuildThrough(0);
       this.audio.play(0, this.getPlaybackFps());
       this.callbacks.syncAdvancedTimesteps(previousStep, 0, true);
     } else {
       this.currentStep = next;
-      this.scene.advanceThrough(
-        Math.floor(this.currentStep),
-        this.blockCache,
-        this.config.blockSize,
-        this.config.blockRequestSyncUuid,
-      );
+      this.scene.advanceThrough(Math.floor(this.currentStep));
       this.callbacks.syncAdvancedTimesteps(previousStep, this.currentStep);
     }
-    this.rafId = getWindow().requestAnimationFrame((nextTimestamp) =>
-      this.tick(nextTimestamp),
-    );
+    this.rafId = getWindow().requestAnimationFrame((ts) => this.tick(ts));
   }
 }

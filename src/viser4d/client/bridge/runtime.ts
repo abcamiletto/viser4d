@@ -65,7 +65,6 @@ export class TimelineRuntime {
     timestepSyncUuid: null,
   };
 
-  private renderedTimelineNodes = new Set<string>();
   private lastLocalSliderStep = -1;
   private lastSyncedStep = -1;
 
@@ -73,18 +72,19 @@ export class TimelineRuntime {
     () => this.engine.getTransportStep(),
     (event, payload) => debugState.push(event, payload),
   );
-  private readonly blockCache = new BlockCache((uuid, value) =>
+  private readonly blocks = new BlockCache((uuid, value) =>
     this.sendGuiUpdate(uuid, value),
   );
   private readonly scene = new SceneApplicator(
     (messages) => this.pushMessages(messages),
     this.audio,
-    this.renderedTimelineNodes,
+    this.blocks,
+    new Set<string>(),
   );
   private readonly engine = new PlaybackEngine(
     this.config,
     this.scene,
-    this.blockCache,
+    this.blocks,
     this.audio,
     {
       syncAdvancedTimesteps: (prev, next, force) =>
@@ -94,7 +94,6 @@ export class TimelineRuntime {
       syncPlaybackButtons: () => this.syncPlaybackButtons(),
       sendPlaybackStateToServer: (p) => this.sendPlaybackStateToServer(p),
       sendSpeedToServer: (s) => this.sendSpeedToServer(s),
-      onDebug: (event, payload) => debugState.push(event, payload),
     },
   );
 
@@ -119,17 +118,16 @@ export class TimelineRuntime {
     this.installWhenReady();
   }
 
-  // Expose appliedStep for external consumers (e.g., index.ts debug)
   get appliedStep(): number {
     return this.scene.appliedStep;
   }
 
-  // ------------------------------------------------------------------
-  // Public API (called from Python runtime messages)
-  // ------------------------------------------------------------------
+  // --- Public API (called from Python runtime messages) ---
 
   configure(config: Partial<RuntimeConfig>): void {
     this.config = { ...this.config, ...config };
+    this.blocks.blockSize = this.config.blockSize;
+    this.blocks.blockRequestSyncUuid = this.config.blockRequestSyncUuid;
     this.engine.updateConfig(this.config);
     this.audio.setStepRate(this.config.timelineFps);
     debugState.push("runtime.configure", this.config);
@@ -150,35 +148,29 @@ export class TimelineRuntime {
         messages.map((m) => normalizeTransportMessage(m)),
       ),
     };
-    this.blockCache.loadBlock(payload.block, block);
-    const activeBlock = this.blockCache.getBlockIndex(
+    this.blocks.loadBlock(payload.block, block);
+    const activeBlock = this.blocks.blockIndexOf(
       Math.floor(this.engine.currentStep),
-      this.config.blockSize,
     );
     if (
       payload.block === activeBlock &&
       this.scene.appliedBlock === activeBlock
     ) {
-      this.scene.rebuildThrough(
-        Math.floor(this.engine.currentStep),
-        this.blockCache,
-        this.config.blockSize,
-        this.config.blockRequestSyncUuid,
-      );
+      this.scene.rebuildThrough(Math.floor(this.engine.currentStep));
       return;
     }
-    const pendingStep = this.blockCache.getPendingStep();
     if (
-      pendingStep !== null &&
-      this.blockCache.getBlock(pendingStep, this.config.blockSize)
+      this.blocks.pendingStep !== null &&
+      this.blocks.getBlock(this.blocks.pendingStep)
     ) {
-      this.blockCache.clearPendingStep();
-      this.engine.seek({ step: pendingStep });
+      const step = this.blocks.pendingStep;
+      this.blocks.pendingStep = null;
+      this.engine.seek({ step });
     }
   }
 
   evictBlock(payload: { block: number }): void {
-    this.blockCache.evictBlock(payload.block, this.scene.appliedBlock);
+    this.blocks.evictBlock(payload.block, this.scene.appliedBlock);
   }
 
   seek(payload: { step: number }): void {
@@ -218,9 +210,7 @@ export class TimelineRuntime {
     this.pushMessages([message]);
   }
 
-  // ------------------------------------------------------------------
-  // Browser integration
-  // ------------------------------------------------------------------
+  // --- Browser integration ---
 
   private getViewer(): ViewerLike {
     if (!this.viewer) {
@@ -313,10 +303,6 @@ export class TimelineRuntime {
     this.guiMessageInterceptorInstalled = true;
   }
 
-  // ------------------------------------------------------------------
-  // GUI message handling
-  // ------------------------------------------------------------------
-
   private handleLocalPlaybackGuiMessage(message: GuiUpdateMessage): boolean {
     const value = message.updates.value;
     if (message.uuid === this.config.timelineSliderUuid) {
@@ -377,9 +363,7 @@ export class TimelineRuntime {
     return true;
   }
 
-  // ------------------------------------------------------------------
-  // File/embed playback sync
-  // ------------------------------------------------------------------
+  // --- File/embed playback sync ---
 
   private syncPlaybackState(): void {
     const nextTime = this.readPlaybackTime();
@@ -431,9 +415,7 @@ export class TimelineRuntime {
     return Number.isFinite(parsed) ? parsed : null;
   }
 
-  // ------------------------------------------------------------------
-  // Server sync helpers
-  // ------------------------------------------------------------------
+  // --- Server sync helpers ---
 
   private pushMessages(messages: RuntimeMessage[]): void {
     if (this.queuePush) {

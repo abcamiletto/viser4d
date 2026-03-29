@@ -1,7 +1,3 @@
-/**
- * Block loading, eviction, and request tracking for the timeline runtime.
- */
-
 import type { RuntimeMessage, RuntimeValue } from "../binary";
 
 export type LoadedBlock = {
@@ -10,24 +6,26 @@ export type LoadedBlock = {
 };
 
 export class BlockCache {
+  blockSize = 64;
+  blockRequestSyncUuid: string | null = null;
+  pendingStep: number | null = null;
   private blocks = new Map<number, LoadedBlock>();
   private requestedBlocks = new Set<number>();
-  private pendingStep: number | null = null;
 
   constructor(
     private sendGuiUpdate: (uuid: string, value: RuntimeValue) => void,
   ) {}
 
-  getBlock(step: number, blockSize: number): LoadedBlock | null {
-    return this.blocks.get(this.getBlockIndex(step, blockSize)) ?? null;
+  getBlock(step: number): LoadedBlock | null {
+    return this.blocks.get(Math.floor(step / this.blockSize)) ?? null;
   }
 
-  getBlockIndex(step: number, blockSize: number): number {
-    return Math.floor(step / blockSize);
+  blockIndexOf(step: number): number {
+    return Math.floor(step / this.blockSize);
   }
 
-  getBlockStartStep(blockIndex: number, blockSize: number): number {
-    return blockIndex * blockSize;
+  blockStartStep(blockIndex: number): number {
+    return blockIndex * this.blockSize;
   }
 
   loadBlock(blockIndex: number, block: LoadedBlock): void {
@@ -47,28 +45,16 @@ export class BlockCache {
    * Returns true if the step's block is loaded. If not, records it as pending
    * and sends a request to the server.
    */
-  ensureStepLoaded(
-    step: number,
-    blockSize: number,
-    blockRequestSyncUuid: string | null,
-  ): boolean {
-    if (this.getBlock(step, blockSize)) {
+  ensureStepLoaded(step: number): boolean {
+    if (this.getBlock(step)) {
       return true;
     }
     this.pendingStep = step;
-    const blockIndex = this.getBlockIndex(step, blockSize);
-    if (!this.requestedBlocks.has(blockIndex) && blockRequestSyncUuid) {
+    const blockIndex = this.blockIndexOf(step);
+    if (!this.requestedBlocks.has(blockIndex) && this.blockRequestSyncUuid) {
       this.requestedBlocks.add(blockIndex);
-      this.sendGuiUpdate(blockRequestSyncUuid, step);
+      this.sendGuiUpdate(this.blockRequestSyncUuid, step);
     }
     return false;
-  }
-
-  getPendingStep(): number | null {
-    return this.pendingStep;
-  }
-
-  clearPendingStep(): void {
-    this.pendingStep = null;
   }
 }
