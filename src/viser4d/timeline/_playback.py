@@ -8,18 +8,11 @@ import viser
 
 from .. import _viser_private as impl
 from .._types import RuntimeMethod, RuntimePayload
-from .._runtime import (
-    client_runtime_config_payload,
-    make_runtime_message,
-)
+from .._runtime import client_runtime_config_payload, make_runtime_message
 from .._validation import require_positive_float
-
-_DEFAULT_PRIMARY_COLOR = (34, 139, 230)
-_DEFAULT_SPEED = 1.0
 
 if TYPE_CHECKING:
     from viser._viser import ClientHandle
-
     from .._server import Viser4dServer
 
 
@@ -39,7 +32,7 @@ class ClientPlaybackHandle:
     ) -> None:
         self._server = server
         self._client = client
-        self._speed = _DEFAULT_SPEED
+        self._speed = 1.0
         self._loop = False
         self._is_playing = False
         self._current_timestep = 0
@@ -50,19 +43,32 @@ class ClientPlaybackHandle:
 
         @self._block_request_sync.on_update
         def _request_blocks(_event: Any) -> None:
-            self._sync_requested_step(int(self._block_request_sync.value))
+            step = self._require_timestep(int(self._block_request_sync.value))
+            self._sync_loaded_blocks(step, force=True)
 
         @self._timestep_sync.on_update
         def _sync_timestep(_event: Any) -> None:
-            self._sync_from_client(int(self._timestep_sync.value))
+            timestep = self._require_timestep(int(self._timestep_sync.value))
+            with self._lock:
+                self._current_timestep = timestep
+            self._sync_loaded_blocks(timestep)
+            self._server._dispatch_timestep_change(self._client, timestep)
 
         @self._speed_sync.on_update
         def _sync_speed(_event: Any) -> None:
-            self._sync_speed_from_client(float(self._speed_sync.value))
+            with self._lock:
+                self._speed = require_positive_float(
+                    "speed", float(self._speed_sync.value)
+                )
 
         @self._playback_state_sync.on_update
         def _sync_playback(_event: Any) -> None:
-            self._sync_playback_from_client(bool(self._playback_state_sync.value))
+            is_playing = bool(self._playback_state_sync.value)
+            with self._lock:
+                if is_playing == self._is_playing:
+                    return
+                self._is_playing = is_playing
+            self._server._dispatch_playback_change(self._client, is_playing)
 
         self._sync_runtime_config()
         self._sync_loaded_blocks(self._current_timestep, force=True)
@@ -119,10 +125,8 @@ class ClientPlaybackHandle:
         self._send_runtime_call("setSpeed", payload)
 
     def _sync_runtime_config(self) -> None:
-        """Send the current runtime configuration to the browser."""
         with self._lock:
-            speed = self._speed
-            loop = self._loop
+            speed, loop = self._speed, self._loop
         self._send_runtime_call(
             "configure",
             client_runtime_config_payload(
@@ -143,78 +147,39 @@ class ClientPlaybackHandle:
             ),
         )
 
-    def _sync_from_client(self, timestep: int) -> None:
-        timestep = self._require_timestep(timestep)
-        with self._lock:
-            self._current_timestep = timestep
-        self._sync_loaded_blocks(timestep)
-        self._server._dispatch_timestep_change(self._client, timestep)
-
-    def _sync_requested_step(self, timestep: int) -> None:
-        self._sync_loaded_blocks(self._require_timestep(timestep), force=True)
-
-    def _sync_speed_from_client(self, speed: float) -> None:
-        with self._lock:
-            self._speed = require_positive_float("speed", speed)
-
-    def _sync_playback_from_client(self, is_playing: bool) -> None:
-        with self._lock:
-            if is_playing == self._is_playing:
-                return
-            self._is_playing = is_playing
-        self._server._dispatch_playback_change(self._client, is_playing)
-
     def _create_gui(self, brand_color: tuple[int, int, int] | None) -> None:
         max_step = self._server.num_steps - 1
-        client = self._client
-        self._block_request_sync = client.gui.add_number(
+        gui = self._client.gui
+        self._block_request_sync = gui.add_number(
             "__viser4d_block_request_sync__",
-            self._current_timestep,
+            0,
             min=0,
             max=max_step,
             step=1,
             visible=False,
         )
-        self._speed_sync = client.gui.add_number(
-            "__viser4d_speed_sync__",
-            self._speed,
-            visible=False,
+        self._speed_sync = gui.add_number(
+            "__viser4d_speed_sync__", self._speed, visible=False
         )
-        self._playback_state_sync = client.gui.add_checkbox(
-            "__viser4d_playback_state_sync__",
-            self._is_playing,
-            visible=False,
+        self._playback_state_sync = gui.add_checkbox(
+            "__viser4d_playback_state_sync__", False, visible=False
         )
         # Hidden control used by the browser runtime to report the active timestep back.
-        self._timestep_sync = client.gui.add_number(
-            "__viser4d_timestep_sync__",
-            self._current_timestep,
-            min=0,
-            max=max_step,
-            step=1,
-            visible=False,
+        self._timestep_sync = gui.add_number(
+            "__viser4d_timestep_sync__", 0, min=0, max=max_step, step=1, visible=False
         )
-        with client.gui.add_folder("Playback"):
-            self._timeline_slider = client.gui.add_slider(
-                "Timestep",
-                min=0,
-                max=max_step,
-                step=1,
-                initial_value=self._current_timestep,
+        with gui.add_folder("Playback"):
+            self._timeline_slider = gui.add_slider(
+                "Timestep", min=0, max=max_step, step=1, initial_value=0
             )
-            self._speed_slider = client.gui.add_slider(
-                "Speed",
-                min=0.1,
-                max=4.0,
-                step=0.1,
-                initial_value=self._speed,
+            self._speed_slider = gui.add_slider(
+                "Speed", min=0.1, max=4.0, step=0.1, initial_value=self._speed
             )
-            self._step_buttons = client.gui.add_button_group("Step", ("Prev", "Next"))
-            self._play_button = client.gui.add_button(
-                "Play",
-                icon=viser.Icon.PLAYER_PLAY_FILLED,
+            self._step_buttons = gui.add_button_group("Step", ("Prev", "Next"))
+            self._play_button = gui.add_button(
+                "Play", icon=viser.Icon.PLAYER_PLAY_FILLED
             )
-            self._pause_button = client.gui.add_button(
+            self._pause_button = gui.add_button(
                 "Pause",
                 color=_pause_button_color(brand_color),
                 icon=viser.Icon.PLAYER_PAUSE_FILLED,
@@ -249,39 +214,32 @@ class ClientPlaybackHandle:
                 return
             self._pending_block_loads.add(block_index)
         future = self._server._thread_executor.submit(
-            self._server._timeline.block_payload,
-            block_index,
+            self._server._timeline.block_payload, block_index
         )
         future.add_done_callback(
-            lambda done_future: self._server.get_event_loop().call_soon_threadsafe(
-                self._finish_block_load,
-                block_index,
-                done_future,
+            lambda f: self._server.get_event_loop().call_soon_threadsafe(
+                self._finish_block_load, block_index, f
             )
         )
 
     def _finish_block_load(
-        self,
-        block_index: int,
-        future: Future[RuntimePayload],
+        self, block_index: int, future: Future[RuntimePayload]
     ) -> None:
         with self._lock:
             self._pending_block_loads.discard(block_index)
             should_send = block_index in self._loaded_blocks
         payload = future.result()
-        if not should_send:
-            return
-        self._send_runtime_call("loadBlock", payload)
+        if should_send:
+            self._send_runtime_call("loadBlock", payload)
 
     def _send_runtime_call(
         self, method: RuntimeMethod, payload: RuntimePayload
     ) -> None:
-        message = make_runtime_message(method, payload)
-        impl.queue_client_message(self._client, message)
+        impl.queue_client_message(self._client, make_runtime_message(method, payload))
 
 
 def _pause_button_color(
     brand_color: tuple[int, int, int] | None,
 ) -> tuple[int, int, int]:
-    r, g, b = _DEFAULT_PRIMARY_COLOR if brand_color is None else brand_color
+    r, g, b = (34, 139, 230) if brand_color is None else brand_color
     return (int(r * 0.85), int(g * 0.85), int(b * 0.85))
