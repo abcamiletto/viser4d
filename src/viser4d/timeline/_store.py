@@ -8,113 +8,26 @@ from collections import OrderedDict
 from concurrent.futures import Executor, Future
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import msgspec
 import numpy as np
-import viser
 import zstandard
 from viser import _messages
 
 from ..audio._api import audio_array_payload
-from ..audio._messages import AddAudioMessage, is_audio_message, is_audio_message_type
-from .._types import (
-    BinaryPayload,
-    JSONValue,
-    SerializedMessage,
-    StoredMessage,
-    StoredValue,
+from ..audio._messages import AddAudioMessage, is_audio_message
+from .._types import StoredMessage, StoredValue
+from ._messages_util import (
+    TimelineStep,
+    extract_message_name,
+    is_scene_message,
+    serialize_stored_messages,
+    store_raw_message,
+    stored_dict,
+    stored_float,
+    stored_int,
 )
-
-
-def to_stored(value: Any) -> StoredValue:
-    """Convert a viser's serializable payload into the timeline storage form."""
-    if isinstance(value, memoryview):
-        return value.tobytes()
-    if isinstance(value, (bytes, bytearray)):
-        return bytes(value)
-    if isinstance(value, np.ndarray):
-        return value.tobytes()
-    if isinstance(value, dict):
-        return {str(key): to_stored(val) for key, val in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [to_stored(item) for item in value]
-    return cast(StoredValue, value)
-
-
-def to_jsonable(value: StoredValue) -> JSONValue:
-    """Convert stored timeline data into the JSON-safe runtime transport form."""
-    if isinstance(value, (bytes, bytearray)):
-        return cast(
-            JSONValue,
-            BinaryPayload(
-                __viser4d_binary__=base64.b64encode(bytes(value)).decode("ascii")
-            ),
-        )
-    if isinstance(value, dict):
-        return {str(key): to_jsonable(val) for key, val in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [to_jsonable(item) for item in value]
-    return cast(JSONValue, value)
-
-
-def store_raw_message(message: _messages.Message) -> StoredMessage:
-    """Capture one viser message in the timeline's canonical storage form."""
-    return cast(StoredMessage, to_stored(message.as_serializable_dict()))
-
-
-def store_raw_messages(messages: list[_messages.Message]) -> list[StoredMessage]:
-    return [store_raw_message(message) for message in messages]
-
-
-def serialize_stored_message(message: StoredMessage) -> SerializedMessage:
-    return cast(SerializedMessage, to_jsonable(message))
-
-
-def serialize_stored_messages(messages: list[StoredMessage]) -> list[SerializedMessage]:
-    return [serialize_stored_message(message) for message in messages]
-
-
-def stored_int(value: StoredValue) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        raise TypeError(f"Expected int-like stored value, got {type(value).__name__}.")
-    return int(value)
-
-
-def stored_float(value: StoredValue) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        raise TypeError(
-            f"Expected float-like stored value, got {type(value).__name__}."
-        )
-    return float(value)
-
-
-def stored_dict(value: StoredValue) -> dict[str, StoredValue]:
-    if not isinstance(value, dict):
-        raise TypeError(f"Expected dict stored value, got {type(value).__name__}.")
-    return cast(dict[str, StoredValue], value)
-
-
-def extract_message_name(message: StoredMessage) -> str | None:
-    name = message.get("name")
-    return name if isinstance(name, str) and name else None
-
-
-def is_scene_message(message: StoredMessage) -> bool:
-    message_type = message.get("type")
-    return (
-        isinstance(message_type, str)
-        and not message_type.startswith("Gui")
-        and not is_audio_message_type(message_type)
-    )
-
-
-@dataclass
-class TimelineStep:
-    """Recorded scene and audio updates for one timestep."""
-
-    scene_updates: dict[str, StoredMessage] = field(default_factory=dict)
-    audio_updates: list[StoredMessage] = field(default_factory=list)
 
 
 @dataclass
@@ -601,19 +514,3 @@ def _write_block_and_checkpoint_after(
     _write_block_file(block_path, block)
     if checkpoint is not None:
         _write_checkpoint_file(*checkpoint)
-
-
-def serialize_viser_recording(
-    messages: list[tuple[float, StoredMessage]],
-    *,
-    duration_seconds: float = 0.0,
-) -> bytes:
-    packed = msgspec.msgpack.encode(
-        {
-            "durationSeconds": duration_seconds,
-            "messages": messages,
-            "viserVersion": viser.__version__,
-        }
-    )
-    compressed = zstandard.ZstdCompressor(level=12).compress(packed)
-    return len(packed).to_bytes(8, "little") + compressed

@@ -7,12 +7,12 @@ from viser import _messages
 from . import _viser_private as impl
 from ._types import StoredMessage
 from ._runtime import RUNTIME_MARKER, runtime_source
-from .timeline._store import (
-    TimelineStore,
+from .timeline._messages_util import (
     serialize_viser_recording,
     store_raw_message,
     store_raw_messages,
 )
+from .timeline._store import TimelineStore
 
 if TYPE_CHECKING:
     from ._server import Viser4dServer

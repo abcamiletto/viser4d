@@ -13,11 +13,8 @@ from viser.infra import WebsockMessageHandler
 from .. import _viser_private as impl
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
-from ._store import (
-    TimelineStore,
-    store_raw_message,
-    serialize_stored_message,
-)
+from ._messages_util import serialize_stored_message, store_raw_message
+from ._store import TimelineStore
 
 if TYPE_CHECKING:
     from ..audio import AudioApi
