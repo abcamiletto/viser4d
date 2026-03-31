@@ -5,7 +5,7 @@ import inspect
 import threading
 from collections.abc import Awaitable
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, cast
 
 import viser
 
@@ -211,10 +211,12 @@ class Viser4dServer(viser.ViserServer):
         for callback in list(self._timestep_callbacks):
             result = callback(client, timestep)
             if inspect.isawaitable(result):
-                self.get_event_loop().create_task(result)
+                coro = cast(Coroutine[Any, Any, None], result)
+                self.get_event_loop().create_task(coro)
 
     def _dispatch_playback_change(self, client: ClientHandle, is_playing: bool) -> None:
         for callback in list(self._playback_callbacks):
             result = callback(client, is_playing)
             if inspect.isawaitable(result):
-                self.get_event_loop().create_task(result)
+                coro = cast(Coroutine[Any, Any, None], result)
+                self.get_event_loop().create_task(coro)
