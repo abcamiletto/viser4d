@@ -155,15 +155,34 @@ def test_at_rejects_static_name_collisions() -> None:
         server.stop()
 
 
-def test_at_rejects_recreating_timeline_nodes() -> None:
+def test_at_allows_recreating_timeline_nodes() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
             timeline.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
 
-        with pytest.raises(RuntimeError, match="Cannot create timeline node"):
-            with server.at(1) as timeline:
-                timeline.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
+        with server.at(1) as timeline:
+            joint = timeline.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
+
+        joint.position = (2.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        creation_times = [
+            time
+            for time, message in messages
+            if message.get("type") == "IcosphereMessage"
+            and message.get("name") == "/joint"
+        ]
+        positions = [
+            (time, tuple(cast(list[float], message["position"])))
+            for time, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert creation_times == [0.0, 1.0 / server.fps]
+        assert positions == [(1.0 / server.fps, (2.0, 0.0, 0.0))]
     finally:
         server.stop()
 

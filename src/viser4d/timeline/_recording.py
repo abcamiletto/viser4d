@@ -185,7 +185,6 @@ class SceneRecorder:
             impl.queue_client_message(client, message)
 
     def _validate_step_messages(self, messages: list[impl.Message]) -> None:
-        created_names: set[str] = set()
         for message in messages:
             if not impl.is_create_scene_node_message(message):
                 continue
@@ -195,13 +194,6 @@ class SceneRecorder:
                     f"Cannot create timeline node {name!r} because a static scene node "
                     "with the same name already exists."
                 )
-            if self._timeline.has_node(name) or name in created_names:
-                raise RuntimeError(
-                    f"Cannot create timeline node {name!r} more than once. "
-                    "Create it once and update the returned handle inside later "
-                    "server.at(t) blocks."
-                )
-            created_names.add(name)
 
 
 class _TimelineTransport(impl.WebsockMessageHandler):
