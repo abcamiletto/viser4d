@@ -40,7 +40,16 @@ class CheckpointState:
 class _CheckpointFilePayload(msgspec.Struct):
     sceneUpdates: list[tuple[str, StoredMessage]]
     keyToNode: list[tuple[str, str | None]]
-    audioTracks: list[dict[str, object]]
+    audioTracks: list["_CheckpointAudioTrackPayload"]
+
+
+class _CheckpointAudioTrackPayload(msgspec.Struct):
+    name: str
+    sampleRate: int
+    waveform: bytes
+    dtype: str
+    shape: list[int]
+    volume: float
 
 
 def apply_scene_message(
@@ -153,14 +162,14 @@ def checkpoint_messages(state: CheckpointState) -> list[StoredMessage]:
 
 def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
     audio_tracks = [
-        {
-            "name": name,
-            "sampleRate": track.sample_rate,
-            "waveform": track.waveform.tobytes(),
-            "dtype": track.waveform.dtype.str,
-            "shape": list(track.waveform.shape),
-            "volume": track.volume,
-        }
+        _CheckpointAudioTrackPayload(
+            name=name,
+            sampleRate=track.sample_rate,
+            waveform=track.waveform.tobytes(),
+            dtype=track.waveform.dtype.str,
+            shape=list(track.waveform.shape),
+            volume=track.volume,
+        )
         for name, track in sorted(state.audio_tracks.items())
     ]
     payload = _CheckpointFilePayload(
@@ -180,12 +189,12 @@ def load_checkpoint_file(path: Path) -> CheckpointState:
     key_to_node = dict(payload.keyToNode)
     audio_tracks: dict[str, AudioTrackState] = {}
     for td in payload.audioTracks:
-        shape = tuple(td["shape"])
-        arr = np.frombuffer(td["waveform"], dtype=np.dtype(td["dtype"]))
-        audio_tracks[td["name"]] = AudioTrackState(
-            sample_rate=td["sampleRate"],
+        shape = tuple(td.shape)
+        arr = np.frombuffer(td.waveform, dtype=np.dtype(td.dtype))
+        audio_tracks[td.name] = AudioTrackState(
+            sample_rate=td.sampleRate,
             waveform=np.ascontiguousarray(arr.reshape(shape)),
-            volume=td["volume"],
+            volume=td.volume,
         )
     return CheckpointState(
         scene_updates=scene_updates,
