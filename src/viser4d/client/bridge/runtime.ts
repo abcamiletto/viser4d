@@ -434,12 +434,12 @@ export class TimelineRuntime {
   }
 
   private syncPlaybackButtons(): void {
-    const guiState = this.getViewer().useGui.getState();
+    const viewer = this.getViewer();
     const sync = (uuid: string | null, visible: boolean): void => {
-      if (!uuid || guiState.guiConfigFromUuid[uuid] === undefined) {
+      if (!uuid || viewer.useGuiConfig.get(uuid) === undefined) {
         return;
       }
-      guiState.updateGuiProps(uuid, { visible });
+      viewer.guiActions.updateGuiProps(uuid, { visible });
     };
     sync(this.config.playButtonUuid, !this.engine.playing);
     sync(this.config.pauseButtonUuid, this.engine.playing);

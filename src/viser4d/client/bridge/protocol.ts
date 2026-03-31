@@ -28,16 +28,15 @@ export type ViewerMessage = {
   [key: string]: unknown;
 };
 
-type GuiStateLike = {
-  guiConfigFromUuid: { [uuid: string]: unknown | undefined };
+type GuiConfigStoreLike = {
+  get(uuid: string): unknown | undefined;
+};
+
+type GuiActionsLike = {
   updateGuiProps(
     uuid: string,
     updates: { [key: string]: RuntimeValue | undefined },
   ): void;
-};
-
-type UseGuiLike = {
-  getState(): GuiStateLike;
 };
 
 export type ViewerLike = {
@@ -48,7 +47,9 @@ export type ViewerLike = {
       sendMessage: (message: ViewerMessage) => void;
     };
   };
-  useGui: UseGuiLike;
+  useGui: unknown;
+  useGuiConfig: GuiConfigStoreLike;
+  guiActions: GuiActionsLike;
   useSceneTree: unknown;
 };
 
@@ -74,7 +75,8 @@ function isViewerLike(value: unknown): value is ViewerLike {
   return (
     isObjectRecord(value) &&
     isObjectRecord(value.mutable) &&
-    "useGui" in value &&
+    "useGuiConfig" in value &&
+    "guiActions" in value &&
     "useSceneTree" in value
   );
 }
