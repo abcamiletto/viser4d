@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import base64
-import inspect
+import asyncio
 import threading
-from collections.abc import Awaitable
+from collections.abc import Coroutine
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, cast
+from typing import TYPE_CHECKING, Any, Callable
 
 import viser
 
@@ -56,10 +56,10 @@ class Viser4dServer(viser.ViserServer):
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
         self._client_playbacks_lock = threading.Lock()
         self._timestep_callbacks: list[
-            Callable[[ClientHandle, int], None | Awaitable[None]]
+            Callable[[ClientHandle, int], None | Coroutine[Any, Any, None]]
         ] = []
         self._playback_callbacks: list[
-            Callable[[ClientHandle, bool], None | Awaitable[None]]
+            Callable[[ClientHandle, bool], None | Coroutine[Any, Any, None]]
         ] = []
         self._stop_event = threading.Event()
         self._recorder = SceneRecorder(self, self._timeline)
@@ -124,14 +124,14 @@ class Viser4dServer(viser.ViserServer):
 
     def on_timestep_change(
         self,
-        callback: Callable[[ClientHandle, int], None | Awaitable[None]],
+        callback: Callable[[ClientHandle, int], None | Coroutine[Any, Any, None]],
     ) -> None:
         """Register a callback for any committed client timestep change."""
         self._timestep_callbacks.append(callback)
 
     def on_playback_change(
         self,
-        callback: Callable[[ClientHandle, bool], None | Awaitable[None]],
+        callback: Callable[[ClientHandle, bool], None | Coroutine[Any, Any, None]],
     ) -> None:
         """Register a callback for client play/pause state changes."""
         self._playback_callbacks.append(callback)
@@ -210,13 +210,11 @@ class Viser4dServer(viser.ViserServer):
     def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
             result = callback(client, timestep)
-            if inspect.isawaitable(result):
-                coro = cast(Coroutine[Any, Any, None], result)
-                self.get_event_loop().create_task(coro)
+            if asyncio.iscoroutine(result):
+                self.get_event_loop().create_task(result)
 
     def _dispatch_playback_change(self, client: ClientHandle, is_playing: bool) -> None:
         for callback in list(self._playback_callbacks):
             result = callback(client, is_playing)
-            if inspect.isawaitable(result):
-                coro = cast(Coroutine[Any, Any, None], result)
-                self.get_event_loop().create_task(coro)
+            if asyncio.iscoroutine(result):
+                self.get_event_loop().create_task(result)
