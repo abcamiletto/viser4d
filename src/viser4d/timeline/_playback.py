@@ -174,7 +174,8 @@ class ClientPlaybackHandle:
         self._timestep_sync = gui.add_number(
             "__viser4d_timestep_sync__", 0, min=0, max=max_step, step=1, visible=False
         )
-        with gui.add_folder("Playback"):
+        # High order so the playback folder always sorts below user-added GUI.
+        with gui.add_folder("Playback", order=_PLAYBACK_ORDER):
             self._timeline_slider = gui.add_slider(
                 "Timestep", min=0, max=max_step, step=1, initial_value=0
             )
@@ -242,6 +243,9 @@ class ClientPlaybackHandle:
         self, method: RuntimeMethod, payload: RuntimePayload
     ) -> None:
         impl.queue_client_message(self._client, make_runtime_message(method, payload))
+
+
+_PLAYBACK_ORDER = 1e9
 
 
 def _pause_button_color(
