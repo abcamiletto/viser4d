@@ -8,23 +8,38 @@ import sys
 import warnings
 
 
-CLIENT_FILES = (
-    "binary.ts",
-    "build-runtime.mjs",
-    "index.ts",
-    "package-lock.json",
-    "package.json",
-    "runtime.ts",
-    "tsconfig.json",
-)
+CLIENT_SOURCE_SUFFIXES = (".ts", ".json", ".mjs")
+CLIENT_IGNORED_DIRS = {".nodeenv", "node_modules"}
 
 
 def client_dir() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parent / "client"
 
 
+def project_root() -> pathlib.Path | None:
+    for path in pathlib.Path(__file__).resolve().parents:
+        if (path / "package.json").exists() and (path / "pnpm-lock.yaml").exists():
+            return path
+    return None
+
+
+def client_sources() -> list[pathlib.Path]:
+    root = client_dir()
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix in CLIENT_SOURCE_SUFFIXES
+        and not any(part in CLIENT_IGNORED_DIRS for part in path.parts)
+    )
+
+
 def build_inputs() -> list[pathlib.Path] | None:
-    paths = [client_dir() / name for name in CLIENT_FILES]
+    root = project_root()
+    if root is None:
+        return None
+    paths = client_sources()
+    paths.extend((root / "package.json", root / "pnpm-lock.yaml"))
     if not all(path.exists() for path in paths):
         return None
     return paths
@@ -93,17 +108,28 @@ def _install_sandboxed_node() -> pathlib.Path:
 
 
 def _build_client(node_bin_dir: pathlib.Path) -> None:
-    npm_path = node_bin_dir / "npm"
+    corepack_path = node_bin_dir / "corepack"
     node_path = node_bin_dir / "node"
     if sys.platform == "win32":
-        npm_path = npm_path.with_suffix(".cmd")
+        corepack_path = corepack_path.with_suffix(".cmd")
         node_path = node_path.with_suffix(".exe")
 
     env = os.environ.copy()
     env["NODE_VIRTUAL_ENV"] = str(node_bin_dir.parent)
     env["PATH"] = str(node_bin_dir) + (os.pathsep + env["PATH"])
 
-    cwd = client_dir()
-    install_cmd = ["ci"] if (cwd / "package-lock.json").exists() else ["install"]
-    subprocess.run([str(npm_path), *install_cmd], cwd=cwd, env=env, check=True)
-    subprocess.run([str(node_path), "build-runtime.mjs"], cwd=cwd, env=env, check=True)
+    root = project_root()
+    if root is None:
+        raise RuntimeError("Could not locate package.json and pnpm-lock.yaml.")
+    subprocess.run(
+        [str(corepack_path), "pnpm", "install", "--frozen-lockfile"],
+        cwd=root,
+        env=env,
+        check=True,
+    )
+    subprocess.run(
+        [str(node_path), "src/viser4d/client/build-runtime.mjs"],
+        cwd=root,
+        env=env,
+        check=True,
+    )

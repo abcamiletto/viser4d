@@ -49,7 +49,6 @@ viser4d = [
     "client/*.ts",
     "client/*.json",
     "client/*.mjs",
-    "client/package-lock.json",
 ]
 
 [tool.setuptools.packages.find]

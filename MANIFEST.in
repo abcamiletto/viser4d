@@ -1,5 +1,6 @@
 include src/viser4d/runtime.js
+include package.json
+include pnpm-lock.yaml
 recursive-include src/viser4d/client *.ts *.json *.mjs
-include src/viser4d/client/package-lock.json
 prune src/viser4d/client/.nodeenv
 prune src/viser4d/client/node_modules
