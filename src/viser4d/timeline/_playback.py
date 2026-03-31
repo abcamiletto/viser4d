@@ -245,7 +245,7 @@ class ClientPlaybackHandle:
         impl.queue_client_message(self._client, make_runtime_message(method, payload))
 
 
-_PLAYBACK_ORDER = 1e9
+_PLAYBACK_ORDER = -1e9
 
 
 def _pause_button_color(
