@@ -10,7 +10,7 @@ import numpy as np
 from .. import _viser_private as impl
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
-from ._messages_util import serialize_stored_message, store_raw_message
+from ._messages_util import store_raw_message
 from ._store import TimelineStore
 
 if TYPE_CHECKING:
@@ -115,7 +115,7 @@ class SceneRecorder:
             return
         self._server._send_runtime_call(
             "applyMessageUpdate",
-            serialize_stored_message(store_raw_message(message)),
+            store_raw_message(message),
         )
 
     def close(self) -> None:

@@ -1,4 +1,5 @@
 import {
+  decodeHybridPayloadBase64,
   type RuntimeMessage,
   type RuntimeValue,
   normalizeTransportMessage,
@@ -124,6 +125,17 @@ export class TimelineRuntime {
 
   // --- Public API (called from Python runtime messages) ---
 
+  invokeRuntimeCall(method: string, encodedPayload: string): void {
+    const target = this[method as keyof TimelineRuntime];
+    if (typeof target !== "function") {
+      throw new Error(`[viser4d] Unknown runtime method: ${method}`);
+    }
+    const payload = decodeHybridPayloadBase64<Record<string, RuntimeValue>>(
+      encodedPayload,
+    );
+    (target as (payload: Record<string, RuntimeValue>) => void).call(this, payload);
+  }
+
   configure(config: Partial<RuntimeConfig>): void {
     this.config = { ...this.config, ...config };
     this.blocks.blockSize = this.config.blockSize;
@@ -140,15 +152,10 @@ export class TimelineRuntime {
     checkpointMessages: RuntimeMessage[];
     stepMessages: RuntimeMessage[][];
   }): void {
-    const block = {
-      checkpointMessages: payload.checkpointMessages.map((m) =>
-        normalizeTransportMessage(m),
-      ),
-      stepMessages: payload.stepMessages.map((messages) =>
-        messages.map((m) => normalizeTransportMessage(m)),
-      ),
-    };
-    this.blocks.loadBlock(payload.block, block);
+    this.blocks.loadBlock(payload.block, {
+      checkpointMessages: payload.checkpointMessages,
+      stepMessages: payload.stepMessages,
+    });
     const activeBlock = this.blocks.blockIndexOf(
       Math.floor(this.engine.currentStep),
     );
@@ -193,8 +200,7 @@ export class TimelineRuntime {
     this.engine.setSpeed(payload);
   }
 
-  applyMessageUpdate(rawMessage: RuntimeMessage): void {
-    const message = normalizeTransportMessage(rawMessage);
+  applyMessageUpdate(message: RuntimeMessage): void {
     const name = typeof message.name === "string" ? message.name : null;
     debugState.push("runtime.apply_message_update", {
       type: message.type,

@@ -12,7 +12,7 @@ import zstandard
 
 from ..audio._api import audio_array_payload
 from ..audio._messages import AddAudioMessage
-from .._types import StoredMessage, StoredValue
+from .._types import StoredMessage
 from ._messages_util import (
     TimelineStep,
     extract_message_name,
@@ -37,11 +37,19 @@ class CheckpointState:
     audio_tracks: dict[str, AudioTrackState] = field(default_factory=dict)
 
 
+class _CheckpointFilePayload(msgspec.Struct):
+    sceneUpdates: list[tuple[str, StoredMessage]]
+    keyToNode: list[tuple[str, str | None]]
+    audioTracks: list[dict[str, object]]
+
+
 def apply_scene_message(
     state: CheckpointState, key: str, message: StoredMessage
 ) -> None:
     name = extract_message_name(message)
-    if message.get("type") == "RemoveSceneNodeMessage" and isinstance(name, str):
+    if message.payload.get("type") == "RemoveSceneNodeMessage" and isinstance(
+        name, str
+    ):
         prefix = f"{name}/"
         stale_keys = [
             k
@@ -58,7 +66,7 @@ def apply_scene_message(
 
 
 def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
-    message_type = message.get("type")
+    message_type = message.payload.get("type")
     name = extract_message_name(message)
     if not isinstance(message_type, str) or not isinstance(name, str):
         return
@@ -67,22 +75,22 @@ def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
         return
     if message_type == "AddAudioMessage":
         state.audio_tracks[name] = AudioTrackState(
-            sample_rate=stored_int(message["sampleRate"]),
-            waveform=_decode_audio_payload(stored_dict(message["waveform"])),
-            volume=stored_float(message["volume"]),
+            sample_rate=stored_int(message.payload["sampleRate"]),
+            waveform=_decode_audio_payload(stored_dict(message.payload["waveform"])),
+            volume=stored_float(message.payload["volume"]),
         )
         return
     track = state.audio_tracks.get(name)
     if track is None:
         return
     if message_type == "SetAudioVolumeMessage":
-        track.volume = stored_float(message["volume"])
+        track.volume = stored_float(message.payload["volume"])
     elif message_type == "SetAudioWaveformMessage":
-        track.waveform = _decode_audio_payload(stored_dict(message["waveform"]))
+        track.waveform = _decode_audio_payload(stored_dict(message.payload["waveform"]))
     elif message_type == "AppendAudioMessage":
         track.waveform = _append_audio_waveform(
             track.waveform,
-            _decode_audio_payload(stored_dict(message["waveform"])),
+            _decode_audio_payload(stored_dict(message.payload["waveform"])),
         )
 
 
@@ -155,11 +163,11 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
         }
         for name, track in sorted(state.audio_tracks.items())
     ]
-    payload = {
-        "sceneUpdates": list(state.scene_updates.items()),
-        "keyToNode": list(state.key_to_node.items()),
-        "audioTracks": audio_tracks,
-    }
+    payload = _CheckpointFilePayload(
+        sceneUpdates=list(state.scene_updates.items()),
+        keyToNode=list(state.key_to_node.items()),
+        audioTracks=audio_tracks,
+    )
     packed = msgspec.msgpack.encode(payload)
     compressed = zstandard.ZstdCompressor(level=6).compress(packed)
     path.write_bytes(compressed)
@@ -167,11 +175,11 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
 
 def load_checkpoint_file(path: Path) -> CheckpointState:
     raw = zstandard.ZstdDecompressor().decompress(path.read_bytes())
-    payload = msgspec.msgpack.decode(raw)
-    scene_updates: dict[str, StoredMessage] = dict(payload["sceneUpdates"])
-    key_to_node: dict[str, str | None] = dict(payload["keyToNode"])
+    payload = msgspec.msgpack.decode(raw, type=_CheckpointFilePayload)
+    scene_updates = dict(payload.sceneUpdates)
+    key_to_node = dict(payload.keyToNode)
     audio_tracks: dict[str, AudioTrackState] = {}
-    for td in payload["audioTracks"]:
+    for td in payload.audioTracks:
         shape = tuple(td["shape"])
         arr = np.frombuffer(td["waveform"], dtype=np.dtype(td["dtype"]))
         audio_tracks[td["name"]] = AudioTrackState(
@@ -191,10 +199,10 @@ def _scene_node_sort_key(name: str) -> tuple[int, str]:
 
 
 def _is_create_scene_message(message: StoredMessage) -> bool:
-    return "props" in message
+    return "props" in message.payload
 
 
-def _decode_audio_payload(payload: dict[str, StoredValue]) -> np.ndarray:
+def _decode_audio_payload(payload: dict[str, object]) -> np.ndarray:
     dtype = np.dtype(str(payload["dtype"]))
     num_channels = stored_int(payload["numChannels"])
     num_frames = stored_int(payload["numFrames"])

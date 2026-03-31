@@ -49,10 +49,10 @@ class ExportBuilder:
         runtime_message = store_raw_message(runtime_source_message)
         recording: list[tuple[float, StoredMessage]] = [(0.0, runtime_message)]
         for message in store_raw_messages(impl.broadcast_messages(self._server)):
-            source = message.get("source")
+            source = message.payload.get("source")
             if isinstance(source, str) and source.startswith(RUNTIME_MARKER):
                 continue
-            name = message.get("name")
+            name = message.payload.get("name")
             if isinstance(name, str) and self._timeline.has_node(name):
                 continue
             recording.append((0.0, message))
@@ -64,7 +64,13 @@ class ExportBuilder:
                 (time, message) for message in step_state.scene_updates.values()
             )
             recording.extend(
-                (time, {**message, "__viserPlaybackTime": time})
+                (
+                    time,
+                    StoredMessage(
+                        {**message.payload, "__viserPlaybackTime": time},
+                        message.buffers,
+                    ),
+                )
                 for message in step_state.audio_updates
             )
 

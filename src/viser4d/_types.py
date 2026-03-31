@@ -1,28 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Literal, TypeAlias, TypedDict
 
 
-JSONValue: TypeAlias = (
-    None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
-)
-SerializedMessage: TypeAlias = dict[str, JSONValue]
-StoredValue: TypeAlias = (
-    None
-    | bool
-    | int
-    | float
-    | str
-    | bytes
-    | list["StoredValue"]
-    | dict[str, "StoredValue"]
-)
-StoredMessage: TypeAlias = dict[str, StoredValue]
+StoredPayload: TypeAlias = dict[str, object]
 
 
-class BinaryPayload(TypedDict):
-    __viser4d_binary__: str
+@dataclass(frozen=True)
+class StoredMessage:
+    payload: StoredPayload
+    buffers: tuple[bytes, ...] = ()
 
 
 class AudioArrayPayload(TypedDict):
@@ -64,4 +53,4 @@ RuntimeMethod: TypeAlias = Literal[
     "setSpeed",
 ]
 
-RuntimePayload: TypeAlias = Mapping[str, object]
+RuntimePayload: TypeAlias = Mapping[str, object] | StoredMessage

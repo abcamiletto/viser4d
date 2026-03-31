@@ -1,3 +1,5 @@
+import * as msgpack from "@msgpack/msgpack";
+
 export type RuntimeScalar = string | number | boolean | null;
 
 export type RuntimeValue =
@@ -12,8 +14,31 @@ export type RuntimeMessage = {
   [key: string]: RuntimeValue | undefined;
 };
 
-type BinaryPayload = {
-  __viser4d_binary__: string;
+type HybridPayload = {
+  binaryBufferLengths?: number[];
+  [key: string]: unknown;
+};
+
+const DTYPE_CONSTRUCTORS: Record<
+  string,
+  {
+    ctor: new (
+      buffer: ArrayBufferLike,
+      byteOffset: number,
+      length: number,
+    ) => ArrayBufferView;
+    bytes: number;
+  }
+> = {
+  "<f2": { ctor: Uint16Array, bytes: 2 },
+  "<f4": { ctor: Float32Array, bytes: 4 },
+  "<f8": { ctor: Float64Array, bytes: 8 },
+  "|u1": { ctor: Uint8Array, bytes: 1 },
+  "<u2": { ctor: Uint16Array, bytes: 2 },
+  "<u4": { ctor: Uint32Array, bytes: 4 },
+  "|i1": { ctor: Int8Array, bytes: 1 },
+  "<i2": { ctor: Int16Array, bytes: 2 },
+  "<i4": { ctor: Int32Array, bytes: 4 },
 };
 
 export type AudioArrayPayload = {
@@ -32,23 +57,97 @@ export function decodeBase64Bytes(base64Text: string): Uint8Array {
   return bytes;
 }
 
-function isBinaryPayload(value: Record<string, unknown>): value is BinaryPayload {
-  return typeof value.__viser4d_binary__ === "string";
-}
-
-function asBinaryBytes(value: object): Uint8Array | null {
-  // Runtime messages are treated as immutable after ingress. Normalize any
-  // binary buffer/view to a Uint8Array view without copying.
-  if (value instanceof Uint8Array) {
-    return value;
-  }
+function asBinaryView(value: object): ArrayBufferView | Uint8Array | null {
   if (value instanceof ArrayBuffer) {
     return new Uint8Array(value);
   }
   if (!ArrayBuffer.isView(value)) {
     return null;
   }
-  return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return value;
+}
+
+function computeBinaryOffsets(
+  bufferLengths: number[],
+  baseOffset: number,
+): number[] {
+  const offsets: number[] = [];
+  let offset = baseOffset;
+  for (const length of bufferLengths) {
+    offset += (8 - (offset % 8)) % 8;
+    offsets.push(offset);
+    offset += length;
+  }
+  return offsets;
+}
+
+function replaceBinaryPlaceholders(
+  obj: unknown,
+  buffer: ArrayBuffer,
+  binaryOffsets: number[],
+  bufferLengths: number[],
+): unknown {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i += 1) {
+      obj[i] = replaceBinaryPlaceholders(
+        obj[i],
+        buffer,
+        binaryOffsets,
+        bufferLengths,
+      );
+    }
+    return obj;
+  }
+  if (typeof obj !== "object" || ArrayBuffer.isView(obj)) {
+    return obj;
+  }
+
+  const record = obj as Record<string, unknown>;
+  const idx = record.__binary_index;
+  const dtype = record.dtype;
+  if (typeof idx === "number" && typeof dtype === "string") {
+    const offset = binaryOffsets[idx];
+    const byteLength = bufferLengths[idx];
+    const dtypeInfo = DTYPE_CONSTRUCTORS[dtype];
+    if (dtypeInfo) {
+      return new dtypeInfo.ctor(buffer, offset, byteLength / dtypeInfo.bytes);
+    }
+    return new Uint8Array(buffer, offset, byteLength);
+  }
+
+  for (const [key, inner] of Object.entries(record)) {
+    record[key] = replaceBinaryPlaceholders(
+      inner,
+      buffer,
+      binaryOffsets,
+      bufferLengths,
+    );
+  }
+  return record;
+}
+
+export function decodeHybridPayloadBase64<T>(base64Text: string): T {
+  const bytes = decodeBase64Bytes(base64Text);
+  const buffer = bytes.buffer as ArrayBuffer;
+  const baseOffset = bytes.byteOffset;
+  const msgpackLength = Number(
+    new DataView(buffer, baseOffset, 8).getBigUint64(0, true),
+  );
+  const msgpackData = new Uint8Array(buffer, baseOffset + 8, msgpackLength);
+  const payload = msgpack.decode(msgpackData) as T & HybridPayload;
+  const bufferLengths = payload.binaryBufferLengths;
+  if (bufferLengths && bufferLengths.length > 0) {
+    const binaryOffsets = computeBinaryOffsets(
+      bufferLengths,
+      baseOffset + 8 + msgpackLength,
+    );
+    replaceBinaryPlaceholders(payload, buffer, binaryOffsets, bufferLengths);
+    delete payload.binaryBufferLengths;
+  }
+  return payload;
 }
 
 export function normalizeTransportValue(value: RuntimeValue): RuntimeValue {
@@ -58,16 +157,12 @@ export function normalizeTransportValue(value: RuntimeValue): RuntimeValue {
   if (!value || typeof value !== "object") {
     return value;
   }
-  const bytes = asBinaryBytes(value);
-  if (bytes) {
-    return bytes;
-  }
-  const record = value as Record<string, unknown>;
-  if (isBinaryPayload(record)) {
-    return decodeBase64Bytes(record.__viser4d_binary__);
+  const binaryView = asBinaryView(value);
+  if (binaryView) {
+    return binaryView;
   }
   const out: { [key: string]: RuntimeValue | undefined } = {};
-  for (const [key, inner] of Object.entries(record)) {
+  for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
     out[key] =
       inner === undefined
         ? undefined

@@ -5,6 +5,7 @@ import pathlib
 
 from . import _client_autobuild
 from . import _viser_private as impl
+from ._hybrid import encode_hybrid_document_base64
 from ._types import ClientRuntimeConfig, RuntimeMethod, RuntimePayload
 
 
@@ -62,13 +63,17 @@ def make_runtime_message(
     method: RuntimeMethod,
     payload: RuntimePayload,
 ) -> impl.Message:
+    encoded_payload = encode_hybrid_document_base64(payload)
     source = (
         RUNTIME_MARKER
         + f"""
 (() => {{
   const invoke = () => {{
     if (!window.__VISER4D__) return false;
-    window.__VISER4D__.{method}({json.dumps(payload)});
+    window.__VISER4D__.invokeRuntimeCall(
+      {json.dumps(method)},
+      {json.dumps(encoded_payload)},
+    );
     return true;
   }};
   if (invoke()) return;

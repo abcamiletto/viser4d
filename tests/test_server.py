@@ -11,11 +11,12 @@ import viser4d
 
 
 def _deserialize_recording(blob: bytes) -> dict[str, object]:
-    packed_size = int.from_bytes(blob[:8], "little")
-    packed = zstandard.ZstdDecompressor().decompress(
-        blob[8:], max_output_size=packed_size
+    hybrid_size = int.from_bytes(blob[:8], "little")
+    hybrid = zstandard.ZstdDecompressor().decompress(
+        blob[8:], max_output_size=hybrid_size
     )
-    return cast(dict[str, object], msgspec.msgpack.decode(packed))
+    msgpack_size = int.from_bytes(hybrid[:8], "little")
+    return cast(dict[str, object], msgspec.msgpack.decode(hybrid[8 : 8 + msgpack_size]))
 
 
 def test_audio_requires_timestep_context() -> None:

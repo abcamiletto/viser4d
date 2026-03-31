@@ -9,7 +9,6 @@ from collections import OrderedDict
 from concurrent.futures import Executor, Future
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
 import msgspec
 import zstandard
@@ -29,7 +28,6 @@ from ._messages_util import (
     TimelineStep,
     extract_message_name,
     is_scene_message,
-    serialize_stored_messages,
     store_raw_message,
 )
 
@@ -38,6 +36,11 @@ from ._messages_util import (
 class TimelineBlock:
     steps: list[TimelineStep]
     dirty: bool = False
+
+
+class _BlockFilePayload(msgspec.Struct):
+    sceneSteps: list[list[tuple[str, StoredMessage]]]
+    audioSteps: list[list[StoredMessage]]
 
 
 class TimelineStore:
@@ -156,10 +159,8 @@ class TimelineStore:
         ckpt_messages = checkpoint_messages(ckpt)
         return {
             "block": block_index,
-            "checkpointMessages": serialize_stored_messages(ckpt_messages),
-            "stepMessages": [
-                serialize_stored_messages(messages) for messages in step_messages
-            ],
+            "checkpointMessages": ckpt_messages,
+            "stepMessages": step_messages,
         }
 
     def close(self) -> None:
@@ -196,20 +197,16 @@ class TimelineStore:
         path = self._block_path(block_index)
         if path.exists():
             raw = zstandard.ZstdDecompressor().decompress(path.read_bytes())
-            payload = msgspec.msgpack.decode(raw)
-            scene_steps = cast(
-                list[list[tuple[str, StoredMessage]]], payload["sceneSteps"]
-            )
-            audio_steps = cast(list[list[StoredMessage]], payload["audioSteps"])
+            payload = msgspec.msgpack.decode(raw, type=_BlockFilePayload)
             block = TimelineBlock(
                 steps=[
                     TimelineStep(
                         scene_updates=dict(scene_updates),
-                        audio_updates=list(audio_updates),
+                        audio_updates=audio_updates,
                     )
                     for scene_updates, audio_updates in zip(
-                        scene_steps,
-                        audio_steps,
+                        payload.sceneSteps,
+                        payload.audioSteps,
                         strict=True,
                     )
                 ],
@@ -308,10 +305,10 @@ class TimelineStore:
 
 
 def _write_block_file(path: Path, block: TimelineBlock) -> None:
-    payload = {
-        "sceneSteps": [list(step.scene_updates.items()) for step in block.steps],
-        "audioSteps": [step.audio_updates for step in block.steps],
-    }
+    payload = _BlockFilePayload(
+        sceneSteps=[list(step.scene_updates.items()) for step in block.steps],
+        audioSteps=[step.audio_updates for step in block.steps],
+    )
     packed = msgspec.msgpack.encode(payload)
     compressed = zstandard.ZstdCompressor(level=6).compress(packed)
     path.write_bytes(compressed)

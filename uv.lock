@@ -1207,12 +1207,11 @@ wheels = [
 
 [[package]]
 name = "viser"
-version = "1.0.19"
+version = "1.0.26"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "imageio" },
     { name = "msgspec" },
-    { name = "nodeenv" },
     { name = "numpy" },
     { name = "requests" },
     { name = "rich" },
@@ -1223,14 +1222,14 @@ dependencies = [
     { name = "yourdfpy" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6e/24/2cbdc6978e15f4bf6d67ca1370d269460d11e51a488d1ef4a17638367bb8/viser-1.0.19.tar.gz", hash = "sha256:39c3c7ec4974c96b0a33ee9e7fb2ff2eed682bccf00ba29f539d7b40b10ffc99", size = 4774435, upload-time = "2026-01-17T06:35:53.278Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/12/ce/82a0e50fae21f5e02fcc5d9aff2ab59dccb9c319b6c4cf528f2228049b05/viser-1.0.26.tar.gz", hash = "sha256:dc08c6f505e70324b0603bdddf9714c00ac828c259ee49abd8ad094bfc90c91c", size = 4828261, upload-time = "2026-03-30T11:43:19.513Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/46/1e/2c25d1a3afd2db5b0731ca15479a0bad728ac341a23ab07f7cbf3eecef55/viser-1.0.19-py3-none-any.whl", hash = "sha256:5756c85aca9ab5cccb3fb0f3b6fe39e0a27ff3a00060c4e780785adf600ce925", size = 4856386, upload-time = "2026-01-17T06:35:51.032Z" },
+    { url = "https://files.pythonhosted.org/packages/91/f7/762a2d5fab509d0c632b271e21e634462397cc02cca649771c3e9d2e0bcc/viser-1.0.26-py3-none-any.whl", hash = "sha256:03b177b4ef584f58f7b74fdf44cccb165b8a220ffd90728ef5c1e3d1b1fcf258", size = 4922888, upload-time = "2026-03-30T11:43:21.355Z" },
 ]
 
 [[package]]
 name = "viser4d"
-version = "0.8.6"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "nodeenv" },
@@ -1248,7 +1247,7 @@ dev = [
 requires-dist = [
     { name = "nodeenv", specifier = ">=1.9.1" },
     { name = "numpy", specifier = ">=2.4.1" },
-    { name = "viser", specifier = ">=1.0.19,<1.1" },
+    { name = "viser", specifier = ">=1.0.25,<1.1" },
 ]
 
 [package.metadata.requires-dev]
