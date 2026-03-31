@@ -20,7 +20,7 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.1",
     "nodeenv>=1.9.1",
-    "viser>=1.0.19,<1.1",
+    "viser>=1.0.25,<1.1",
 ]
 
 [project.urls]

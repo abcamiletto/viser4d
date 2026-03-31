@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import inspect
 import threading
 from collections.abc import Awaitable
@@ -161,6 +162,30 @@ class Viser4dServer(viser.ViserServer):
             start_timestep=start_timestep,
             end_timestep=end_timestep,
         )
+
+    def as_html(
+        self,
+        *,
+        dark_mode: bool = False,
+        start_timestep: int = 0,
+        end_timestep: int | None = None,
+    ) -> str:
+        """Get a self-contained HTML string for the recorded timeline."""
+        scene_bytes = self.serialize(
+            start_timestep=start_timestep,
+            end_timestep=end_timestep,
+        )
+        scene_b64 = base64.b64encode(scene_bytes).decode("ascii")
+        client_html = impl.viser_client_html()
+        dark_mode_str = "true" if dark_mode else "false"
+        inject_script = (
+            f"<script>"
+            f'window.__VISER_EMBED_DATA__="{scene_b64}";'
+            f"window.__VISER_EMBED_CONFIG__={{darkMode:{dark_mode_str}}};"
+            f"</script>"
+        )
+        head_end = client_html.index("</head>")
+        return client_html[:head_end] + inject_script + client_html[head_end:]
 
     def stop(self) -> None:
         """Shut down the underlying viser server."""
