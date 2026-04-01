@@ -31,10 +31,6 @@ def store_raw_message(message: impl.Message) -> StoredMessage:
     return StoredMessage(payload, tuple(bytes(buffer) for buffer in buffers))
 
 
-def store_raw_messages(messages: list[impl.Message]) -> list[StoredMessage]:
-    return [store_raw_message(message) for message in messages]
-
-
 def stored_int(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise TypeError(f"Expected int-like stored value, got {type(value).__name__}.")

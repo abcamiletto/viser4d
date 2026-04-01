@@ -182,6 +182,24 @@ def test_at_allows_recreating_timeline_nodes() -> None:
         server.stop()
 
 
+def test_removed_static_nodes_do_not_serialize() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        joint = server.scene.add_frame("/joint")
+        joint.position = (1.0, 2.0, 3.0)
+        joint.remove()
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        joint_messages = [
+            message for _, message in messages if message.get("name") == "/joint"
+        ]
+
+        assert joint_messages == []
+    finally:
+        server.stop()
+
+
 def test_stop_unblocks_sleep_forever() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     sleeper = threading.Thread(target=server.sleep_forever)
