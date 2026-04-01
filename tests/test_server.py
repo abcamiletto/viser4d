@@ -19,13 +19,10 @@ def _deserialize_recording(blob: bytes) -> dict[str, object]:
     return cast(dict[str, object], msgspec.msgpack.decode(hybrid[8 : 8 + msgpack_size]))
 
 
-def test_audio_requires_timestep_context() -> None:
+def test_server_does_not_expose_audio_api() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with pytest.raises(RuntimeError):
-            server.audio.add_track(
-                "/audio", data=np.zeros(4, dtype=np.int16), sample_rate=8_000
-            )
+        assert hasattr(server, "audio") is False
     finally:
         server.stop()
 
@@ -73,14 +70,13 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
         server.stop()
 
 
-def test_at_preserves_server_scene_backwards_compatibility() -> None:
+def test_at_keeps_server_scene_live() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0):
-            joint = server.scene.add_frame("/joint")
-        server.scene.add_frame("/static")
-
-        joint.position = (2.0, 0.0, 0.0)
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+            server.scene.add_frame("/static")
+            joint.position = (2.0, 0.0, 0.0)
 
         recording = _deserialize_recording(server.serialize())
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
@@ -163,8 +159,7 @@ def test_at_allows_recreating_timeline_nodes() -> None:
 
         with server.at(1) as timeline:
             joint = timeline.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
-
-        joint.position = (2.0, 0.0, 0.0)
+            joint.position = (2.0, 0.0, 0.0)
 
         recording = _deserialize_recording(server.serialize())
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
@@ -291,24 +286,14 @@ def test_same_step_audio_events_serialize_without_deduping() -> None:
         server.stop()
 
 
-def test_post_recording_timeline_updates_persist_in_serialization() -> None:
+def test_timeline_handle_updates_require_timestep_context() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
             joint = timeline.scene.add_frame("/joint")
 
-        joint.position = (2.0, 0.0, 0.0)
-
-        recording = _deserialize_recording(server.serialize())
-        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
-        positions = [
-            tuple(cast(list[float], message["position"]))
-            for _, message in messages
-            if message.get("type") == "SetPositionMessage"
-            and message.get("name") == "/joint"
-        ]
-
-        assert positions == [(2.0, 0.0, 0.0)]
+        with pytest.raises(RuntimeError, match="inside server.at\\(t\\)"):
+            joint.position = (2.0, 0.0, 0.0)
     finally:
         server.stop()
 
@@ -318,8 +303,7 @@ def test_late_created_timeline_nodes_keep_their_creation_step() -> None:
     try:
         with server.at(5) as timeline:
             joint = timeline.scene.add_frame("/joint")
-
-        joint.position = (2.0, 0.0, 0.0)
+            joint.position = (2.0, 0.0, 0.0)
 
         recording = _deserialize_recording(server.serialize())
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])

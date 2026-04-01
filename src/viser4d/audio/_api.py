@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .. import _viser_private as impl
 from ._messages import (
     AppendAudioMessage,
     RemoveAudioMessage,
@@ -16,7 +18,7 @@ from .._types import (
 )
 
 if TYPE_CHECKING:
-    from .._server import Viser4dServer
+    from ..timeline._recording import SceneRecorder
 
 
 def _normalize_audio_array(array: np.ndarray) -> np.ndarray:
@@ -99,8 +101,12 @@ class AudioState:
 class AudioHandle:
     """Handle for a timeline-synced audio track."""
 
-    def __init__(self, server: Viser4dServer, state: AudioState):
-        self._server = server
+    def __init__(
+        self,
+        dispatch_update: Callable[[impl.Message], None],
+        state: AudioState,
+    ):
+        self._dispatch_update = dispatch_update
         self._state = state
 
     @property
@@ -110,7 +116,7 @@ class AudioHandle:
     @volume.setter
     def volume(self, value: float) -> None:
         self._state.volume = float(value)
-        self._server._dispatch_audio_update(
+        self._dispatch_update(
             SetAudioVolumeMessage(name=self._state.name, volume=self._state.volume)
         )
 
@@ -121,7 +127,7 @@ class AudioHandle:
     @waveform.setter
     def waveform(self, value: np.ndarray) -> None:
         self._state.waveform = value
-        self._server._dispatch_audio_update(
+        self._dispatch_update(
             SetAudioWaveformMessage(
                 name=self._state.name,
                 waveform=audio_array_payload(self._state.waveform),
@@ -131,7 +137,7 @@ class AudioHandle:
     def append(self, data: np.ndarray) -> None:
         """Append samples and broadcast the incremental chunk update."""
         append_data = self._state.append_chunk(data)
-        self._server._dispatch_audio_update(
+        self._dispatch_update(
             AppendAudioMessage(
                 name=self._state.name,
                 waveform=audio_array_payload(append_data),
@@ -139,14 +145,14 @@ class AudioHandle:
         )
 
     def remove(self) -> None:
-        self._server._dispatch_audio_update(RemoveAudioMessage(name=self._state.name))
+        self._dispatch_update(RemoveAudioMessage(name=self._state.name))
 
 
 class AudioApi:
     """Entry point for timeline-aware audio creation."""
 
-    def __init__(self, server: Viser4dServer) -> None:
-        self._server = server
+    def __init__(self, recorder: SceneRecorder) -> None:
+        self._recorder = recorder
 
     def add_track(
         self,
@@ -156,8 +162,4 @@ class AudioApi:
         sample_rate: int,
     ) -> AudioHandle:
         """Create an audio track for the current ``server.at(t)`` block."""
-        if self._server._recorder.active_step is None:
-            raise RuntimeError("audio.add_track() is only valid inside server.at(t).")
-        return self._server._recorder.add_audio(
-            name, data=data, sample_rate=sample_rate
-        )
+        return self._recorder.add_audio(name, data=data, sample_rate=sample_rate)

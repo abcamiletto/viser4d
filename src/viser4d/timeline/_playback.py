@@ -206,9 +206,7 @@ class ClientPlaybackHandle:
                     playButtonUuid=impl.gui_uuid(self._play_button),
                     pauseButtonUuid=impl.gui_uuid(self._pause_button),
                     speedSyncUuid=impl.gui_uuid(self._speed_sync),
-                    playbackStateSyncUuid=impl.gui_uuid(
-                        self._playback_state_sync
-                    ),
+                    playbackStateSyncUuid=impl.gui_uuid(self._playback_state_sync),
                     timestepSyncUuid=impl.gui_uuid(self._timestep_sync),
                 ),
             ),

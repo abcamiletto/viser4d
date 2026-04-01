@@ -52,9 +52,9 @@ def record_heavy_scene(num_steps: int, num_objects: int) -> viser4d.Viser4dServe
     amp = rng.uniform(0.05, 0.35, size=num_objects).astype(np.float32)
 
     handles = []
-    with server.at(0):
+    with server.at(0) as timeline:
         for i in range(num_objects):
-            h = server.scene.add_frame(f"/obj/{i}", axes_length=0.05)
+            h = timeline.scene.add_frame(f"/obj/{i}", axes_length=0.05)
             h.position = base[i]
             handles.append(h)
 

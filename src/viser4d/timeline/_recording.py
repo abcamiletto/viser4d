@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
 
 from .. import _viser_private as impl
 from .._types import RuntimeBlockPayload
-from ..audio._api import AudioHandle, AudioState, audio_array_payload
+from ..audio._api import AudioApi, AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
 from ._messages_util import store_raw_message
 from ._store import TimelineStore
 
 if TYPE_CHECKING:
-    from ..audio import AudioApi
     from .._server import Viser4dServer
 
 
@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 class TimelineContext:
     scene: impl.SceneApi
     audio: AudioApi
+
+
+@dataclass
+class _WriteSession:
+    step: int
+    messages: list[impl.Message] = field(default_factory=list)
 
 
 class SceneRecorder:
@@ -34,12 +40,12 @@ class SceneRecorder:
         self._server = server
         self._live_scene = server.scene
         self._timeline = timeline
-        self._active_step: int | None = None
-        self._pending_messages: list[impl.Message] | None = None
         self._pending_refresh_from_block: int | None = None
         self._refresh_timer: threading.Timer | None = None
         self._refresh_lock = threading.Lock()
-        self._at_lock = threading.Lock()
+        self._session: contextvars.ContextVar[_WriteSession | None] = (
+            contextvars.ContextVar("viser4d_timeline_session", default=None)
+        )
         self._transport = _TimelineTransport(server, self)
         owner = _TimelineSceneOwner(self._transport)
         self.scene = impl.create_scene_api(
@@ -49,31 +55,21 @@ class SceneRecorder:
         )
         # Reuse viser's existing server-owned client lookup for inbound events.
         impl.set_scene_owner(self.scene, server)
+        self.audio = AudioApi(self)
         self._transport.start()
-
-    @property
-    def active_step(self) -> int | None:
-        return self._active_step
 
     @contextlib.contextmanager
     def at(self, t: int) -> Iterator[TimelineContext]:
-        if not self._at_lock.acquire(blocking=False):
-            raise RuntimeError("Concurrent server.at(t) blocks are not supported.")
-        self._active_step = self._timeline.validate_step(t)
-        self._pending_messages = []
+        session = _WriteSession(step=self._timeline.validate_step(t))
+        token = self._session.set(session)
         try:
-            yield TimelineContext(scene=self.scene, audio=self._server.audio)
+            yield TimelineContext(scene=self.scene, audio=self.audio)
         finally:
-            pending_messages = self._pending_messages
-            self._pending_messages = None
-            active_step = self._active_step
-            self._active_step = None
-            self._at_lock.release()
+            self._session.reset(token)
 
-        if pending_messages is None or active_step is None or not pending_messages:
+        if not session.messages:
             return
-
-        self._record_step(active_step, pending_messages)
+        self._record_step(session.step, session.messages)
 
     def add_audio(
         self,
@@ -82,37 +78,35 @@ class SceneRecorder:
         data: np.ndarray,
         sample_rate: int,
     ) -> AudioHandle:
+        session = self._require_current_session()
         state = AudioState(
             name=name,
             sample_rate=sample_rate,
             waveform=np.ascontiguousarray(data),
         )
-        handle = AudioHandle(self._server, state)
-        assert self._active_step is not None
-        self._record_step(
-            self._active_step,
-            [
-                AddAudioMessage(
-                    name=name,
-                    sampleRate=state.sample_rate,
-                    waveform=audio_array_payload(state.waveform),
-                    volume=state.volume,
-                )
-            ],
+        session.messages.append(
+            AddAudioMessage(
+                name=name,
+                sampleRate=state.sample_rate,
+                waveform=audio_array_payload(state.waveform),
+                volume=state.volume,
+            )
         )
+        handle = AudioHandle(self.dispatch_audio_update, state)
         return handle
 
     def route_message(self, message: impl.Message) -> None:
-        """Route a message to the pending recording batch or the live scene."""
-        pending_messages = self._pending_messages
-        if pending_messages is not None:
-            pending_messages.append(message)
+        """Route a timeline-scene message to the current recording session."""
+        session = self._current_session()
+        if session is not None:
+            session.messages.append(message)
             return
-        self._record_live_scene_message(message)
+        raise RuntimeError("Timeline scene updates are only valid inside server.at(t).")
 
     def dispatch_audio_update(self, message: impl.Message) -> None:
-        if self._active_step is not None:
-            self._record_step(self._active_step, [message])
+        session = self._current_session()
+        if session is not None:
+            session.messages.append(message)
             return
         stored_message = store_raw_message(message)
         for playback in self._server.get_client_playbacks().values():
@@ -131,16 +125,16 @@ class SceneRecorder:
         self._timeline.record_step(step, messages)
         self._queue_client_block_refresh(self._timeline.block_index_for_step(step))
 
-    def _record_live_scene_message(self, message: impl.Message) -> None:
-        if impl.is_create_scene_node_message(message):
+    def _current_session(self) -> _WriteSession | None:
+        return self._session.get()
+
+    def _require_current_session(self) -> _WriteSession:
+        session = self._current_session()
+        if session is None:
             raise RuntimeError(
-                "Timeline scene nodes can only be created inside server.at(t)."
+                "timeline.audio.add_track() is only valid inside server.at(t)."
             )
-        start_step = self._timeline.record_live_scene_update(message)
-        self._broadcast_scene_message(message, start_step)
-        self._queue_client_block_refresh(
-            self._timeline.block_index_for_step(start_step)
-        )
+        return session
 
     def _queue_client_block_refresh(self, changed_block: int) -> None:
         with self._refresh_lock:
@@ -174,15 +168,6 @@ class SceneRecorder:
                     payload = self._timeline.block_payload(block_index)
                     payloads[block_index] = payload
                 playback.load_block(payload)
-
-    def _broadcast_scene_message(self, message: impl.Message, start_step: int) -> None:
-        for client in self._server.get_clients().values():
-            if message.excluded_self_client == client.client_id:
-                continue
-            playback = self._server.get_client_playback(client.client_id)
-            if playback is None or playback.current_timestep < start_step:
-                continue
-            impl.queue_client_message(client, message)
 
     def _validate_step_messages(self, messages: list[impl.Message]) -> None:
         for message in messages:

@@ -13,7 +13,6 @@ from . import _viser_private as impl
 from ._export import ExportBuilder
 from ._runtime import runtime_source
 from ._runtime_messages import Viser4dRuntimeReadyMessage
-from .audio import AudioApi
 from ._validation import require_positive_float
 from .timeline._playback import ClientPlaybackHandle
 from .timeline._recording import SceneRecorder, TimelineContext
@@ -25,21 +24,6 @@ if TYPE_CHECKING:
 
 class Viser4dServer(viser.ViserServer):
     """Viser server with timestep recording, playback, and synced audio."""
-
-    # Override the parent's plain ``scene`` attribute with a property so that
-    # ``server.scene`` transparently returns the timeline-owned scene API while
-    # inside a ``server.at(t)`` block.  Outside of ``at()``, it returns the
-    # regular live scene.
-    @property
-    def scene(self) -> impl.SceneApi:
-        recorder = self.__dict__.get("_recorder")
-        if recorder is not None and recorder.active_step is not None:
-            return recorder.scene
-        return self._live_scene
-
-    @scene.setter
-    def scene(self, value: impl.SceneApi) -> None:
-        self._live_scene = value
 
     def __init__(self, num_steps: int, fps: float = 30.0, **kwargs) -> None:
         """Initialize the timeline runtime and client playback state."""
@@ -64,7 +48,6 @@ class Viser4dServer(viser.ViserServer):
         self._stop_event = threading.Event()
         self._recorder = SceneRecorder(self, self._timeline)
         self._export_builder = ExportBuilder(self, self._timeline)
-        self.audio = AudioApi(self)
 
         # Load the browser runtime once so live clients can handle timeline/audio messages.
         impl.queue_server_message(self, impl.run_javascript_message(runtime_source()))
@@ -90,12 +73,7 @@ class Viser4dServer(viser.ViserServer):
                 self._client_playbacks.pop(client.client_id, None)
 
     def at(self, t: int) -> AbstractContextManager[TimelineContext]:
-        """Expose the timeline APIs for timestep ``t``.
-
-        Existing code can keep using ``server.scene`` inside the context. The
-        returned ``timeline`` object provides the same timeline-owned scene and
-        audio APIs explicitly.
-        """
+        """Return the explicit timeline frame API for timestep ``t``."""
         return self._recorder.at(t)
 
     @property
@@ -198,9 +176,6 @@ class Viser4dServer(viser.ViserServer):
         self._recorder.close()
         self._timeline.close()
         super().stop()
-
-    def _dispatch_audio_update(self, message: impl.Message) -> None:
-        self._recorder.dispatch_audio_update(message)
 
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:
         with self._client_playbacks_lock:
