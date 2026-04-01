@@ -20,6 +20,8 @@ RuntimeMethod = Literal[
     "setSpeed",
 ]
 
+RuntimeEvent = Literal["blockRequest", "playbackState", "ready", "speed", "timestep"]
+
 
 @dataclasses.dataclass
 class Viser4dRuntimeMessage(impl.Message):
@@ -32,7 +34,12 @@ class Viser4dRuntimeMessage(impl.Message):
 
 
 @dataclasses.dataclass
-class Viser4dRuntimeReadyMessage(impl.Message):
+class Viser4dRuntimeEventMessage(impl.Message):
+    event: RuntimeEvent
+    step: int | None = None
+    speed: float | None = None
+    isPlaying: bool | None = None
+
     @override
     def redundancy_key(self) -> str:
-        return type(self).__name__
+        return str(uuid.uuid4())

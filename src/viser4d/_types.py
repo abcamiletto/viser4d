@@ -29,15 +29,11 @@ class RuntimeConfig(TypedDict):
 
 
 class ClientRuntimeConfig(RuntimeConfig):
-    blockRequestSyncUuid: str
     timelineSliderUuid: str
     speedSliderUuid: str
     stepButtonsUuid: str
     playButtonUuid: str
     pauseButtonUuid: str
-    speedSyncUuid: str
-    playbackStateSyncUuid: str
-    timestepSyncUuid: str
 
 
 class RuntimeBlockPayload(TypedDict):

@@ -6,15 +6,11 @@ export type RuntimeConfig = {
   timelineFps: number;
   speed: number;
   loop: boolean;
-  blockRequestSyncUuid: string | null;
   timelineSliderUuid: string | null;
   speedSliderUuid: string | null;
   stepButtonsUuid: string | null;
   playButtonUuid: string | null;
   pauseButtonUuid: string | null;
-  speedSyncUuid: string | null;
-  playbackStateSyncUuid: string | null;
-  timestepSyncUuid: string | null;
 };
 
 export type GuiUpdateMessage = {

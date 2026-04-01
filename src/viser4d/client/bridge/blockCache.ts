@@ -1,4 +1,4 @@
-import type { RuntimeMessage, RuntimeValue } from "../binary";
+import type { RuntimeMessage } from "../binary";
 
 export type LoadedBlock = {
   checkpointMessages: RuntimeMessage[];
@@ -7,14 +7,11 @@ export type LoadedBlock = {
 
 export class BlockCache {
   blockSize = 64;
-  blockRequestSyncUuid: string | null = null;
   pendingStep: number | null = null;
   private blocks = new Map<number, LoadedBlock>();
   private requestedBlocks = new Set<number>();
 
-  constructor(
-    private sendGuiUpdate: (uuid: string, value: RuntimeValue) => void,
-  ) {}
+  constructor(private requestStep: (step: number) => void) {}
 
   getBlock(step: number): LoadedBlock | null {
     return this.blocks.get(Math.floor(step / this.blockSize)) ?? null;
@@ -51,9 +48,9 @@ export class BlockCache {
     }
     this.pendingStep = step;
     const blockIndex = this.blockIndexOf(step);
-    if (!this.requestedBlocks.has(blockIndex) && this.blockRequestSyncUuid) {
+    if (!this.requestedBlocks.has(blockIndex)) {
       this.requestedBlocks.add(blockIndex);
-      this.sendGuiUpdate(this.blockRequestSyncUuid, step);
+      this.requestStep(step);
     }
     return false;
   }

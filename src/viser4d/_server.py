@@ -12,7 +12,7 @@ import viser
 from . import _viser_private as impl
 from ._export import ExportBuilder
 from ._runtime import runtime_source
-from ._runtime_messages import Viser4dRuntimeReadyMessage
+from ._runtime_messages import Viser4dRuntimeEventMessage
 from ._validation import require_positive_float
 from .timeline._playback import ClientPlaybackHandle
 from .timeline._recording import SceneRecorder, TimelineContext
@@ -53,8 +53,8 @@ class Viser4dServer(viser.ViserServer):
         impl.queue_server_message(self, impl.run_javascript_message(runtime_source()))
         impl.register_message_handler(
             self,
-            Viser4dRuntimeReadyMessage,
-            self._handle_runtime_ready,
+            Viser4dRuntimeEventMessage,
+            self._handle_runtime_event,
         )
 
         @self.on_client_connect
@@ -181,12 +181,12 @@ class Viser4dServer(viser.ViserServer):
         with self._client_playbacks_lock:
             return list(self._client_playbacks.values())
 
-    def _handle_runtime_ready(
-        self, client_id: int, _message: Viser4dRuntimeReadyMessage
+    def _handle_runtime_event(
+        self, client_id: int, message: Viser4dRuntimeEventMessage
     ) -> None:
         playback = self.get_client_playback(client_id)
         if playback is not None:
-            playback.mark_runtime_ready()
+            playback.handle_runtime_event(message)
 
     def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):

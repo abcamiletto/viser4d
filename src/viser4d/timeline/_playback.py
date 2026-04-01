@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import Future
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import viser
 
 from .. import _viser_private as impl
 from .._hybrid import inflate_stored_message, inflate_stored_messages
+from .._runtime_messages import Viser4dRuntimeEventMessage, Viser4dRuntimeMessage
 from .._types import ClientRuntimeConfig, RuntimeBlockPayload, StoredMessage
-from .._runtime_messages import Viser4dRuntimeMessage
 from .._validation import require_positive_float
 
 if TYPE_CHECKING:
@@ -21,8 +21,7 @@ class ClientPlaybackHandle:
     """Per-client playback controls backed by the injected browser runtime.
 
     The visible playback widgets stay client-local in the browser. Python only
-    observes committed timestep changes through the hidden sync control and
-    sends explicit server-side broadcast commands.
+    mirrors runtime state changes and sends explicit server-side commands.
     """
 
     def __init__(
@@ -43,36 +42,6 @@ class ClientPlaybackHandle:
         self._runtime_ready = False
         self._lock = threading.RLock()
         self._create_gui(brand_color)
-
-        @self._block_request_sync.on_update
-        def _request_blocks(_event: Any) -> None:
-            step = self._require_timestep(int(self._block_request_sync.value))
-            self._sync_loaded_blocks(step, force=True)
-
-        @self._timestep_sync.on_update
-        def _sync_timestep(_event: Any) -> None:
-            timestep = self._require_timestep(int(self._timestep_sync.value))
-            with self._lock:
-                self._current_timestep = timestep
-            self._sync_loaded_blocks(timestep)
-            self._server._dispatch_timestep_change(self._client, timestep)
-
-        @self._speed_sync.on_update
-        def _sync_speed(_event: Any) -> None:
-            with self._lock:
-                self._speed = require_positive_float(
-                    "speed", float(self._speed_sync.value)
-                )
-
-        @self._playback_state_sync.on_update
-        def _sync_playback(_event: Any) -> None:
-            is_playing = bool(self._playback_state_sync.value)
-            with self._lock:
-                if is_playing == self._is_playing:
-                    return
-                self._is_playing = is_playing
-            self._server._dispatch_playback_change(self._client, is_playing)
-
         self._sync_runtime_config()
         self._sync_loaded_blocks(self._current_timestep, force=True)
         # New clients need the initial timeline scene state before playback starts.
@@ -177,15 +146,37 @@ class ClientPlaybackHandle:
             )
         )
 
-    def mark_runtime_ready(self) -> None:
-        with self._lock:
-            if self._runtime_ready:
-                return
-            self._runtime_ready = True
-            pending_messages = self._pending_runtime_messages
-            self._pending_runtime_messages = []
-        for message in pending_messages:
-            impl.queue_client_message(self._client, message)
+    def handle_runtime_event(self, message: Viser4dRuntimeEventMessage) -> None:
+        if message.event == "ready":
+            with self._lock:
+                if self._runtime_ready:
+                    return
+                self._runtime_ready = True
+                pending_messages = self._pending_runtime_messages
+                self._pending_runtime_messages = []
+            for pending_message in pending_messages:
+                impl.queue_client_message(self._client, pending_message)
+            return
+        if message.event == "blockRequest" and message.step is not None:
+            self._sync_loaded_blocks(self._require_timestep(message.step), force=True)
+            return
+        if message.event == "timestep" and message.step is not None:
+            timestep = self._require_timestep(message.step)
+            with self._lock:
+                self._current_timestep = timestep
+            self._sync_loaded_blocks(timestep)
+            self._server._dispatch_timestep_change(self._client, timestep)
+            return
+        if message.event == "speed" and message.speed is not None:
+            with self._lock:
+                self._speed = require_positive_float("speed", message.speed)
+            return
+        if message.event == "playbackState" and message.isPlaying is not None:
+            with self._lock:
+                if message.isPlaying == self._is_playing:
+                    return
+                self._is_playing = message.isPlaying
+            self._server._dispatch_playback_change(self._client, message.isPlaying)
 
     def _sync_runtime_config(self) -> None:
         with self._lock:
@@ -199,15 +190,11 @@ class ClientPlaybackHandle:
                     timelineFps=self._server.fps,
                     speed=speed,
                     loop=loop,
-                    blockRequestSyncUuid=impl.gui_uuid(self._block_request_sync),
                     timelineSliderUuid=impl.gui_uuid(self._timeline_slider),
                     speedSliderUuid=impl.gui_uuid(self._speed_slider),
                     stepButtonsUuid=impl.gui_uuid(self._step_buttons),
                     playButtonUuid=impl.gui_uuid(self._play_button),
                     pauseButtonUuid=impl.gui_uuid(self._pause_button),
-                    speedSyncUuid=impl.gui_uuid(self._speed_sync),
-                    playbackStateSyncUuid=impl.gui_uuid(self._playback_state_sync),
-                    timestepSyncUuid=impl.gui_uuid(self._timestep_sync),
                 ),
             ),
         )
@@ -215,24 +202,6 @@ class ClientPlaybackHandle:
     def _create_gui(self, brand_color: tuple[int, int, int] | None) -> None:
         max_step = self._server.num_steps - 1
         gui = self._client.gui
-        self._block_request_sync = gui.add_number(
-            "__viser4d_block_request_sync__",
-            0,
-            min=0,
-            max=max_step,
-            step=1,
-            visible=False,
-        )
-        self._speed_sync = gui.add_number(
-            "__viser4d_speed_sync__", self._speed, visible=False
-        )
-        self._playback_state_sync = gui.add_checkbox(
-            "__viser4d_playback_state_sync__", False, visible=False
-        )
-        # Hidden control used by the browser runtime to report the active timestep back.
-        self._timestep_sync = gui.add_number(
-            "__viser4d_timestep_sync__", 0, min=0, max=max_step, step=1, visible=False
-        )
         # High order so the playback folder always sorts below user-added GUI.
         with gui.add_folder("Playback", order=_PLAYBACK_ORDER):
             self._timeline_slider = gui.add_slider(

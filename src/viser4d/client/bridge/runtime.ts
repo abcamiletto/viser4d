@@ -68,6 +68,32 @@ type RuntimeControlMessage =
       payload: RuntimeMessage;
     };
 
+type RuntimeEventMessage =
+  | {
+      type: "Viser4dRuntimeEventMessage";
+      event: "blockRequest";
+      step: number;
+    }
+  | {
+      type: "Viser4dRuntimeEventMessage";
+      event: "timestep";
+      step: number;
+    }
+  | {
+      type: "Viser4dRuntimeEventMessage";
+      event: "speed";
+      speed: number;
+    }
+  | {
+      type: "Viser4dRuntimeEventMessage";
+      event: "playbackState";
+      isPlaying: boolean;
+    }
+  | {
+      type: "Viser4dRuntimeEventMessage";
+      event: "ready";
+    };
+
 const debugState = {
   enabled: false,
   logs: [] as Array<{ time: number; event: string; payload: RuntimeValue }>,
@@ -104,15 +130,11 @@ export class TimelineRuntime {
     timelineFps: 30,
     speed: 1,
     loop: false,
-    blockRequestSyncUuid: null,
     timelineSliderUuid: null,
     speedSliderUuid: null,
     stepButtonsUuid: null,
     playButtonUuid: null,
     pauseButtonUuid: null,
-    speedSyncUuid: null,
-    playbackStateSyncUuid: null,
-    timestepSyncUuid: null,
   };
 
   private lastLocalSliderStep = -1;
@@ -122,8 +144,12 @@ export class TimelineRuntime {
     () => this.engine.getTransportStep(),
     (event, payload) => debugState.push(event, payload),
   );
-  private readonly blocks: BlockCache = new BlockCache((uuid, value) =>
-    this.sendGuiUpdate(uuid, value),
+  private readonly blocks: BlockCache = new BlockCache((step) =>
+    this.sendRuntimeEvent({
+      type: "Viser4dRuntimeEventMessage",
+      event: "blockRequest",
+      step,
+    }),
   );
   private readonly scene: SceneApplicator = new SceneApplicator(
     (messages) => this.pushMessages(messages),
@@ -175,7 +201,6 @@ export class TimelineRuntime {
   configure(config: Partial<RuntimeConfig>): void {
     this.config = { ...this.config, ...config };
     this.blocks.blockSize = this.config.blockSize;
-    this.blocks.blockRequestSyncUuid = this.config.blockRequestSyncUuid;
     this.engine.updateConfig(this.config);
     this.audio.setStepRate(this.config.timelineFps);
     debugState.push("runtime.configure", this.config);
@@ -499,9 +524,7 @@ export class TimelineRuntime {
     if (this.getViewer().messageSource !== "websocket") {
       return;
     }
-    this.getViewer().mutable.current.sendMessage({
-      type: "Viser4dRuntimeReadyMessage",
-    });
+    this.sendRuntimeEvent({ type: "Viser4dRuntimeEventMessage", event: "ready" });
   }
 
   private pushMessages(messages: RuntimeMessage[]): void {
@@ -512,12 +535,8 @@ export class TimelineRuntime {
     this.getViewer().mutable.current.messageQueue.push(...messages);
   }
 
-  private sendGuiUpdate(uuid: string, value: RuntimeValue): void {
-    this.getViewer().mutable.current.sendMessage({
-      type: "GuiUpdateMessage",
-      uuid,
-      updates: { value },
-    });
+  private sendRuntimeEvent(message: RuntimeEventMessage): void {
+    this.getViewer().mutable.current.sendMessage(message);
   }
 
   private syncPlaybackButtons(): void {
@@ -551,14 +570,15 @@ export class TimelineRuntime {
 
   private sendTimestepToServer(step: number, force = false): void {
     const clampedStep = Math.max(0, Math.min(this.config.numSteps - 1, step));
-    if (!this.config.timestepSyncUuid) {
-      return;
-    }
     if (!force && clampedStep === this.lastSyncedStep) {
       return;
     }
     this.lastSyncedStep = clampedStep;
-    this.sendGuiUpdate(this.config.timestepSyncUuid, clampedStep);
+    this.sendRuntimeEvent({
+      type: "Viser4dRuntimeEventMessage",
+      event: "timestep",
+      step: clampedStep,
+    });
   }
 
   private syncTimestepToServer(step: number, force = false): void {
@@ -603,15 +623,19 @@ export class TimelineRuntime {
   }
 
   private sendSpeedToServer(speed: number): void {
-    if (this.config.speedSyncUuid) {
-      this.sendGuiUpdate(this.config.speedSyncUuid, speed);
-    }
+    this.sendRuntimeEvent({
+      type: "Viser4dRuntimeEventMessage",
+      event: "speed",
+      speed,
+    });
   }
 
   private sendPlaybackStateToServer(isPlaying: boolean): void {
-    if (this.config.playbackStateSyncUuid) {
-      this.sendGuiUpdate(this.config.playbackStateSyncUuid, isPlaying);
-    }
+    this.sendRuntimeEvent({
+      type: "Viser4dRuntimeEventMessage",
+      event: "playbackState",
+      isPlaying,
+    });
   }
 }
 
