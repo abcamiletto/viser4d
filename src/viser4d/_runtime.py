@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import json
 import pathlib
 
 from . import _client_autobuild
-from . import _viser_private as impl
-from ._hybrid import encode_hybrid_document_base64
-from ._types import ClientRuntimeConfig, RuntimeMethod, RuntimePayload
 
 
 RUNTIME_MARKER = "/*__VISER4D_RUNTIME__*/"
@@ -22,66 +18,3 @@ def runtime_source() -> str:
             "Missing generated client bundle at src/viser4d/runtime.js. "
             "viser4d could not rebuild it automatically."
         ) from exc
-
-
-def client_runtime_config_payload(
-    *,
-    num_steps: int,
-    block_size: int,
-    timeline_fps: float,
-    speed: float,
-    loop: bool,
-    block_request_sync_uuid: str,
-    timeline_slider_uuid: str,
-    speed_slider_uuid: str,
-    step_buttons_uuid: str,
-    play_button_uuid: str,
-    pause_button_uuid: str,
-    speed_sync_uuid: str,
-    playback_state_sync_uuid: str,
-    timestep_sync_uuid: str,
-) -> ClientRuntimeConfig:
-    return ClientRuntimeConfig(
-        numSteps=num_steps,
-        blockSize=block_size,
-        timelineFps=timeline_fps,
-        speed=speed,
-        loop=loop,
-        blockRequestSyncUuid=block_request_sync_uuid,
-        timelineSliderUuid=timeline_slider_uuid,
-        speedSliderUuid=speed_slider_uuid,
-        stepButtonsUuid=step_buttons_uuid,
-        playButtonUuid=play_button_uuid,
-        pauseButtonUuid=pause_button_uuid,
-        speedSyncUuid=speed_sync_uuid,
-        playbackStateSyncUuid=playback_state_sync_uuid,
-        timestepSyncUuid=timestep_sync_uuid,
-    )
-
-
-def make_runtime_message(
-    method: RuntimeMethod,
-    payload: RuntimePayload,
-) -> impl.Message:
-    encoded_payload = encode_hybrid_document_base64(payload)
-    source = (
-        RUNTIME_MARKER
-        + f"""
-(() => {{
-  const invoke = () => {{
-    if (!window.__VISER4D__) return false;
-    window.__VISER4D__.invokeRuntimeCall(
-      {json.dumps(method)},
-      {json.dumps(encoded_payload)},
-    );
-    return true;
-  }};
-  if (invoke()) return;
-  const timer = window.setInterval(() => {{
-    if (!invoke()) return;
-    window.clearInterval(timer);
-  }}, 50);
-}})();
-"""
-    )
-    return impl.run_javascript_message(source)

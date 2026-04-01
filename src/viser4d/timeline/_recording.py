@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 import numpy as np
 
 from .. import _viser_private as impl
+from .._types import RuntimeBlockPayload
 from ..audio._api import AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
 from ._messages_util import store_raw_message
@@ -113,10 +114,9 @@ class SceneRecorder:
         if self._active_step is not None:
             self._record_step(self._active_step, [message])
             return
-        self._server._send_runtime_call(
-            "applyMessageUpdate",
-            store_raw_message(message),
-        )
+        stored_message = store_raw_message(message)
+        for playback in self._server.get_client_playbacks().values():
+            playback.apply_message_update(stored_message)
 
     def close(self) -> None:
         with self._refresh_lock:
@@ -164,7 +164,7 @@ class SceneRecorder:
             self._refresh_timer = None
         if changed_block is None:
             return
-        payloads: dict[int, dict[str, object]] = {}
+        payloads: dict[int, RuntimeBlockPayload] = {}
         for playback in self._server.get_client_playbacks().values():
             for block_index in sorted(playback.loaded_blocks):
                 if block_index < changed_block:
@@ -173,7 +173,7 @@ class SceneRecorder:
                 if payload is None:
                     payload = self._timeline.block_payload(block_index)
                     payloads[block_index] = payload
-                playback._send_runtime_call("loadBlock", payload)
+                playback.load_block(payload)
 
     def _broadcast_scene_message(self, message: impl.Message, start_step: int) -> None:
         for client in self._server.get_clients().values():

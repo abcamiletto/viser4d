@@ -1,8 +1,6 @@
 import {
-  decodeHybridPayloadBase64,
   type RuntimeMessage,
   type RuntimeValue,
-  normalizeTransportMessage,
 } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { isAudioMessage } from "../audio/messages";
@@ -18,6 +16,57 @@ import {
   type ViewerMessage,
   type ViewerLike,
 } from "./protocol";
+
+type RuntimeControlMessage =
+  | {
+      type: "Viser4dRuntimeMessage";
+      method: "configure";
+      payload: Partial<RuntimeConfig>;
+    }
+  | {
+      type: "Viser4dRuntimeMessage";
+      method: "loadBlock";
+      payload: {
+        block: number;
+        checkpointMessages: RuntimeMessage[];
+        stepMessages: RuntimeMessage[][];
+      };
+    }
+  | {
+      type: "Viser4dRuntimeMessage";
+      method: "evictBlock";
+      payload: { block: number };
+    }
+  | {
+      type: "Viser4dRuntimeMessage";
+      method: "seek";
+      payload: { step: number };
+    }
+  | {
+      type: "Viser4dRuntimeMessage";
+      method: "refresh";
+      payload: null;
+    }
+  | {
+      type: "Viser4dRuntimeMessage";
+      method: "play";
+      payload: { speed: number; loop: boolean };
+    }
+  | {
+      type: "Viser4dRuntimeMessage";
+      method: "pause";
+      payload: null;
+    }
+  | {
+      type: "Viser4dRuntimeMessage";
+      method: "setSpeed";
+      payload: { speed: number; loop: boolean };
+    }
+  | {
+      type: "Viser4dRuntimeMessage";
+      method: "applyMessageUpdate";
+      payload: RuntimeMessage;
+    };
 
 const debugState = {
   enabled: false,
@@ -123,19 +172,6 @@ export class TimelineRuntime {
     return this.scene.appliedStep;
   }
 
-  // --- Public API (called from Python runtime messages) ---
-
-  invokeRuntimeCall(method: string, encodedPayload: string): void {
-    const target = this[method as keyof TimelineRuntime];
-    if (typeof target !== "function") {
-      throw new Error(`[viser4d] Unknown runtime method: ${method}`);
-    }
-    const payload = decodeHybridPayloadBase64<Record<string, RuntimeValue>>(
-      encodedPayload,
-    );
-    (target as (payload: Record<string, RuntimeValue>) => void).call(this, payload);
-  }
-
   configure(config: Partial<RuntimeConfig>): void {
     this.config = { ...this.config, ...config };
     this.blocks.blockSize = this.config.blockSize;
@@ -239,6 +275,7 @@ export class TimelineRuntime {
       if (this.getViewer().messageSource !== "websocket") {
         this.installPlaybackMonitor();
       }
+      this.announceRuntimeReady();
     } catch {
       getWindow().requestAnimationFrame(() => this.installWhenReady());
     }
@@ -254,11 +291,10 @@ export class TimelineRuntime {
     queue.push = (...messages: RuntimeMessage[]): number => {
       const forwarded: RuntimeMessage[] = [];
       for (const message of messages) {
-        const normalized = normalizeTransportMessage(message);
-        if (this.handleQueuedMessage(normalized)) {
+        if (this.handleQueuedMessage(message)) {
           continue;
         }
-        forwarded.push(normalized);
+        forwarded.push(message);
       }
       return originalPush(...forwarded);
     };
@@ -347,6 +383,10 @@ export class TimelineRuntime {
   }
 
   private handleQueuedMessage(message: RuntimeMessage): boolean {
+    if (message.type === "Viser4dRuntimeMessage") {
+      this.handleRuntimeMessage(message as RuntimeControlMessage);
+      return true;
+    }
     if (!isAudioMessage(message)) {
       return false;
     }
@@ -367,6 +407,38 @@ export class TimelineRuntime {
       this.playbackAudio.applyLiveMessages(this.playbackTime, [message]);
     }
     return true;
+  }
+
+  private handleRuntimeMessage(message: RuntimeControlMessage): void {
+    switch (message.method) {
+      case "configure":
+        this.configure(message.payload);
+        return;
+      case "loadBlock":
+        this.loadBlock(message.payload);
+        return;
+      case "evictBlock":
+        this.evictBlock(message.payload);
+        return;
+      case "seek":
+        this.seek(message.payload);
+        return;
+      case "refresh":
+        this.refresh();
+        return;
+      case "play":
+        this.play(message.payload);
+        return;
+      case "pause":
+        this.pause();
+        return;
+      case "setSpeed":
+        this.setSpeed(message.payload);
+        return;
+      case "applyMessageUpdate":
+        this.applyMessageUpdate(message.payload);
+        return;
+    }
   }
 
   // --- File/embed playback sync ---
@@ -422,6 +494,15 @@ export class TimelineRuntime {
   }
 
   // --- Server sync helpers ---
+
+  private announceRuntimeReady(): void {
+    if (this.getViewer().messageSource !== "websocket") {
+      return;
+    }
+    this.getViewer().mutable.current.sendMessage({
+      type: "Viser4dRuntimeReadyMessage",
+    });
+  }
 
   private pushMessages(messages: RuntimeMessage[]): void {
     if (this.queuePush) {

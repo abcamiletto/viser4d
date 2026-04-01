@@ -8,7 +8,6 @@
     "typecheck:runtime": "tsc -p src/viser4d/client/tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@msgpack/msgpack": "^3.1.2",
     "esbuild": "^0.25.10",
     "typescript": "^5.9.2"
   }

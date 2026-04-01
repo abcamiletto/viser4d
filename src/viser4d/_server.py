@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING, Any, Callable
 import viser
 
 from . import _viser_private as impl
-from .audio import AudioApi
 from ._export import ExportBuilder
-from ._types import RuntimeMethod, RuntimePayload
-from ._runtime import make_runtime_message, runtime_source
+from ._runtime import runtime_source
+from ._runtime_messages import Viser4dRuntimeReadyMessage
+from .audio import AudioApi
 from ._validation import require_positive_float
 from .timeline._playback import ClientPlaybackHandle
 from .timeline._recording import SceneRecorder, TimelineContext
@@ -68,6 +68,11 @@ class Viser4dServer(viser.ViserServer):
 
         # Load the browser runtime once so live clients can handle timeline/audio messages.
         impl.queue_server_message(self, impl.run_javascript_message(runtime_source()))
+        impl.register_message_handler(
+            self,
+            Viser4dRuntimeReadyMessage,
+            self._handle_runtime_ready,
+        )
 
         @self.on_client_connect
         def _attach_playback(client: ClientHandle) -> None:
@@ -197,15 +202,16 @@ class Viser4dServer(viser.ViserServer):
     def _dispatch_audio_update(self, message: impl.Message) -> None:
         self._recorder.dispatch_audio_update(message)
 
-    def _send_runtime_call(
-        self, method: RuntimeMethod, payload: RuntimePayload
-    ) -> None:
-        message = make_runtime_message(method, payload)
-        impl.queue_server_message(self, message)
-
     def _client_playback_values(self) -> list[ClientPlaybackHandle]:
         with self._client_playbacks_lock:
             return list(self._client_playbacks.values())
+
+    def _handle_runtime_ready(
+        self, client_id: int, _message: Viser4dRuntimeReadyMessage
+    ) -> None:
+        playback = self.get_client_playback(client_id)
+        if playback is not None:
+            playback.mark_runtime_ready()
 
     def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
