@@ -1,5 +1,6 @@
 import threading
 import time
+from types import SimpleNamespace
 from typing import cast
 
 import msgspec
@@ -8,6 +9,8 @@ import pytest
 import zstandard
 
 import viser4d
+from viser4d import _server as server_module
+from viser4d._runtime_messages import Viser4dRuntimeEventMessage
 
 
 def _deserialize_recording(blob: bytes) -> dict[str, object]:
@@ -377,5 +380,33 @@ def test_serialization_survives_block_eviction_to_disk() -> None:
             (192.0, 0.0, 0.0),
             (256.0, 0.0, 0.0),
         ]
+    finally:
+        server.stop()
+
+
+def test_runtime_ready_before_playback_attach_is_replayed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+
+    class FakePlayback:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.events: list[str] = []
+
+        def handle_runtime_event(self, message: Viser4dRuntimeEventMessage) -> None:
+            self.events.append(message.event)
+
+    monkeypatch.setattr(server_module, "ClientPlaybackHandle", FakePlayback)
+
+    try:
+        server._handle_runtime_event(123, Viser4dRuntimeEventMessage(event="ready"))
+        attach_playback = server._client_connect_cb[-1]
+        attach_playback(SimpleNamespace(client_id=123))
+
+        playback = server.get_client_playback(123)
+
+        assert isinstance(playback, FakePlayback)
+        assert playback.events == ["ready"]
+        assert 123 not in server._pending_runtime_ready_client_ids
     finally:
         server.stop()
