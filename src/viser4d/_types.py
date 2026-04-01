@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, TypeAlias, TypedDict
+from typing import TypeAlias, TypedDict
 
 
 StoredPayload: TypeAlias = dict[str, object]
@@ -41,16 +40,7 @@ class ClientRuntimeConfig(RuntimeConfig):
     timestepSyncUuid: str
 
 
-RuntimeMethod: TypeAlias = Literal[
-    "applyMessageUpdate",
-    "configure",
-    "evictBlock",
-    "loadBlock",
-    "pause",
-    "play",
-    "refresh",
-    "seek",
-    "setSpeed",
-]
-
-RuntimePayload: TypeAlias = Mapping[str, object] | StoredMessage
+class RuntimeBlockPayload(TypedDict):
+    block: int
+    checkpointMessages: list[StoredMessage]
+    stepMessages: list[list[StoredMessage]]

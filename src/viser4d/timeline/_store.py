@@ -15,7 +15,7 @@ import zstandard
 
 from .. import _viser_private as impl
 from ..audio._messages import is_audio_message
-from .._types import StoredMessage
+from .._types import RuntimeBlockPayload, StoredMessage
 from ._checkpoint import (
     CheckpointState,
     apply_steps,
@@ -147,7 +147,7 @@ class TimelineStore:
     def block_index_for_step(self, step: int) -> int:
         return self.validate_step(step) // self.block_size
 
-    def block_payload(self, block_index: int) -> dict[str, object]:
+    def block_payload(self, block_index: int) -> RuntimeBlockPayload:
         with self._lock:
             block_index = self._validate_block_index(block_index)
             ckpt = self._checkpoint_for_block(block_index)

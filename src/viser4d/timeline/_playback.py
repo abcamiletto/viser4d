@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Any
 import viser
 
 from .. import _viser_private as impl
-from .._types import RuntimeMethod, RuntimePayload
-from .._runtime import client_runtime_config_payload, make_runtime_message
+from .._hybrid import inflate_stored_message, inflate_stored_messages
+from .._types import ClientRuntimeConfig, RuntimeBlockPayload, StoredMessage
+from .._runtime_messages import Viser4dRuntimeMessage
 from .._validation import require_positive_float
 
 if TYPE_CHECKING:
@@ -38,6 +39,8 @@ class ClientPlaybackHandle:
         self._current_timestep = 0
         self._loaded_blocks: set[int] = set()
         self._pending_block_loads: set[int] = set()
+        self._pending_runtime_messages: list[impl.Message] = []
+        self._runtime_ready = False
         self._lock = threading.RLock()
         self._create_gui(brand_color)
 
@@ -100,13 +103,19 @@ class ClientPlaybackHandle:
                 self._speed = require_positive_float("speed", speed)
             if loop is not None:
                 self._loop = bool(loop)
-            payload = {"speed": self._speed, "loop": self._loop}
-        self._speed_slider.value = payload["speed"]
-        self._send_runtime_call("play", payload)
+            next_speed = self._speed
+            next_loop = self._loop
+        self._speed_slider.value = next_speed
+        self._send_runtime_message(
+            Viser4dRuntimeMessage(
+                method="play",
+                payload={"speed": next_speed, "loop": next_loop},
+            )
+        )
 
     def pause(self) -> None:
         """Pause playback on this client."""
-        self._send_runtime_call("pause", {})
+        self._send_runtime_message(Viser4dRuntimeMessage(method="pause", payload=None))
 
     def seek(self, t: int) -> None:
         """Seek this client to timestep ``t``."""
@@ -115,41 +124,93 @@ class ClientPlaybackHandle:
             self._current_timestep = t
         self._sync_loaded_blocks(t)
         self._timeline_slider.value = t
-        self._send_runtime_call("seek", {"step": t})
+        self._send_runtime_message(
+            Viser4dRuntimeMessage(method="seek", payload={"step": t})
+        )
 
     def refresh(self) -> None:
         """Redraw this client's current timestep from recorded timeline state."""
         self._sync_loaded_blocks(self.current_timestep)
-        self._send_runtime_call("refresh", {})
+        self._send_runtime_message(
+            Viser4dRuntimeMessage(method="refresh", payload=None)
+        )
 
     def set_speed(self, speed: float) -> None:
         """Update playback speed on this client relative to timeline cadence."""
         with self._lock:
             self._speed = require_positive_float("speed", speed)
-            payload = {"speed": self._speed, "loop": self._loop}
-        self._speed_slider.value = payload["speed"]
-        self._send_runtime_call("setSpeed", payload)
+            next_speed = self._speed
+            next_loop = self._loop
+        self._speed_slider.value = next_speed
+        self._send_runtime_message(
+            Viser4dRuntimeMessage(
+                method="setSpeed",
+                payload={
+                    "speed": next_speed,
+                    "loop": next_loop,
+                },
+            )
+        )
+
+    def apply_message_update(self, message: StoredMessage) -> None:
+        self._send_runtime_message(
+            Viser4dRuntimeMessage(
+                method="applyMessageUpdate",
+                payload=inflate_stored_message(message),
+            )
+        )
+
+    def load_block(self, payload: RuntimeBlockPayload) -> None:
+        self._send_runtime_message(
+            Viser4dRuntimeMessage(
+                method="loadBlock",
+                payload={
+                    "block": payload["block"],
+                    "checkpointMessages": inflate_stored_messages(
+                        payload["checkpointMessages"]
+                    ),
+                    "stepMessages": [
+                        inflate_stored_messages(step_messages)
+                        for step_messages in payload["stepMessages"]
+                    ],
+                },
+            )
+        )
+
+    def mark_runtime_ready(self) -> None:
+        with self._lock:
+            if self._runtime_ready:
+                return
+            self._runtime_ready = True
+            pending_messages = self._pending_runtime_messages
+            self._pending_runtime_messages = []
+        for message in pending_messages:
+            impl.queue_client_message(self._client, message)
 
     def _sync_runtime_config(self) -> None:
         with self._lock:
             speed, loop = self._speed, self._loop
-        self._send_runtime_call(
-            "configure",
-            client_runtime_config_payload(
-                num_steps=self._server.num_steps,
-                block_size=self._server._timeline.block_size,
-                timeline_fps=self._server.fps,
-                speed=speed,
-                loop=loop,
-                block_request_sync_uuid=impl.gui_uuid(self._block_request_sync),
-                timeline_slider_uuid=impl.gui_uuid(self._timeline_slider),
-                speed_slider_uuid=impl.gui_uuid(self._speed_slider),
-                step_buttons_uuid=impl.gui_uuid(self._step_buttons),
-                play_button_uuid=impl.gui_uuid(self._play_button),
-                pause_button_uuid=impl.gui_uuid(self._pause_button),
-                speed_sync_uuid=impl.gui_uuid(self._speed_sync),
-                playback_state_sync_uuid=impl.gui_uuid(self._playback_state_sync),
-                timestep_sync_uuid=impl.gui_uuid(self._timestep_sync),
+        self._send_runtime_message(
+            Viser4dRuntimeMessage(
+                method="configure",
+                payload=ClientRuntimeConfig(
+                    numSteps=self._server.num_steps,
+                    blockSize=self._server._timeline.block_size,
+                    timelineFps=self._server.fps,
+                    speed=speed,
+                    loop=loop,
+                    blockRequestSyncUuid=impl.gui_uuid(self._block_request_sync),
+                    timelineSliderUuid=impl.gui_uuid(self._timeline_slider),
+                    speedSliderUuid=impl.gui_uuid(self._speed_slider),
+                    stepButtonsUuid=impl.gui_uuid(self._step_buttons),
+                    playButtonUuid=impl.gui_uuid(self._play_button),
+                    pauseButtonUuid=impl.gui_uuid(self._pause_button),
+                    speedSyncUuid=impl.gui_uuid(self._speed_sync),
+                    playbackStateSyncUuid=impl.gui_uuid(
+                        self._playback_state_sync
+                    ),
+                    timestepSyncUuid=impl.gui_uuid(self._timestep_sync),
+                ),
             ),
         )
 
@@ -213,7 +274,12 @@ class ClientPlaybackHandle:
             if force or block_index not in previous:
                 self._queue_block_load(block_index)
         for block_index in sorted(previous - desired):
-            self._send_runtime_call("evictBlock", {"block": block_index})
+            self._send_runtime_message(
+                Viser4dRuntimeMessage(
+                    method="evictBlock",
+                    payload={"block": block_index},
+                )
+            )
 
     def _queue_block_load(self, block_index: int) -> None:
         with self._lock:
@@ -230,19 +296,21 @@ class ClientPlaybackHandle:
         )
 
     def _finish_block_load(
-        self, block_index: int, future: Future[RuntimePayload]
+        self, block_index: int, future: Future[RuntimeBlockPayload]
     ) -> None:
         with self._lock:
             self._pending_block_loads.discard(block_index)
             should_send = block_index in self._loaded_blocks
         payload = future.result()
         if should_send:
-            self._send_runtime_call("loadBlock", payload)
+            self.load_block(payload)
 
-    def _send_runtime_call(
-        self, method: RuntimeMethod, payload: RuntimePayload
-    ) -> None:
-        impl.queue_client_message(self._client, make_runtime_message(method, payload))
+    def _send_runtime_message(self, message: impl.Message) -> None:
+        with self._lock:
+            if not self._runtime_ready:
+                self._pending_runtime_messages.append(message)
+                return
+        impl.queue_client_message(self._client, message)
 
 
 _PLAYBACK_ORDER = -1e9
