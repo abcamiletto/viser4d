@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 import viser
@@ -105,19 +104,6 @@ def server_thread_executor(server: viser.ViserServer) -> ThreadPoolExecutor:
 
 def is_create_scene_node_message(message: object) -> bool:
     return isinstance(message, _messages._CreateSceneNodeMessage)
-
-
-def remove_scene_node_name(message: object) -> str | None:
-    if not isinstance(message, _messages.RemoveSceneNodeMessage):
-        return None
-    return message.name
-
-
-_VISER_CLIENT_HTML = Path(viser.__file__).parent / "client" / "build" / "index.html"
-
-
-def viser_client_html() -> str:
-    return _VISER_CLIENT_HTML.read_text()
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:

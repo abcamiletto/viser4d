@@ -12,7 +12,7 @@ import zstandard
 
 import viser4d
 from viser4d import _server as server_module
-from viser4d.audio._messages import AUDIO_MESSAGE_TYPES
+from viser4d import _runtime as runtime_module
 from viser4d._runtime_messages import Viser4dRuntimeEventMessage
 
 
@@ -207,7 +207,7 @@ def test_removed_static_nodes_serialize_as_removals() -> None:
         server.stop()
 
 
-def test_as_html_embeds_hybrid_recording_for_viewer() -> None:
+def test_as_html_embeds_native_viser_recording_for_viewer() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
@@ -219,6 +219,23 @@ def test_as_html_embeds_hybrid_recording_for_viewer() -> None:
         embed_bytes = base64.b64decode(match.group(1))
         recording = _deserialize_recording(embed_bytes)
         assert isinstance(recording["messages"], list)
+    finally:
+        server.stop()
+
+
+def test_runtime_bootstrap_is_serialized_with_export() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        runtime_messages = [
+            message
+            for _, message in messages
+            if message.get("type") == "RunJavascriptMessage"
+        ]
+
+        assert len(runtime_messages) == 1
+        assert str(runtime_messages[0]["source"]).startswith(runtime_module.RUNTIME_MARKER)
     finally:
         server.stop()
 
@@ -299,7 +316,7 @@ def test_stereo_audio_append_preserves_channel_layout() -> None:
         server.stop()
 
 
-def test_audio_messages_are_not_exported_to_viser_recording() -> None:
+def test_same_step_audio_events_serialize_without_deduping() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
@@ -315,13 +332,14 @@ def test_audio_messages_are_not_exported_to_viser_recording() -> None:
 
         recording = _deserialize_recording(server.serialize())
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
-        audio_messages = [
+        append_messages = [
             message
             for _, message in messages
-            if message.get("type") in AUDIO_MESSAGE_TYPES
+            if message.get("type") == "AppendAudioMessage"
+            and message.get("name") == "/audio"
         ]
 
-        assert audio_messages == []
+        assert len(append_messages) == 2
     finally:
         server.stop()
 
@@ -403,18 +421,10 @@ def test_serialization_survives_block_eviction_to_disk() -> None:
         server.stop()
 
 
-def test_runtime_bootstrap_is_injected_after_playback_attach(
+def test_runtime_ready_before_playback_attach_is_replayed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(server_module, "runtime_source", lambda: "bootstrap();")
-
-    queued_messages: list[tuple[int, object]] = []
-
-    def fake_run_javascript_message(source: str) -> object:
-        return {"type": "RunJavascriptMessage", "source": source}
-
-    def fake_queue_client_message(client: Any, message: object) -> None:
-        queued_messages.append((client.client_id, message))
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
 
     class FakePlayback:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -424,33 +434,16 @@ def test_runtime_bootstrap_is_injected_after_playback_attach(
             self.events.append(message.event)
 
     monkeypatch.setattr(server_module, "ClientPlaybackHandle", FakePlayback)
-    monkeypatch.setattr(
-        server_module.impl,
-        "run_javascript_message",
-        fake_run_javascript_message,
-    )
-    monkeypatch.setattr(
-        server_module.impl,
-        "queue_client_message",
-        fake_queue_client_message,
-    )
-
-    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
 
     try:
+        server._handle_runtime_event(123, Viser4dRuntimeEventMessage(event="ready"))
         attach_playback = server._client_connect_cb[-1]
         attach_playback(cast(Any, SimpleNamespace(client_id=123)))
 
         playback = server.get_client_playback(123)
-        server._handle_runtime_event(123, Viser4dRuntimeEventMessage(event="ready"))
 
         assert isinstance(playback, FakePlayback)
-        assert queued_messages == [
-            (
-                123,
-                {"type": "RunJavascriptMessage", "source": "bootstrap();"},
-            )
-        ]
         assert playback.events == ["ready"]
+        assert 123 not in server._pending_runtime_ready_client_ids
     finally:
         server.stop()

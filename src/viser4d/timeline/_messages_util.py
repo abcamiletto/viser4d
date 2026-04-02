@@ -5,10 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import cast
 
-import viser
-
 from .. import _viser_private as impl
-from .._hybrid import serialize_zstd_hybrid_document
 from .._types import StoredMessage
 from ..audio._messages import is_audio_message_type
 
@@ -62,19 +59,4 @@ def is_scene_message(message: StoredMessage) -> bool:
         isinstance(message_type, str)
         and not message_type.startswith("Gui")
         and not is_audio_message_type(message_type)
-    )
-
-
-def serialize_viser_embed_recording(
-    messages: list[tuple[float, StoredMessage]],
-    *,
-    duration_seconds: float = 0.0,
-) -> bytes:
-    return serialize_zstd_hybrid_document(
-        {
-            "durationSeconds": duration_seconds,
-            "messages": messages,
-            "viserVersion": viser.__version__,
-        },
-        level=12,
     )
