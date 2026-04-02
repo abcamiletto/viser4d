@@ -1,7 +1,7 @@
 import threading
 import time
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import msgspec
 import numpy as np
