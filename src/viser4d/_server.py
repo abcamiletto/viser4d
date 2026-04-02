@@ -78,6 +78,7 @@ class Viser4dServer(viser.ViserServer):
         def _detach_playback(client: ClientHandle) -> None:
             with self._client_playbacks_lock:
                 self._client_playbacks.pop(client.client_id, None)
+                self._pending_runtime_ready_client_ids.discard(client.client_id)
 
     def at(self, t: int) -> AbstractContextManager[TimelineContext]:
         """Return the explicit timeline frame API for timestep ``t``."""
