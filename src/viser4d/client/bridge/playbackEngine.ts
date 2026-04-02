@@ -109,6 +109,17 @@ export class PlaybackEngine {
     this.audio.seek(this.currentStep, this.getPlaybackFps(), this.playing);
   }
 
+  dispose(): void {
+    if (this.rafId !== null) {
+      getWindow().cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+    this.playing = false;
+    this.currentStep = 0;
+    this.playStartStep = 0;
+    this.playStartPerfTime = 0;
+  }
+
   private getPlaybackFps(): number {
     return this.config.timelineFps * this.config.speed;
   }
