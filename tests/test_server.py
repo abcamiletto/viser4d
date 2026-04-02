@@ -235,7 +235,9 @@ def test_runtime_bootstrap_is_serialized_with_export() -> None:
         ]
 
         assert len(runtime_messages) == 1
-        assert str(runtime_messages[0]["source"]).startswith(runtime_module.RUNTIME_MARKER)
+        assert str(runtime_messages[0]["source"]).startswith(
+            runtime_module.RUNTIME_MARKER
+        )
     finally:
         server.stop()
 
