@@ -169,9 +169,9 @@ None of these change the base timeline step rate used for audio timing or
 export; set that with `fps=` when you construct the server. New clients always
 start paused at timestep `0` with speed `1.0`.
 
-## Serialize `.viser` recordings
+## Export recordings
 
-To serialize the full viser4d timeline, including audio, use `server.serialize()`:
+To export a `.viser` recording, use `server.serialize()`:
 
 ```python
 import viser4d
@@ -181,7 +181,15 @@ server = viser4d.Viser4dServer(num_steps=100)
 blob = server.serialize(start_timestep=0, end_timestep=None)
 ```
 
-Write the returned bytes to disk yourself if needed.
+To export a standalone HTML viewer, use `server.as_html()`:
+
+```python
+import viser4d
+
+server = viser4d.Viser4dServer(num_steps=100)
+# ... record timeline data ...
+html = server.as_html(start_timestep=0, end_timestep=None)
+```
 
 ## Streaming audio append
 

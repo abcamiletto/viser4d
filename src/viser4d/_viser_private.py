@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 import viser
@@ -60,10 +59,6 @@ def broadcast_messages(server: viser.ViserServer) -> list[Message]:
     ]
 
 
-def register_record_handle(server: viser.ViserServer, handle: Any) -> None:
-    server._websock_server._record_handles.append(handle)
-
-
 _THEME_PRIMARY_COLOR_INDEX = 8
 
 
@@ -109,19 +104,6 @@ def server_thread_executor(server: viser.ViserServer) -> ThreadPoolExecutor:
 
 def is_create_scene_node_message(message: object) -> bool:
     return isinstance(message, _messages._CreateSceneNodeMessage)
-
-
-def remove_scene_node_name(message: object) -> str | None:
-    if not isinstance(message, _messages.RemoveSceneNodeMessage):
-        return None
-    return message.name
-
-
-_VISER_CLIENT_HTML = Path(viser.__file__).parent / "client" / "build" / "index.html"
-
-
-def viser_client_html() -> str:
-    return _VISER_CLIENT_HTML.read_text()
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:

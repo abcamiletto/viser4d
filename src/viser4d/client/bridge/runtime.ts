@@ -3,7 +3,7 @@ import {
   type RuntimeValue,
 } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
-import { isAudioMessage } from "../audio/messages";
+import { isAudioMessage, type AudioMessage } from "../audio/messages";
 import { BlockCache } from "./blockCache";
 import { SceneApplicator } from "./sceneApplicator";
 import { PlaybackEngine } from "./playbackEngine";
@@ -181,7 +181,8 @@ export class TimelineRuntime {
   private playbackTime = 0;
   private playbackPlaying = false;
   private playbackObserved = false;
-  private playbackLastAppliedMessageTime = -1;
+  private pendingPlaybackAudioMessages: AudioMessage[] = [];
+  private playbackSyncScheduled = false;
 
   // Browser integration state
   private disposed = false;
@@ -452,19 +453,8 @@ export class TimelineRuntime {
     if (this.getViewer().messageSource === "websocket") {
       return false;
     }
-    const playbackTime = getPlaybackMessageTime(message);
-    if (
-      playbackTime !== null &&
-      playbackTime < this.playbackLastAppliedMessageTime
-    ) {
-      this.resetPlaybackAudio();
-    }
-    if (playbackTime !== null) {
-      this.playbackLastAppliedMessageTime = playbackTime;
-      this.playbackAudio.applyLiveMessages(playbackTime, [message]);
-    } else {
-      this.playbackAudio.applyLiveMessages(this.playbackTime, [message]);
-    }
+    this.pendingPlaybackAudioMessages.push(message);
+    this.schedulePlaybackSync();
     return true;
   }
 
@@ -513,6 +503,7 @@ export class TimelineRuntime {
     if (!this.playbackObserved) {
       this.playbackObserved = true;
       this.playbackTime = nextTime;
+      this.flushPendingPlaybackAudioMessages(nextTime);
       this.playbackAudio.seek(nextTime, 1, false);
       return;
     }
@@ -532,11 +523,33 @@ export class TimelineRuntime {
     }
     this.playbackTime = nextTime;
     this.playbackPlaying = playing;
+    this.flushPendingPlaybackAudioMessages(nextTime);
   }
 
   private resetPlaybackAudio(): void {
     this.playbackAudio.resetTimeline();
-    this.playbackLastAppliedMessageTime = -1;
+  }
+
+  private flushPendingPlaybackAudioMessages(playbackTime: number): void {
+    if (this.pendingPlaybackAudioMessages.length === 0) {
+      return;
+    }
+    this.playbackAudio.applyLiveMessages(
+      playbackTime,
+      this.pendingPlaybackAudioMessages,
+    );
+    this.pendingPlaybackAudioMessages = [];
+  }
+
+  private schedulePlaybackSync(): void {
+    if (this.playbackSyncScheduled) {
+      return;
+    }
+    this.playbackSyncScheduled = true;
+    getWindow().requestAnimationFrame(() => {
+      this.playbackSyncScheduled = false;
+      this.syncPlaybackState();
+    });
   }
 
   private readPlaybackTime(): number | null {
@@ -671,9 +684,4 @@ export class TimelineRuntime {
       isPlaying,
     });
   }
-}
-
-function getPlaybackMessageTime(message: RuntimeMessage): number | null {
-  const playbackTime = message.__viserPlaybackTime;
-  return typeof playbackTime === "number" ? playbackTime : null;
 }

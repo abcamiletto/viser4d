@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import asyncio
 import threading
 from collections.abc import Coroutine
@@ -38,6 +37,7 @@ class Viser4dServer(viser.ViserServer):
             flush_executor=impl.server_thread_executor(self),
         )
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
+        self._pending_runtime_ready_client_ids: set[int] = set()
         self._client_playbacks_lock = threading.Lock()
         self._timestep_callbacks: list[
             Callable[[ClientHandle, int], None | Coroutine[Any, Any, None]]
@@ -48,7 +48,8 @@ class Viser4dServer(viser.ViserServer):
         self._stop_event = threading.Event()
         self._recorder = SceneRecorder(self, self._timeline)
         self._export_builder = ExportBuilder(self, self._timeline)
-        self._runtime_source = runtime_source()
+
+        impl.queue_server_message(self, impl.run_javascript_message(runtime_source()))
 
         impl.register_message_handler(
             self,
@@ -63,19 +64,21 @@ class Viser4dServer(viser.ViserServer):
                 client,
                 brand_color=impl.playback_brand_color(self),
             )
+            replay_ready = False
             with self._client_playbacks_lock:
                 self._client_playbacks[client.client_id] = playback
-            # Inject after playback attach so the runtime's "ready" handshake
-            # belongs to this connection rather than racing ahead of it.
-            impl.queue_client_message(
-                client,
-                impl.run_javascript_message(self._runtime_source),
-            )
+                replay_ready = (
+                    client.client_id in self._pending_runtime_ready_client_ids
+                )
+                self._pending_runtime_ready_client_ids.discard(client.client_id)
+            if replay_ready:
+                playback.handle_runtime_event(Viser4dRuntimeEventMessage(event="ready"))
 
         @self.on_client_disconnect
         def _detach_playback(client: ClientHandle) -> None:
             with self._client_playbacks_lock:
                 self._client_playbacks.pop(client.client_id, None)
+                self._pending_runtime_ready_client_ids.discard(client.client_id)
 
     def at(self, t: int) -> AbstractContextManager[TimelineContext]:
         """Return the explicit timeline frame API for timestep ``t``."""
@@ -145,7 +148,7 @@ class Viser4dServer(viser.ViserServer):
         start_timestep: int = 0,
         end_timestep: int | None = None,
     ) -> bytes:
-        """Serialize the recorded timeline to bytes."""
+        """Serialize the recorded timeline to a native `.viser` file."""
         return self._export_builder.serialize(
             start_timestep=start_timestep,
             end_timestep=end_timestep,
@@ -159,21 +162,11 @@ class Viser4dServer(viser.ViserServer):
         end_timestep: int | None = None,
     ) -> str:
         """Get a self-contained HTML string for the recorded timeline."""
-        scene_bytes = self.serialize(
+        return self._export_builder.as_html(
+            dark_mode=dark_mode,
             start_timestep=start_timestep,
             end_timestep=end_timestep,
         )
-        scene_b64 = base64.b64encode(scene_bytes).decode("ascii")
-        client_html = impl.viser_client_html()
-        dark_mode_str = "true" if dark_mode else "false"
-        inject_script = (
-            f"<script>"
-            f'window.__VISER_EMBED_DATA__="{scene_b64}";'
-            f"window.__VISER_EMBED_CONFIG__={{darkMode:{dark_mode_str}}};"
-            f"</script>"
-        )
-        head_end = client_html.index("</head>")
-        return client_html[:head_end] + inject_script + client_html[head_end:]
 
     def stop(self) -> None:
         """Shut down the underlying viser server."""
@@ -189,9 +182,14 @@ class Viser4dServer(viser.ViserServer):
     def _handle_runtime_event(
         self, client_id: int, message: Viser4dRuntimeEventMessage
     ) -> None:
-        playback = self.get_client_playback(client_id)
-        if playback is not None:
-            playback.handle_runtime_event(message)
+        with self._client_playbacks_lock:
+            playback = self._client_playbacks.get(client_id)
+            if playback is None:
+                if message.event != "ready":
+                    return
+                self._pending_runtime_ready_client_ids.add(client_id)
+                return
+        playback.handle_runtime_event(message)
 
     def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
