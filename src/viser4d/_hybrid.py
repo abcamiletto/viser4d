@@ -72,12 +72,13 @@ def _remap_placeholders(
     return value
 
 
-def _append_stored_message(
-    buffers: list[memoryview],
+def stored_message_as_serializable_dict(
     message: StoredMessage,
+    *,
+    binary_buffers: list[memoryview],
 ) -> dict[str, object]:
-    buffer_offset = len(buffers)
-    buffers.extend(_byte_view(buffer) for buffer in message.buffers)
+    buffer_offset = len(binary_buffers)
+    binary_buffers.extend(_byte_view(buffer) for buffer in message.buffers)
     return cast(
         dict[str, object],
         _remap_placeholders(
@@ -125,7 +126,7 @@ def inflate_stored_messages(messages: list[StoredMessage]) -> list[dict[str, obj
 
 def _to_hybrid_value(value: Any, buffers: list[memoryview]) -> Any:
     if isinstance(value, StoredMessage):
-        return _append_stored_message(buffers, value)
+        return stored_message_as_serializable_dict(value, binary_buffers=buffers)
     if isinstance(value, dict):
         return {
             str(key): _to_hybrid_value(inner, buffers) for key, inner in value.items()

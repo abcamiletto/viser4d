@@ -145,7 +145,7 @@ class Viser4dServer(viser.ViserServer):
         start_timestep: int = 0,
         end_timestep: int | None = None,
     ) -> bytes:
-        """Serialize the recorded timeline to bytes."""
+        """Serialize the recorded scene timeline to a native `.viser` file."""
         return self._export_builder.serialize(
             start_timestep=start_timestep,
             end_timestep=end_timestep,
@@ -159,7 +159,7 @@ class Viser4dServer(viser.ViserServer):
         end_timestep: int | None = None,
     ) -> str:
         """Get a self-contained HTML string for the recorded timeline."""
-        scene_bytes = self.serialize(
+        scene_bytes = self._export_builder.serialize_embed(
             start_timestep=start_timestep,
             end_timestep=end_timestep,
         )

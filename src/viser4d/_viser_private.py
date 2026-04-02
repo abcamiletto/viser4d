@@ -60,10 +60,6 @@ def broadcast_messages(server: viser.ViserServer) -> list[Message]:
     ]
 
 
-def register_record_handle(server: viser.ViserServer, handle: Any) -> None:
-    server._websock_server._record_handles.append(handle)
-
-
 _THEME_PRIMARY_COLOR_INDEX = 8
 
 

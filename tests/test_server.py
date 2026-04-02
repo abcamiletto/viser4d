@@ -1,3 +1,5 @@
+import base64
+import re
 import threading
 import time
 from types import SimpleNamespace
@@ -10,16 +12,18 @@ import zstandard
 
 import viser4d
 from viser4d import _server as server_module
+from viser4d.audio._messages import AUDIO_MESSAGE_TYPES
 from viser4d._runtime_messages import Viser4dRuntimeEventMessage
 
 
 def _deserialize_recording(blob: bytes) -> dict[str, object]:
-    hybrid_size = int.from_bytes(blob[:8], "little")
-    hybrid = zstandard.ZstdDecompressor().decompress(
-        blob[8:], max_output_size=hybrid_size
+    inner_size = int.from_bytes(blob[:8], "little")
+    inner = zstandard.ZstdDecompressor().decompress(
+        blob[8:], max_output_size=inner_size
     )
-    msgpack_size = int.from_bytes(hybrid[:8], "little")
-    return cast(dict[str, object], msgspec.msgpack.decode(hybrid[8 : 8 + msgpack_size]))
+    assert len(inner) == inner_size
+    msgpack_size = int.from_bytes(inner[:8], "little")
+    return cast(dict[str, object], msgspec.msgpack.decode(inner[8 : 8 + msgpack_size]))
 
 
 def test_server_does_not_expose_audio_api() -> None:
@@ -185,7 +189,7 @@ def test_at_allows_recreating_timeline_nodes() -> None:
         server.stop()
 
 
-def test_removed_static_nodes_do_not_serialize() -> None:
+def test_removed_static_nodes_serialize_as_removals() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         joint = server.scene.add_frame("/joint")
@@ -198,7 +202,23 @@ def test_removed_static_nodes_do_not_serialize() -> None:
             message for _, message in messages if message.get("name") == "/joint"
         ]
 
-        assert joint_messages == []
+        assert joint_messages[-1]["type"] == "RemoveSceneNodeMessage"
+    finally:
+        server.stop()
+
+
+def test_as_html_embeds_hybrid_recording_for_viewer() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0) as timeline:
+            timeline.scene.add_frame("/joint")
+
+        html = server.as_html()
+        match = re.search(r'window\.__VISER_EMBED_DATA__="([^"]+)"', html)
+        assert match is not None
+        embed_bytes = base64.b64decode(match.group(1))
+        recording = _deserialize_recording(embed_bytes)
+        assert isinstance(recording["messages"], list)
     finally:
         server.stop()
 
@@ -279,7 +299,7 @@ def test_stereo_audio_append_preserves_channel_layout() -> None:
         server.stop()
 
 
-def test_same_step_audio_events_serialize_without_deduping() -> None:
+def test_audio_messages_are_not_exported_to_viser_recording() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
@@ -295,14 +315,13 @@ def test_same_step_audio_events_serialize_without_deduping() -> None:
 
         recording = _deserialize_recording(server.serialize())
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
-        append_messages = [
+        audio_messages = [
             message
             for _, message in messages
-            if message.get("type") == "AppendAudioMessage"
-            and message.get("name") == "/audio"
+            if message.get("type") in AUDIO_MESSAGE_TYPES
         ]
 
-        assert len(append_messages) == 2
+        assert audio_messages == []
     finally:
         server.stop()
 

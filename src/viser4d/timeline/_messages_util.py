@@ -65,7 +65,7 @@ def is_scene_message(message: StoredMessage) -> bool:
     )
 
 
-def serialize_viser_recording(
+def serialize_viser_embed_recording(
     messages: list[tuple[float, StoredMessage]],
     *,
     duration_seconds: float = 0.0,
