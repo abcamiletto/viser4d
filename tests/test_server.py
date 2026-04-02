@@ -384,10 +384,18 @@ def test_serialization_survives_block_eviction_to_disk() -> None:
         server.stop()
 
 
-def test_runtime_ready_before_playback_attach_is_replayed(
+def test_runtime_bootstrap_is_injected_after_playback_attach(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    monkeypatch.setattr(server_module, "runtime_source", lambda: "bootstrap();")
+
+    queued_messages: list[tuple[int, object]] = []
+
+    def fake_run_javascript_message(source: str) -> object:
+        return {"type": "RunJavascriptMessage", "source": source}
+
+    def fake_queue_client_message(client: Any, message: object) -> None:
+        queued_messages.append((client.client_id, message))
 
     class FakePlayback:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -397,16 +405,33 @@ def test_runtime_ready_before_playback_attach_is_replayed(
             self.events.append(message.event)
 
     monkeypatch.setattr(server_module, "ClientPlaybackHandle", FakePlayback)
+    monkeypatch.setattr(
+        server_module.impl,
+        "run_javascript_message",
+        fake_run_javascript_message,
+    )
+    monkeypatch.setattr(
+        server_module.impl,
+        "queue_client_message",
+        fake_queue_client_message,
+    )
+
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
 
     try:
-        server._handle_runtime_event(123, Viser4dRuntimeEventMessage(event="ready"))
         attach_playback = server._client_connect_cb[-1]
         attach_playback(SimpleNamespace(client_id=123))
 
         playback = server.get_client_playback(123)
+        server._handle_runtime_event(123, Viser4dRuntimeEventMessage(event="ready"))
 
         assert isinstance(playback, FakePlayback)
+        assert queued_messages == [
+            (
+                123,
+                {"type": "RunJavascriptMessage", "source": "bootstrap();"},
+            )
+        ]
         assert playback.events == ["ready"]
-        assert 123 not in server._pending_runtime_ready_client_ids
     finally:
         server.stop()

@@ -417,6 +417,18 @@ export class AudioRuntime {
     this.stopAllNodes();
   }
 
+  reset(): void {
+    this.stopAllNodes();
+    this.timelineTracks.clear();
+    this.liveOverrides.clear();
+    this.runtimeTracks.clear();
+    this.playing = false;
+    this.currentStep = 0;
+    this.fps = 30;
+    this.stepRate = 30;
+    this.nextSourceToken = 1;
+  }
+
   resetTimeline(): void {
     this.stopAllNodes();
     this.timelineTracks.clear();

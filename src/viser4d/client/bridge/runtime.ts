@@ -184,8 +184,9 @@ export class TimelineRuntime {
   private playbackLastAppliedMessageTime = -1;
 
   // Browser integration state
-  private queueIngressConfigured = false;
-  private guiMessageInterceptorInstalled = false;
+  private disposed = false;
+  private undoQueueIngress: (() => void) | null = null;
+  private undoGuiMessageInterceptor: (() => void) | null = null;
   private queuePush: ((...messages: RuntimeMessage[]) => number) | null = null;
   private playbackMonitor: MutationObserver | null = null;
 
@@ -196,6 +197,22 @@ export class TimelineRuntime {
 
   get appliedStep(): number {
     return this.scene.appliedStep;
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.undoQueueIngress?.();
+    this.undoQueueIngress = null;
+    this.undoGuiMessageInterceptor?.();
+    this.undoGuiMessageInterceptor = null;
+    this.playbackMonitor?.disconnect();
+    this.playbackMonitor = null;
+    this.engine.dispose();
+    this.audio.reset();
+    this.playbackAudio.reset();
+    this.viewer = null;
+    this.playbackTimeSlider = null;
+    this.queuePush = null;
   }
 
   configure(config: Partial<RuntimeConfig>): void {
@@ -294,6 +311,9 @@ export class TimelineRuntime {
   }
 
   private installWhenReady(): void {
+    if (this.disposed) {
+      return;
+    }
     try {
       this.configureQueueIngress();
       this.installGuiMessageInterceptor();
@@ -302,18 +322,19 @@ export class TimelineRuntime {
       }
       this.announceRuntimeReady();
     } catch {
-      getWindow().requestAnimationFrame(() => this.installWhenReady());
+      if (!this.disposed) {
+        getWindow().requestAnimationFrame(() => this.installWhenReady());
+      }
     }
   }
 
   private configureQueueIngress(): void {
-    if (this.queueIngressConfigured) {
+    if (this.undoQueueIngress) {
       return;
     }
     const queue = this.getViewer().mutable.current.messageQueue;
     const originalPush = queue.push.bind(queue);
-    this.queuePush = originalPush;
-    queue.push = (...messages: RuntimeMessage[]): number => {
+    const wrappedPush = (...messages: RuntimeMessage[]): number => {
       const forwarded: RuntimeMessage[] = [];
       for (const message of messages) {
         if (this.handleQueuedMessage(message)) {
@@ -323,7 +344,13 @@ export class TimelineRuntime {
       }
       return originalPush(...forwarded);
     };
-    this.queueIngressConfigured = true;
+    this.queuePush = originalPush;
+    queue.push = wrappedPush;
+    this.undoQueueIngress = () => {
+      if (queue.push === wrappedPush) {
+        queue.push = originalPush;
+      }
+    };
   }
 
   private installPlaybackMonitor(): void {
@@ -345,7 +372,7 @@ export class TimelineRuntime {
   }
 
   private installGuiMessageInterceptor(): void {
-    if (this.guiMessageInterceptorInstalled) {
+    if (this.undoGuiMessageInterceptor) {
       return;
     }
     const mutable = this.getViewer().mutable.current;
@@ -367,7 +394,14 @@ export class TimelineRuntime {
         rawSendMessage = value;
       },
     });
-    this.guiMessageInterceptorInstalled = true;
+    this.undoGuiMessageInterceptor = () => {
+      Object.defineProperty(mutable, "sendMessage", {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: rawSendMessage,
+      });
+    };
   }
 
   private handleLocalPlaybackGuiMessage(message: GuiUpdateMessage): boolean {

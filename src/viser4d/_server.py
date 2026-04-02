@@ -38,9 +38,6 @@ class Viser4dServer(viser.ViserServer):
             flush_executor=impl.server_thread_executor(self),
         )
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
-        # Viser exposes ClientHandle only after the first camera update, but the
-        # injected timeline runtime can announce "ready" earlier.
-        self._pending_runtime_ready_client_ids: set[int] = set()
         self._client_playbacks_lock = threading.Lock()
         self._timestep_callbacks: list[
             Callable[[ClientHandle, int], None | Coroutine[Any, Any, None]]
@@ -51,9 +48,8 @@ class Viser4dServer(viser.ViserServer):
         self._stop_event = threading.Event()
         self._recorder = SceneRecorder(self, self._timeline)
         self._export_builder = ExportBuilder(self, self._timeline)
+        self._runtime_source = runtime_source()
 
-        # Load the browser runtime once so live clients can handle timeline/audio messages.
-        impl.queue_server_message(self, impl.run_javascript_message(runtime_source()))
         impl.register_message_handler(
             self,
             Viser4dRuntimeEventMessage,
@@ -67,13 +63,14 @@ class Viser4dServer(viser.ViserServer):
                 client,
                 brand_color=impl.playback_brand_color(self),
             )
-            replay_ready = False
             with self._client_playbacks_lock:
                 self._client_playbacks[client.client_id] = playback
-                replay_ready = client.client_id in self._pending_runtime_ready_client_ids
-                self._pending_runtime_ready_client_ids.discard(client.client_id)
-            if replay_ready:
-                playback.handle_runtime_event(Viser4dRuntimeEventMessage(event="ready"))
+            # Inject after playback attach so the runtime's "ready" handshake
+            # belongs to this connection rather than racing ahead of it.
+            impl.queue_client_message(
+                client,
+                impl.run_javascript_message(self._runtime_source),
+            )
 
         @self.on_client_disconnect
         def _detach_playback(client: ClientHandle) -> None:
@@ -192,14 +189,9 @@ class Viser4dServer(viser.ViserServer):
     def _handle_runtime_event(
         self, client_id: int, message: Viser4dRuntimeEventMessage
     ) -> None:
-        with self._client_playbacks_lock:
-            playback = self._client_playbacks.get(client_id)
-            if playback is None:
-                if message.event != "ready":
-                    return
-                self._pending_runtime_ready_client_ids.add(client_id)
-                return
-        playback.handle_runtime_event(message)
+        playback = self.get_client_playback(client_id)
+        if playback is not None:
+            playback.handle_runtime_event(message)
 
     def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
