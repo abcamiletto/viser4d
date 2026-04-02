@@ -420,7 +420,7 @@ def test_runtime_bootstrap_is_injected_after_playback_attach(
 
     try:
         attach_playback = server._client_connect_cb[-1]
-        attach_playback(SimpleNamespace(client_id=123))
+        attach_playback(cast(Any, SimpleNamespace(client_id=123)))
 
         playback = server.get_client_playback(123)
         server._handle_runtime_event(123, Viser4dRuntimeEventMessage(event="ready"))
