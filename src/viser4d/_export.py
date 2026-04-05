@@ -77,13 +77,6 @@ class ExportBuilder:
         serializer = self._server.get_scene_serializer()
         binary_buffers = serializer._binary_buffers
         recorded_messages = serializer._messages
-        serialized_global_overrides = [
-            stored_message_as_serializable_dict(
-                message,
-                binary_buffers=binary_buffers,
-            )
-            for message in self._timeline.global_override_messages()
-        ]
         for step in track(
             range(end + 1),
             description="Exporting .viser",
@@ -92,11 +85,7 @@ class ExportBuilder:
         ):
             if step > start:
                 serializer.insert_sleep(1.0 / self._server.fps)
-            step_state = self._timeline.step(step)
-            for message in (
-                *step_state.scene_updates.values(),
-                *step_state.audio_updates,
-            ):
+            for message in self._timeline.messages_for_step(step):
                 recorded_messages.append(
                     (
                         serializer._time,
@@ -106,6 +95,4 @@ class ExportBuilder:
                         ),
                     )
                 )
-            for override_message in serialized_global_overrides:
-                recorded_messages.append((serializer._time, override_message))
         return serializer

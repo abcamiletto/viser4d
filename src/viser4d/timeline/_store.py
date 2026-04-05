@@ -144,9 +144,11 @@ class TimelineStore:
             self._global_overrides.pop(redundancy_key, None)
             self._global_overrides[redundancy_key] = stored_message
 
-    def global_override_messages(self) -> list[StoredMessage]:
+    def messages_for_step(self, step: int) -> list[StoredMessage]:
         with self._lock:
-            return list(self._global_overrides.values())
+            step = self.validate_step(step)
+            block = self._load_block(step // self.block_size)
+            return self._merged_step_messages(step, block.steps[step % self.block_size])
 
     def block_index_for_step(self, step: int) -> int:
         return self.validate_step(step) // self.block_size
@@ -156,12 +158,10 @@ class TimelineStore:
             block_index = self._validate_block_index(block_index)
             ckpt = self._checkpoint_for_block(block_index)
             block = self._load_block(block_index)
-            global_overrides = list(self._global_overrides.values())
+            block_start = block_index * self.block_size
             step_messages = [
-                list(step.scene_updates.values())
-                + list(step.audio_updates)
-                + global_overrides
-                for step in block.steps
+                self._merged_step_messages(block_start + offset, step_state)
+                for offset, step_state in enumerate(block.steps)
             ]
         ckpt_messages = checkpoint_messages(ckpt)
         return {
@@ -169,6 +169,26 @@ class TimelineStore:
             "checkpointMessages": ckpt_messages,
             "stepMessages": step_messages,
         }
+
+    def _merged_step_messages(
+        self,
+        step: int,
+        step_state: TimelineStep,
+    ) -> list[StoredMessage]:
+        return [
+            *step_state.scene_updates.values(),
+            *step_state.audio_updates,
+            *self._global_override_messages_for_step(step),
+        ]
+
+    def _global_override_messages_for_step(self, step: int) -> list[StoredMessage]:
+        messages: list[StoredMessage] = []
+        for message in self._global_overrides.values():
+            node_name = extract_message_name(message)
+            if isinstance(node_name, str) and self._node_start_steps.get(node_name, 0) > step:
+                continue
+            messages.append(message)
+        return messages
 
     def close(self) -> None:
         with self._lock:
