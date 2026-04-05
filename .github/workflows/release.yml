@@ -18,13 +18,11 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/viser4d/client/package-lock.json
       - name: Detect release state
         id: version
         run: |
@@ -55,10 +53,10 @@ jobs:
           git push origin "${{ steps.version.outputs.tag }}"
       - name: Install runtime build dependencies
         if: steps.version.outputs.needs_tag == 'true' || steps.version.outputs.needs_publish == 'true'
-        run: pnpm install --frozen-lockfile
+        run: npm ci --prefix src/viser4d/client
       - name: Build runtime bundle
         if: steps.version.outputs.needs_tag == 'true' || steps.version.outputs.needs_publish == 'true'
-        run: pnpm run build:runtime
+        run: npm --prefix src/viser4d/client run build
       - name: Build
         if: steps.version.outputs.needs_tag == 'true' || steps.version.outputs.needs_publish == 'true'
         run: uv build

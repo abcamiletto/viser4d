@@ -32,31 +32,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run typecheck:runtime
-      - run: pnpm run build:runtime
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/viser4d/client/package-lock.json
+      - run: npm ci --prefix src/viser4d/client
+      - run: npm --prefix src/viser4d/client run typecheck
+      - run: npm --prefix src/viser4d/client run build
 
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build:runtime
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/viser4d/client/package-lock.json
+      - run: npm ci --prefix src/viser4d/client
+      - run: npm --prefix src/viser4d/client run build
       - run: uv build
 
   test:
@@ -64,15 +60,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build:runtime
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/viser4d/client/package-lock.json
+      - run: npm ci --prefix src/viser4d/client
+      - run: npm --prefix src/viser4d/client run build
       - run: uv run --group dev pytest -q
 
   test-viser-latest:
@@ -80,15 +74,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.30.3
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build:runtime
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/viser4d/client/package-lock.json
+      - run: npm ci --prefix src/viser4d/client
+      - run: npm --prefix src/viser4d/client run build
       - run: uv sync --group dev
       - run: uv pip install --python .venv/bin/python --upgrade viser
       - run: uv run --group dev pytest -q

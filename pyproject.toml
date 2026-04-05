@@ -49,6 +49,9 @@ viser4d = [
     "client/*.ts",
     "client/*.json",
     "client/*.mjs",
+    "client/**/*.ts",
+    "client/**/*.json",
+    "client/**/*.mjs",
 ]
 
 [tool.setuptools.packages.find]

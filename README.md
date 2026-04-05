@@ -260,13 +260,13 @@ See `examples/` for more.
 uvx ruff format .
 uvx ruff check .
 uvx ty check
-pnpm run typecheck:runtime
-pnpm run build:runtime
+npm --prefix src/viser4d/client run typecheck
+npm --prefix src/viser4d/client run build
 ```
 
 ## Tests
 
 ```bash
-pnpm run build:runtime
+npm --prefix src/viser4d/client run build
 uv run --group dev pytest -q
 ```
