@@ -129,17 +129,18 @@ class TimelineStore:
             stored_message = store_raw_message(message)
             node_name = extract_message_name(stored_message)
             redundancy_key = message.redundancy_key()
-            if (
-                stored_message.payload.get("type") == "RemoveSceneNodeMessage"
-                and isinstance(node_name, str)
-            ):
+            if stored_message.payload.get(
+                "type"
+            ) == "RemoveSceneNodeMessage" and isinstance(node_name, str):
                 prefix = f"{node_name}/"
                 for key, override_message in list(self._global_overrides.items()):
                     override_name = extract_message_name(override_message)
                     if override_name == node_name:
                         self._global_overrides.pop(key)
                         continue
-                    if isinstance(override_name, str) and override_name.startswith(prefix):
+                    if isinstance(override_name, str) and override_name.startswith(
+                        prefix
+                    ):
                         self._global_overrides.pop(key)
             self._global_overrides.pop(redundancy_key, None)
             self._global_overrides[redundancy_key] = stored_message
@@ -185,7 +186,10 @@ class TimelineStore:
         messages: list[StoredMessage] = []
         for message in self._global_overrides.values():
             node_name = extract_message_name(message)
-            if isinstance(node_name, str) and self._node_start_steps.get(node_name, 0) > step:
+            if (
+                isinstance(node_name, str)
+                and self._node_start_steps.get(node_name, 0) > step
+            ):
                 continue
             messages.append(message)
         return messages

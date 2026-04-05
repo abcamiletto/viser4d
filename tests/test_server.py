@@ -406,7 +406,9 @@ def test_timeline_scene_creation_still_requires_timestep_context() -> None:
         with server.at(0) as timeline:
             scene = timeline.scene
 
-        with pytest.raises(RuntimeError, match="creation is only valid inside server.at\\(t\\)"):
+        with pytest.raises(
+            RuntimeError, match="creation is only valid inside server.at\\(t\\)"
+        ):
             scene.add_frame("/joint")
     finally:
         server.stop()
