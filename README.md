@@ -245,6 +245,7 @@ the rendered scene in sync with the timeline position.
 
 - **Inside `at(t)`**: Use `timeline.scene` and `timeline.audio` from `with server.at(t) as timeline:`.
 - **Outside `at(t)`**: `server.scene` remains viser's live/static scene API.
+- **Timeline handles after recording**: mutating a scene handle returned from `timeline.scene.add_*()` outside `at(t)` applies a persistent global override across playback and export. Creating new timeline nodes still requires `at(t)`.
 - **Client playback**: Each browser tab owns its own transport and playback state.
 - **Block streaming**: Timeline data is fetched block-by-block as the client plays or scrubs.
 - **Timestep callbacks**: `on_timestep_change(...)` aggregates committed client steps and passes the source client.

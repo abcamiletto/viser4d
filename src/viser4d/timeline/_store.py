@@ -44,7 +44,7 @@ class _BlockFilePayload(msgspec.Struct):
 
 
 class TimelineStore:
-    """Block-backed storage for timeline-owned steps and live scene updates."""
+    """Block-backed storage for timeline-owned steps and global scene overrides."""
 
     def __init__(
         self,
@@ -69,7 +69,7 @@ class TimelineStore:
         self.block_size = block_size
         self.block_count = math.ceil(num_steps / block_size)
         self._node_start_steps: dict[str, int] = {}
-        self._last_scene_steps: dict[str, int] = {}
+        self._global_overrides: dict[str, StoredMessage] = {}
         self._lock = threading.RLock()
         self._loaded_blocks: OrderedDict[int, TimelineBlock] = OrderedDict()
         self._max_loaded_blocks = max_loaded_blocks
@@ -116,7 +116,6 @@ class TimelineStore:
                 if is_scene_message(stored_message):
                     if name is not None and impl.is_create_scene_node_message(message):
                         self._node_start_steps[name] = step
-                    self._last_scene_steps[key] = step
                     step_state.scene_updates.pop(key, None)
                     step_state.scene_updates[key] = stored_message
                     continue
@@ -125,24 +124,29 @@ class TimelineStore:
             block.dirty = True
             self._invalidate_checkpoints_after_block(block_index)
 
-    def record_live_scene_update(self, message: impl.Message) -> int:
+    def record_global_override(self, message: impl.Message) -> None:
         with self._lock:
             stored_message = store_raw_message(message)
-            name = extract_message_name(stored_message)
-            key = message.redundancy_key()
-            start_step = 0 if name is None else self._node_start_steps.get(name, 0)
-            last_scene_step = self._last_scene_steps.get(key)
-            if last_scene_step is not None:
-                start_step = max(start_step, last_scene_step)
-            block_index = start_step // self.block_size
-            block = self._load_block(block_index)
-            step_state = block.steps[start_step % self.block_size]
-            step_state.scene_updates.pop(key, None)
-            step_state.scene_updates[key] = stored_message
-            self._last_scene_steps[key] = start_step
-            block.dirty = True
-            self._invalidate_checkpoints_after_block(block_index)
-            return start_step
+            node_name = extract_message_name(stored_message)
+            redundancy_key = message.redundancy_key()
+            if (
+                stored_message.payload.get("type") == "RemoveSceneNodeMessage"
+                and isinstance(node_name, str)
+            ):
+                prefix = f"{node_name}/"
+                for key, override_message in list(self._global_overrides.items()):
+                    override_name = extract_message_name(override_message)
+                    if override_name == node_name:
+                        self._global_overrides.pop(key)
+                        continue
+                    if isinstance(override_name, str) and override_name.startswith(prefix):
+                        self._global_overrides.pop(key)
+            self._global_overrides.pop(redundancy_key, None)
+            self._global_overrides[redundancy_key] = stored_message
+
+    def global_override_messages(self) -> list[StoredMessage]:
+        with self._lock:
+            return list(self._global_overrides.values())
 
     def block_index_for_step(self, step: int) -> int:
         return self.validate_step(step) // self.block_size
@@ -152,8 +156,11 @@ class TimelineStore:
             block_index = self._validate_block_index(block_index)
             ckpt = self._checkpoint_for_block(block_index)
             block = self._load_block(block_index)
+            global_overrides = list(self._global_overrides.values())
             step_messages = [
-                list(step.scene_updates.values()) + list(step.audio_updates)
+                list(step.scene_updates.values())
+                + list(step.audio_updates)
+                + global_overrides
                 for step in block.steps
             ]
         ckpt_messages = checkpoint_messages(ckpt)

@@ -346,14 +346,68 @@ def test_same_step_audio_events_serialize_without_deduping() -> None:
         server.stop()
 
 
-def test_timeline_handle_updates_require_timestep_context() -> None:
+def test_timeline_handle_updates_become_global_overrides() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
             joint = timeline.scene.add_frame("/joint")
 
-        with pytest.raises(RuntimeError, match="inside server.at\\(t\\)"):
-            joint.position = (2.0, 0.0, 0.0)
+        joint.position = (2.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        positions = [
+            (time, tuple(cast(list[float], message["position"])))
+            for time, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert positions == [
+            (0.0, (2.0, 0.0, 0.0)),
+            (1.0 / server.fps, (2.0, 0.0, 0.0)),
+        ]
+    finally:
+        server.stop()
+
+
+def test_timeline_global_overrides_reapply_after_recorded_updates() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+
+        with server.at(1):
+            joint.position = (1.0, 0.0, 0.0)
+
+        joint.position = (2.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        positions = [
+            (time, tuple(cast(list[float], message["position"])))
+            for time, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert positions == [
+            (0.0, (2.0, 0.0, 0.0)),
+            (1.0 / server.fps, (1.0, 0.0, 0.0)),
+            (1.0 / server.fps, (2.0, 0.0, 0.0)),
+        ]
+    finally:
+        server.stop()
+
+
+def test_timeline_scene_creation_still_requires_timestep_context() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(0) as timeline:
+            scene = timeline.scene
+
+        with pytest.raises(RuntimeError, match="creation is only valid inside server.at\\(t\\)"):
+            scene.add_frame("/joint")
     finally:
         server.stop()
 

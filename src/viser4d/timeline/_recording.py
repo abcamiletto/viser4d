@@ -101,7 +101,12 @@ class SceneRecorder:
         if session is not None:
             session.messages.append(message)
             return
-        raise RuntimeError("Timeline scene updates are only valid inside server.at(t).")
+        if impl.is_create_scene_node_message(message):
+            raise RuntimeError(
+                "Timeline scene node creation is only valid inside server.at(t)."
+            )
+        self._timeline.record_global_override(message)
+        self._queue_client_block_refresh(0)
 
     def dispatch_audio_update(self, message: impl.Message) -> None:
         session = self._current_session()
