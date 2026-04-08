@@ -202,10 +202,14 @@ class ClientPlaybackHandle:
             return
         if message.event == "blockRequest":
             assert message.step is not None, "blockRequest event missing 'step' field."
+            if message.step >= self._server.num_steps:
+                return
             self._sync_loaded_blocks(self._require_timestep(message.step), force=True)
             return
         if message.event == "timestep":
             assert message.step is not None, "timestep event missing 'step' field."
+            if message.step >= self._server.num_steps:
+                return
             timestep = self._require_timestep(message.step)
             with self._lock:
                 self._current_timestep = timestep
