@@ -201,9 +201,11 @@ class ClientPlaybackHandle:
                 impl.queue_client_message(self._client, pending_message)
             return
         if message.event == "blockRequest":
+            assert message.step is not None, "blockRequest event missing 'step' field."
             self._sync_loaded_blocks(self._require_timestep(message.step), force=True)
             return
         if message.event == "timestep":
+            assert message.step is not None, "timestep event missing 'step' field."
             timestep = self._require_timestep(message.step)
             with self._lock:
                 self._current_timestep = timestep
@@ -211,10 +213,14 @@ class ClientPlaybackHandle:
             self._server._dispatch_timestep_change(self._client, timestep)
             return
         if message.event == "speed":
+            assert message.speed is not None, "speed event missing 'speed' field."
             with self._lock:
                 self._speed = require_positive_float("speed", message.speed)
             return
         if message.event == "playbackState":
+            assert message.isPlaying is not None, (
+                "playbackState event missing 'isPlaying' field."
+            )
             with self._lock:
                 if message.isPlaying == self._is_playing:
                     return

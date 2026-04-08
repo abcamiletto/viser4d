@@ -36,7 +36,9 @@ def stored_int(value: object) -> int:
 
 def stored_float(value: object) -> float:
     if not isinstance(value, (int, float)):
-        raise TypeError(f"Expected float-like stored value, got {type(value).__name__}.")
+        raise TypeError(
+            f"Expected float-like stored value, got {type(value).__name__}."
+        )
     return float(value)
 
 

@@ -82,7 +82,7 @@ def queue_client_message(client: Any, message: Message) -> None:
     client._websock_connection.queue_message(message)
 
 
-def serializer_binary_buffers(serializer: Any) -> list[bytes]:
+def serializer_binary_buffers(serializer: Any) -> list[memoryview]:
     return serializer._binary_buffers
 
 
