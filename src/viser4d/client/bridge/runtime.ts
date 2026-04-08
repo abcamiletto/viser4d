@@ -10,23 +10,24 @@ export class TimelineRuntime {
   private readonly viewer: ViewerAdapter;
 
   constructor() {
-    this.controller = new TimelineController({
-      pushMessages: (messages) => this.viewer.pushMessages(messages),
-      sendRuntimeEvent: (message) => this.viewer.sendMessage(message),
-      updateGuiVisible: (uuid, visible) =>
-        this.viewer.updateGuiVisible(uuid, visible),
-    });
-    this.filePlayback = new FilePlaybackAdapter(
-      () => this.viewer.getPlaybackTime(),
-      (event, payload) => this.controller.debug.push(event, payload),
-    );
-    this.viewer = new ViewerAdapter({
+    const viewer = new ViewerAdapter({
       handleQueuedMessage: (message) => this.handleQueuedMessage(message),
       handleGuiMessage: (message) => this.controller.handleGuiMessage(message),
       handlePlaybackTimeChange: () => this.filePlayback.sync(),
       onReady: () => this.handleViewerReady(),
     });
-    this.viewer.install();
+    this.viewer = viewer;
+    this.controller = new TimelineController({
+      pushMessages: (messages) => viewer.pushMessages(messages),
+      sendRuntimeEvent: (message) => viewer.sendMessage(message),
+      updateGuiVisible: (uuid, visible) =>
+        viewer.updateGuiVisible(uuid, visible),
+    });
+    this.filePlayback = new FilePlaybackAdapter(
+      () => viewer.getPlaybackTime(),
+      (event, payload) => this.controller.debug.push(event, payload),
+    );
+    viewer.install();
   }
 
   get debug() {
