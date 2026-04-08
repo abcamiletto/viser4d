@@ -165,6 +165,12 @@ looping; omitting it preserves each client's current loop state.
 `server.set_playback_speed(...)` updates speed without starting playback.
 `server.refresh()` redraws the current timestep on all connected clients, which
 is useful after updating recorded scene data while paused.
+`server.set_steps(n)` resizes the timeline after initialization. Growing keeps
+existing recorded data and exposes new empty timesteps; shrinking discards any
+recorded steps at or beyond `n` and clamps connected clients into range.
+`server.clear()` resets the recorded timeline, resets connected clients back to
+step `0` at speed `1.0`, and clears shared scene nodes added through
+`server.scene`.
 None of these change the base timeline step rate used for audio timing or
 export; set that with `fps=` when you construct the server. New clients always
 start paused at timestep `0` with speed `1.0`.

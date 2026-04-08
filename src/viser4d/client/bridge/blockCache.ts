@@ -38,6 +38,12 @@ export class BlockCache {
     this.requestedBlocks.delete(blockIndex);
   }
 
+  reset(): void {
+    this.pendingStep = null;
+    this.blocks.clear();
+    this.requestedBlocks.clear();
+  }
+
   /**
    * Returns true if the step's block is loaded. If not, records it as pending
    * and sends a request to the server.

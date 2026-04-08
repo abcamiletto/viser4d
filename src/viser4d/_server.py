@@ -30,10 +30,9 @@ class Viser4dServer(viser.ViserServer):
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
         super().__init__(**kwargs)
 
-        self.num_steps = num_steps
         self._timeline_fps = require_positive_float("fps", fps)
         self._timeline = TimelineStore(
-            self.num_steps,
+            num_steps,
             flush_executor=impl.server_thread_executor(self),
         )
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
@@ -46,8 +45,8 @@ class Viser4dServer(viser.ViserServer):
             Callable[[ClientHandle, bool], None | Coroutine[Any, Any, None]]
         ] = []
         self._stop_event = threading.Event()
-        self._recorder = SceneRecorder(self, self._timeline)
-        self._export_builder = ExportBuilder(self, self._timeline)
+        self._recorder = SceneRecorder(self)
+        self._export_builder = ExportBuilder(self)
 
         impl.queue_server_message(self, impl.run_javascript_message(runtime_source()))
 
@@ -85,6 +84,11 @@ class Viser4dServer(viser.ViserServer):
         return self._recorder.at(t)
 
     @property
+    def num_steps(self) -> int:
+        """Current number of timesteps in the active timeline."""
+        return self._timeline.num_steps
+
+    @property
     def fps(self) -> float:
         """Timeline step rate used for recording, audio timing, and export."""
         return self._timeline_fps
@@ -112,6 +116,29 @@ class Viser4dServer(viser.ViserServer):
         next_speed = require_positive_float("speed", speed)
         for playback in self._client_playback_values():
             playback.set_speed(next_speed)
+
+    def set_steps(self, num_steps: int) -> None:
+        """Resize the timeline, preserving retained steps and dropping truncated ones."""
+        if num_steps < 1:
+            raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
+        if num_steps == self.num_steps:
+            return
+        old_timeline = self._recorder.resize_timeline(num_steps)
+        try:
+            for playback in self._client_playback_values():
+                playback.sync_steps()
+        finally:
+            old_timeline.close()
+
+    def clear(self) -> None:
+        """Reset the timeline, playback state, and shared scene content."""
+        old_timeline = self._recorder.clear_timeline()
+        try:
+            self.scene.reset()
+            for playback in self._client_playback_values():
+                playback.clear()
+        finally:
+            old_timeline.close()
 
     def on_timestep_change(
         self,
