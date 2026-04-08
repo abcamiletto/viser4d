@@ -25,6 +25,8 @@ from ._messages_util import (
 
 @dataclass
 class AudioTrackState:
+    """Checkpoint snapshot for one logical audio track."""
+
     sample_rate: int
     waveform: np.ndarray
     volume: float = 1.0
@@ -32,6 +34,8 @@ class AudioTrackState:
 
 @dataclass
 class CheckpointState:
+    """Materialized scene and audio state at a block boundary."""
+
     scene_updates: dict[str, StoredMessage] = field(default_factory=dict)
     key_to_node: dict[str, str | None] = field(default_factory=dict)
     audio_tracks: dict[str, AudioTrackState] = field(default_factory=dict)
@@ -55,6 +59,7 @@ class _CheckpointAudioTrackPayload(msgspec.Struct):
 def apply_scene_message(
     state: CheckpointState, key: str, message: StoredMessage
 ) -> None:
+    """Fold one stored scene message into a mutable checkpoint."""
     name = extract_message_name(message)
     if message.payload.get("type") == "RemoveSceneNodeMessage" and isinstance(
         name, str
@@ -75,6 +80,7 @@ def apply_scene_message(
 
 
 def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
+    """Fold one stored audio message into a mutable checkpoint."""
     message_type = message.payload.get("type")
     name = extract_message_name(message)
     if not isinstance(message_type, str) or not isinstance(name, str):
@@ -94,9 +100,11 @@ def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
         return
     if message_type == "SetAudioVolumeMessage":
         track.volume = stored_float(message.payload["volume"])
-    elif message_type == "SetAudioWaveformMessage":
+        return
+    if message_type == "SetAudioWaveformMessage":
         track.waveform = _decode_audio_payload(stored_dict(message.payload["waveform"]))
-    elif message_type == "AppendAudioMessage":
+        return
+    if message_type == "AppendAudioMessage":
         track.waveform = _append_audio_waveform(
             track.waveform,
             _decode_audio_payload(stored_dict(message.payload["waveform"])),
@@ -113,6 +121,7 @@ def apply_steps(state: CheckpointState, steps: list[TimelineStep]) -> None:
 
 
 def copy_checkpoint(state: CheckpointState) -> CheckpointState:
+    """Deep-copy checkpoint state for caching or reuse."""
     return CheckpointState(
         scene_updates=dict(state.scene_updates),
         key_to_node=dict(state.key_to_node),
@@ -161,6 +170,7 @@ def checkpoint_messages(state: CheckpointState) -> list[StoredMessage]:
 
 
 def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
+    """Persist a checkpoint snapshot to disk."""
     audio_tracks = [
         _CheckpointAudioTrackPayload(
             name=name,
@@ -183,6 +193,7 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
 
 
 def load_checkpoint_file(path: Path) -> CheckpointState:
+    """Load a checkpoint snapshot written by :func:`write_checkpoint_file`."""
     raw = zstandard.ZstdDecompressor().decompress(path.read_bytes())
     payload = msgspec.msgpack.decode(raw, type=_CheckpointFilePayload)
     scene_updates = dict(payload.sceneUpdates)

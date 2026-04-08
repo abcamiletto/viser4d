@@ -201,6 +201,17 @@ def test_set_steps_rejects_active_timeline_recording() -> None:
         server.stop()
 
 
+def test_at_rejects_nested_recording_sessions() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with pytest.raises(RuntimeError, match="cannot be nested"):
+            with server.at(0):
+                with server.at(1):
+                    pass
+    finally:
+        server.stop()
+
+
 def test_clear_resets_timeline_and_shared_scene() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:

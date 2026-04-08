@@ -25,41 +25,40 @@ def bundle_path() -> pathlib.Path:
 
 
 def ensure_client_is_built() -> None:
+    """Ensure ``runtime.js`` exists and is up to date enough to load."""
     client_root = client_dir()
     runtime_path = bundle_path()
-    if runtime_path.exists() and not _is_editable_install():
-        return
-
-    if not (client_root / "package.json").exists():
-        if runtime_path.exists():
-            return
-        raise RuntimeError(
-            "Missing generated client bundle at src/viser4d/runtime.js and viser4d "
-            "could not rebuild it automatically."
+    package_json_path = client_root / "package.json"
+    missing_bundle_message = (
+        "Missing generated client bundle at src/viser4d/runtime.js and viser4d "
+        "could not rebuild it automatically."
+    )
+    runtime_exists = runtime_path.exists()
+    if runtime_exists:
+        has_client_sources = package_json_path.exists()
+        bundle_is_fresh = has_client_sources and (
+            _modified_time_recursive(client_root) <= runtime_path.stat().st_mtime
         )
-    if (
-        runtime_path.exists()
-        and _modified_time_recursive(client_root) <= runtime_path.stat().st_mtime
-    ):
-        return
+        can_use_existing_bundle = (
+            not _is_editable_install() or not has_client_sources or bundle_is_fresh
+        )
+        if can_use_existing_bundle:
+            return
 
     try:
         _build_client()
-    except (FileNotFoundError, RuntimeError, subprocess.CalledProcessError):
-        if runtime_path.exists():
-            warnings.warn(
-                "viser4d client sources changed, but the bundle could not be rebuilt. "
-                "Using the existing generated bundle.",
-                stacklevel=2,
-            )
-            return
-        raise RuntimeError(
-            "Missing generated client bundle at src/viser4d/runtime.js and viser4d "
-            "could not rebuild it automatically."
+    except (FileNotFoundError, RuntimeError, subprocess.CalledProcessError) as exc:
+        if not runtime_path.exists():
+            raise RuntimeError(missing_bundle_message) from exc
+        warnings.warn(
+            "viser4d client sources changed, but the bundle could not be rebuilt. "
+            "Using the existing generated bundle.",
+            stacklevel=2,
         )
 
 
 def _modified_time_recursive(root: pathlib.Path) -> float:
+    """Return the newest source-file mtime under ``root``."""
     return max(
         path.stat().st_mtime
         for path in root.rglob("*")

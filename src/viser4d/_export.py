@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from rich.progress import track
 
+from . import _viser_private as impl
 from ._hybrid import stored_message_as_serializable_dict
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ class ExportBuilder:
         start_timestep: int,
         end_timestep: int | None,
     ) -> tuple[int, int]:
+        """Normalize and validate the requested export bounds."""
         start = start_timestep
         end = end_timestep if end_timestep is not None else self._server.num_steps - 1
         if not 0 <= start < self._server.num_steps:
@@ -68,13 +70,13 @@ class ExportBuilder:
     def _build_serializer(
         self, *, start_timestep: int, end_timestep: int | None
     ) -> viser.infra.StateSerializer:
+        """Build viser's serializer populated with timeline state for the range."""
         start, end = self._validate_timesteps(
             start_timestep=start_timestep,
             end_timestep=end_timestep,
         )
         serializer = self._server.get_scene_serializer()
-        binary_buffers = serializer._binary_buffers
-        recorded_messages = serializer._messages
+        binary_buffers = impl.serializer_binary_buffers(serializer)
         for step in track(
             range(end + 1),
             description="Exporting .viser",
@@ -84,13 +86,11 @@ class ExportBuilder:
             if step > start:
                 serializer.insert_sleep(1.0 / self._server.fps)
             for message in self._server._timeline.messages_for_step(step):
-                recorded_messages.append(
-                    (
-                        serializer._time,
-                        stored_message_as_serializable_dict(
-                            message,
-                            binary_buffers=binary_buffers,
-                        ),
-                    )
+                impl.append_serializer_message(
+                    serializer,
+                    stored_message_as_serializable_dict(
+                        message,
+                        binary_buffers=binary_buffers,
+                    ),
                 )
         return serializer

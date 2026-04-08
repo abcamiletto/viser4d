@@ -82,6 +82,14 @@ def queue_client_message(client: Any, message: Message) -> None:
     client._websock_connection.queue_message(message)
 
 
+def serializer_binary_buffers(serializer: Any) -> list[bytes]:
+    return serializer._binary_buffers
+
+
+def append_serializer_message(serializer: Any, message: object) -> None:
+    serializer._messages.append((serializer._time, message))
+
+
 def register_message_handler(
     server: viser.ViserServer,
     message_cls: type[Any],
