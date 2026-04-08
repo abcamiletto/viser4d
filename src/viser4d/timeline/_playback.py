@@ -122,6 +122,7 @@ class ClientPlaybackHandle:
         )
 
     def sync_steps(self) -> None:
+        """Resync this client after the server timeline length changes."""
         max_step = self._server.num_steps - 1
         with self._lock:
             current_timestep = min(self._current_timestep, max_step)
@@ -143,6 +144,7 @@ class ClientPlaybackHandle:
         self.seek(current_timestep)
 
     def clear(self) -> None:
+        """Reset client playback state and clear the browser runtime."""
         with self._lock:
             stale_futures = list(self._pending_block_loads.values())
             self._speed = 1.0
@@ -160,6 +162,7 @@ class ClientPlaybackHandle:
         self.seek(0)
 
     def apply_message_update(self, message: StoredMessage) -> None:
+        """Forward one live stored message into the browser runtime."""
         self._send_runtime_message(
             Viser4dRuntimeMessage(
                 method="applyMessageUpdate",
@@ -168,6 +171,7 @@ class ClientPlaybackHandle:
         )
 
     def load_block(self, payload: RuntimeBlockPayload) -> None:
+        """Inflate and send one timeline block payload to the browser runtime."""
         self._send_runtime_message(
             Viser4dRuntimeMessage(
                 method="loadBlock",
@@ -185,6 +189,7 @@ class ClientPlaybackHandle:
         )
 
     def handle_runtime_event(self, message: Viser4dRuntimeEventMessage) -> None:
+        """Mirror browser runtime events back into the Python playback state."""
         if message.event == "ready":
             with self._lock:
                 if self._runtime_ready:
@@ -195,12 +200,14 @@ class ClientPlaybackHandle:
             for pending_message in pending_messages:
                 impl.queue_client_message(self._client, pending_message)
             return
-        if message.event == "blockRequest" and message.step is not None:
+        if message.event == "blockRequest":
+            assert message.step is not None, "blockRequest event missing 'step' field."
             if message.step >= self._server.num_steps:
                 return
             self._sync_loaded_blocks(self._require_timestep(message.step), force=True)
             return
-        if message.event == "timestep" and message.step is not None:
+        if message.event == "timestep":
+            assert message.step is not None, "timestep event missing 'step' field."
             if message.step >= self._server.num_steps:
                 return
             timestep = self._require_timestep(message.step)
@@ -209,11 +216,15 @@ class ClientPlaybackHandle:
             self._sync_loaded_blocks(timestep)
             self._server._dispatch_timestep_change(self._client, timestep)
             return
-        if message.event == "speed" and message.speed is not None:
+        if message.event == "speed":
+            assert message.speed is not None, "speed event missing 'speed' field."
             with self._lock:
                 self._speed = require_positive_float("speed", message.speed)
             return
-        if message.event == "playbackState" and message.isPlaying is not None:
+        if message.event == "playbackState":
+            assert message.isPlaying is not None, (
+                "playbackState event missing 'isPlaying' field."
+            )
             with self._lock:
                 if message.isPlaying == self._is_playing:
                     return
@@ -221,6 +232,7 @@ class ClientPlaybackHandle:
             self._server._dispatch_playback_change(self._client, message.isPlaying)
 
     def _sync_runtime_config(self) -> None:
+        """Send the current playback config and GUI ids to the browser runtime."""
         with self._lock:
             speed, loop = self._speed, self._loop
         self._send_runtime_message(
@@ -242,6 +254,7 @@ class ClientPlaybackHandle:
         )
 
     def _create_gui(self, brand_color: tuple[int, int, int] | None) -> None:
+        """Create the per-client playback controls."""
         max_step = self._server.num_steps - 1
         gui = self._client.gui
         # High order so the playback folder always sorts below user-added GUI.
@@ -271,6 +284,7 @@ class ClientPlaybackHandle:
         )
 
     def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
+        """Keep the current and next timeline blocks resident in the runtime."""
         timeline = self._server._timeline
         current_block = timeline.block_index_for_step(timestep)
         desired = {current_block}
@@ -310,15 +324,12 @@ class ClientPlaybackHandle:
         future: Future[RuntimeBlockPayload],
     ) -> None:
         with self._lock:
-            pending_future = self._pending_block_loads.get(block_index)
-            if pending_future is future:
-                self._pending_block_loads.pop(block_index, None)
-            should_send = (
-                pending_future is future and block_index in self._loaded_blocks
-            )
-        payload = future.result()
+            if self._pending_block_loads.get(block_index) is not future:
+                return
+            self._pending_block_loads.pop(block_index)
+            should_send = block_index in self._loaded_blocks
         if should_send:
-            self.load_block(payload)
+            self.load_block(future.result())
 
     def _send_runtime_message(self, message: impl.Message) -> None:
         with self._lock:

@@ -29,13 +29,13 @@ def store_raw_message(message: impl.Message) -> StoredMessage:
 
 
 def stored_int(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+    if not isinstance(value, (int, float)):
         raise TypeError(f"Expected int-like stored value, got {type(value).__name__}.")
     return int(value)
 
 
 def stored_float(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+    if not isinstance(value, (int, float)):
         raise TypeError(
             f"Expected float-like stored value, got {type(value).__name__}."
         )

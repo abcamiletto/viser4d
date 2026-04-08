@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import contextvars
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -22,6 +21,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class TimelineContext:
+    """Scene and audio APIs exposed inside ``server.at(t)``."""
+
     scene: impl.SceneApi
     audio: AudioApi
 
@@ -44,9 +45,7 @@ class SceneRecorder:
         self._refresh_timer: threading.Timer | None = None
         self._refresh_lock = threading.Lock()
         self._timeline_lock = threading.RLock()
-        self._session: contextvars.ContextVar[_WriteSession | None] = (
-            contextvars.ContextVar("viser4d_timeline_session", default=None)
-        )
+        self._active_session: _WriteSession | None = None
         self._transport = _TimelineTransport(server, self)
         owner = _TimelineSceneOwner(self._transport)
         self.scene = impl.create_scene_api(
@@ -61,14 +60,17 @@ class SceneRecorder:
 
     @contextlib.contextmanager
     def at(self, t: int) -> Iterator[TimelineContext]:
+        """Record scene and audio mutations into timestep ``t``."""
         changed_block: int | None = None
         with self._timeline_lock:
+            if self._active_session is not None:
+                raise RuntimeError("server.at(t) cannot be nested.")
             session = _WriteSession(step=self._server._timeline.validate_step(t))
-            token = self._session.set(session)
+            self._active_session = session
             try:
                 yield TimelineContext(scene=self.scene, audio=self.audio)
             finally:
-                self._session.reset(token)
+                self._active_session = None
                 if session.messages:
                     self._validate_step_messages(session.messages)
                     self._server._timeline.record_step(session.step, session.messages)
@@ -85,7 +87,12 @@ class SceneRecorder:
         data: np.ndarray,
         sample_rate: int,
     ) -> AudioHandle:
-        session = self._require_current_session()
+        """Create a timeline-owned audio track inside the active write session."""
+        session = self._active_session
+        if session is None:
+            raise RuntimeError(
+                "timeline.audio.add_track() is only valid inside server.at(t)."
+            )
         state = AudioState(
             name=name,
             sample_rate=sample_rate,
@@ -104,7 +111,7 @@ class SceneRecorder:
 
     def route_message(self, message: impl.Message) -> None:
         """Route a timeline-scene message to the current recording session."""
-        session = self._current_session()
+        session = self._active_session
         if session is not None:
             session.messages.append(message)
             return
@@ -117,7 +124,8 @@ class SceneRecorder:
         self._queue_client_block_refresh(0)
 
     def dispatch_audio_update(self, message: impl.Message) -> None:
-        session = self._current_session()
+        """Route audio handle updates to the active session or live runtimes."""
+        session = self._active_session
         if session is not None:
             session.messages.append(message)
             return
@@ -126,15 +134,18 @@ class SceneRecorder:
             playback.apply_message_update(stored_message)
 
     def close(self) -> None:
+        """Stop any deferred client refresh work."""
         self._cancel_pending_refresh()
 
     def resize_timeline(self, num_steps: int) -> TimelineStore:
+        """Replace the timeline with a resized copy."""
         return self._replace_timeline(
             lambda timeline: timeline.resized_copy(num_steps),
             "server.set_steps() cannot run while inside server.at(t).",
         )
 
     def clear_timeline(self) -> TimelineStore:
+        """Replace the timeline with an empty copy."""
         return self._replace_timeline(
             lambda timeline: timeline.empty_copy(),
             "server.clear() cannot run while inside server.at(t).",
@@ -154,23 +165,12 @@ class SceneRecorder:
         active_session_error: str,
     ) -> TimelineStore:
         self._cancel_pending_refresh()
-        if self._current_session() is not None:
+        if self._active_session is not None:
             raise RuntimeError(active_session_error)
         with self._timeline_lock:
             old_timeline = self._server._timeline
             self._server._timeline = replace(old_timeline)
         return old_timeline
-
-    def _current_session(self) -> _WriteSession | None:
-        return self._session.get()
-
-    def _require_current_session(self) -> _WriteSession:
-        session = self._current_session()
-        if session is None:
-            raise RuntimeError(
-                "timeline.audio.add_track() is only valid inside server.at(t)."
-            )
-        return session
 
     def _queue_client_block_refresh(self, changed_block: int) -> None:
         with self._refresh_lock:
@@ -219,6 +219,8 @@ class SceneRecorder:
 
 
 class _TimelineTransport(impl.WebsockMessageHandler):
+    """Minimal transport that feeds ``SceneApi`` messages back into the recorder."""
+
     def __init__(self, server: Viser4dServer, recorder: SceneRecorder) -> None:
         super().__init__()
         self._server = server

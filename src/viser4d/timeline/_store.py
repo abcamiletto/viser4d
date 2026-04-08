@@ -34,6 +34,8 @@ from ._messages_util import (
 
 @dataclass
 class TimelineBlock:
+    """In-memory representation of one block of recorded timesteps."""
+
     steps: list[TimelineStep]
     dirty: bool = False
 
@@ -41,6 +43,10 @@ class TimelineBlock:
 class _BlockFilePayload(msgspec.Struct):
     sceneSteps: list[list[tuple[str, StoredMessage]]]
     audioSteps: list[list[StoredMessage]]
+
+
+def _is_same_node_or_descendant(name: str, root: str) -> bool:
+    return name == root or name.startswith(f"{root}/")
 
 
 class TimelineStore:
@@ -128,6 +134,7 @@ class TimelineStore:
             self._invalidate_checkpoints_after_block(block_index)
 
     def record_global_override(self, message: impl.Message) -> None:
+        """Store a live scene override that should replay for all future steps."""
         with self._lock:
             stored_message = store_raw_message(message)
             node_name = extract_message_name(stored_message)
@@ -135,20 +142,12 @@ class TimelineStore:
             if stored_message.payload.get(
                 "type"
             ) == "RemoveSceneNodeMessage" and isinstance(node_name, str):
-                prefix = f"{node_name}/"
-                for key, override_message in list(self._global_overrides.items()):
-                    override_name = extract_message_name(override_message)
-                    if override_name == node_name:
-                        self._global_overrides.pop(key)
-                        continue
-                    if isinstance(override_name, str) and override_name.startswith(
-                        prefix
-                    ):
-                        self._global_overrides.pop(key)
+                self._prune_removed_node_overrides(node_name)
             self._global_overrides.pop(redundancy_key, None)
             self._global_overrides[redundancy_key] = stored_message
 
     def empty_copy(self, num_steps: int | None = None) -> TimelineStore:
+        """Return a fresh timeline store with matching storage settings."""
         return TimelineStore(
             self.num_steps if num_steps is None else num_steps,
             block_size=self.block_size,
@@ -158,6 +157,7 @@ class TimelineStore:
         )
 
     def resized_copy(self, num_steps: int) -> TimelineStore:
+        """Clone this timeline into a new store with ``num_steps`` timesteps."""
         with self._lock:
             resized = self.empty_copy(num_steps)
             copied_steps = min(self.num_steps, num_steps)
@@ -182,19 +182,38 @@ class TimelineStore:
                 for name, step in self._node_start_steps.items()
                 if step < copied_steps
             }
-            resized._global_overrides = {}
-            for key, message in self._global_overrides.items():
-                node_name = extract_message_name(message)
-                if (
-                    isinstance(node_name, str)
-                    and node_name not in resized._node_start_steps
-                ):
-                    continue
-                resized._global_overrides[key] = message
+            resized._global_overrides = self._copy_live_global_overrides(
+                resized._node_start_steps
+            )
 
             return resized
 
+    def _prune_removed_node_overrides(self, removed_node: str) -> None:
+        remaining_overrides: dict[str, StoredMessage] = {}
+        for key, message in self._global_overrides.items():
+            node_name = extract_message_name(message)
+            is_removed_subtree = node_name is not None and _is_same_node_or_descendant(
+                node_name, removed_node
+            )
+            if is_removed_subtree:
+                continue
+            remaining_overrides[key] = message
+        self._global_overrides = remaining_overrides
+
+    def _copy_live_global_overrides(
+        self, live_nodes: dict[str, int]
+    ) -> dict[str, StoredMessage]:
+        overrides: dict[str, StoredMessage] = {}
+        for key, message in self._global_overrides.items():
+            node_name = extract_message_name(message)
+            is_stale_override = node_name is not None and node_name not in live_nodes
+            if is_stale_override:
+                continue
+            overrides[key] = message
+        return overrides
+
     def messages_for_step(self, step: int) -> list[StoredMessage]:
+        """Return all messages visible at ``step``, including global overrides."""
         with self._lock:
             step = self.validate_step(step)
             block = self._load_block(step // self.block_size)
@@ -204,6 +223,7 @@ class TimelineStore:
         return self.validate_step(step) // self.block_size
 
     def block_payload(self, block_index: int) -> RuntimeBlockPayload:
+        """Build the checkpoint-plus-step payload consumed by the browser runtime."""
         with self._lock:
             block_index = self._validate_block_index(block_index)
             ckpt = self._checkpoint_for_block(block_index)
@@ -235,15 +255,17 @@ class TimelineStore:
         messages: list[StoredMessage] = []
         for message in self._global_overrides.values():
             node_name = extract_message_name(message)
-            if (
+            node_started_later = (
                 isinstance(node_name, str)
                 and self._node_start_steps.get(node_name, 0) > step
-            ):
+            )
+            if node_started_later:
                 continue
             messages.append(message)
         return messages
 
     def close(self) -> None:
+        """Flush any dirty blocks and release temporary on-disk storage."""
         with self._lock:
             try:
                 for block_index, block in list(self._loaded_blocks.items()):
