@@ -67,7 +67,6 @@ class TimelineStore:
             )
         self.num_steps = num_steps
         self.block_size = block_size
-        self.block_count = math.ceil(num_steps / block_size)
         self._node_start_steps: dict[str, int] = {}
         self._global_overrides: dict[str, StoredMessage] = {}
         self._lock = threading.RLock()
@@ -90,6 +89,10 @@ class TimelineStore:
                 f"Timestep {step} is out of range for {self.num_steps} steps."
             )
         return step
+
+    @property
+    def block_count(self) -> int:
+        return math.ceil(self.num_steps / self.block_size)
 
     def step(self, step: int) -> TimelineStep:
         """Return the storage bucket for one timestep."""
@@ -144,6 +147,52 @@ class TimelineStore:
                         self._global_overrides.pop(key)
             self._global_overrides.pop(redundancy_key, None)
             self._global_overrides[redundancy_key] = stored_message
+
+    def empty_copy(self, num_steps: int | None = None) -> TimelineStore:
+        return TimelineStore(
+            self.num_steps if num_steps is None else num_steps,
+            block_size=self.block_size,
+            max_loaded_blocks=self._max_loaded_blocks,
+            max_cached_checkpoints=self._max_cached_checkpoints,
+            flush_executor=self._flush_executor,
+        )
+
+    def resized_copy(self, num_steps: int) -> TimelineStore:
+        with self._lock:
+            resized = self.empty_copy(num_steps)
+            copied_steps = min(self.num_steps, num_steps)
+            copied_blocks = math.ceil(copied_steps / self.block_size)
+            for block_index in range(copied_blocks):
+                source_block = self._load_block(block_index)
+                target_block = resized._load_block(block_index)
+                target_block.dirty = True
+                block_start = block_index * self.block_size
+                copied_step_count = min(
+                    len(target_block.steps),
+                    copied_steps - block_start,
+                )
+                for offset in range(copied_step_count):
+                    source_step = source_block.steps[offset]
+                    target_step = target_block.steps[offset]
+                    target_step.scene_updates = dict(source_step.scene_updates)
+                    target_step.audio_updates = list(source_step.audio_updates)
+
+            resized._node_start_steps = {
+                name: step
+                for name, step in self._node_start_steps.items()
+                if step < copied_steps
+            }
+            resized._global_overrides = {}
+            for key, message in self._global_overrides.items():
+                node_name = extract_message_name(message)
+                if (
+                    isinstance(node_name, str)
+                    and node_name not in resized._node_start_steps
+                ):
+                    continue
+                resized._global_overrides[key] = message
+
+            return resized
 
     def messages_for_step(self, step: int) -> list[StoredMessage]:
         with self._lock:

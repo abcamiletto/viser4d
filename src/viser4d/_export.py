@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 from rich.progress import track
 
 from ._hybrid import stored_message_as_serializable_dict
-from .timeline._store import TimelineStore
 
 if TYPE_CHECKING:
     import viser.infra
@@ -17,9 +16,8 @@ if TYPE_CHECKING:
 class ExportBuilder:
     """Serialize the current timeline with viser's native recording API."""
 
-    def __init__(self, server: Viser4dServer, timeline: TimelineStore) -> None:
+    def __init__(self, server: Viser4dServer) -> None:
         self._server = server
-        self._timeline = timeline
 
     def serialize(
         self, *, start_timestep: int = 0, end_timestep: int | None = None
@@ -85,7 +83,7 @@ class ExportBuilder:
         ):
             if step > start:
                 serializer.insert_sleep(1.0 / self._server.fps)
-            for message in self._timeline.messages_for_step(step):
+            for message in self._server._timeline.messages_for_step(step):
                 recorded_messages.append(
                     (
                         serializer._time,

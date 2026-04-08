@@ -37,7 +37,7 @@ class ClientPlaybackHandle:
         self._is_playing = False
         self._current_timestep = 0
         self._loaded_blocks: set[int] = set()
-        self._pending_block_loads: set[int] = set()
+        self._pending_block_loads: dict[int, Future[RuntimeBlockPayload]] = {}
         self._pending_runtime_messages: list[impl.Message] = []
         self._runtime_ready = False
         self._lock = threading.RLock()
@@ -120,6 +120,44 @@ class ClientPlaybackHandle:
                 },
             )
         )
+
+    def sync_steps(self) -> None:
+        max_step = self._server.num_steps - 1
+        with self._lock:
+            current_timestep = min(self._current_timestep, max_step)
+            previous_blocks = set(self._loaded_blocks)
+            stale_futures = list(self._pending_block_loads.values())
+            self._loaded_blocks = set()
+            self._pending_block_loads = {}
+        for future in stale_futures:
+            future.result()
+        for block_index in sorted(previous_blocks):
+            self._send_runtime_message(
+                Viser4dRuntimeMessage(
+                    method="evictBlock",
+                    payload={"block": block_index},
+                )
+            )
+        self._timeline_slider.max = max_step
+        self._sync_runtime_config()
+        self.seek(current_timestep)
+
+    def clear(self) -> None:
+        with self._lock:
+            stale_futures = list(self._pending_block_loads.values())
+            self._speed = 1.0
+            self._loop = False
+            self._is_playing = False
+            self._loaded_blocks = set()
+            self._pending_block_loads = {}
+            if not self._runtime_ready:
+                self._pending_runtime_messages = []
+        for future in stale_futures:
+            future.result()
+        self._speed_slider.value = self._speed
+        self._send_runtime_message(Viser4dRuntimeMessage(method="clear", payload=None))
+        self._sync_runtime_config()
+        self.seek(0)
 
     def apply_message_update(self, message: StoredMessage) -> None:
         self._send_runtime_message(
@@ -252,10 +290,10 @@ class ClientPlaybackHandle:
         with self._lock:
             if block_index in self._pending_block_loads:
                 return
-            self._pending_block_loads.add(block_index)
-        future = impl.server_thread_executor(self._server).submit(
-            self._server._timeline.block_payload, block_index
-        )
+            future = impl.server_thread_executor(self._server).submit(
+                self._server._timeline.block_payload, block_index
+            )
+            self._pending_block_loads[block_index] = future
         future.add_done_callback(
             lambda f: self._server.get_event_loop().call_soon_threadsafe(
                 self._finish_block_load, block_index, f
@@ -263,11 +301,17 @@ class ClientPlaybackHandle:
         )
 
     def _finish_block_load(
-        self, block_index: int, future: Future[RuntimeBlockPayload]
+        self,
+        block_index: int,
+        future: Future[RuntimeBlockPayload],
     ) -> None:
         with self._lock:
-            self._pending_block_loads.discard(block_index)
-            should_send = block_index in self._loaded_blocks
+            pending_future = self._pending_block_loads.get(block_index)
+            if pending_future is future:
+                self._pending_block_loads.pop(block_index, None)
+            should_send = (
+                pending_future is future and block_index in self._loaded_blocks
+            )
         payload = future.result()
         if should_send:
             self.load_block(payload)

@@ -20,6 +20,11 @@ import {
 type RuntimeControlMessage =
   | {
       type: "Viser4dRuntimeMessage";
+      method: "clear";
+      payload: null;
+    }
+  | {
+      type: "Viser4dRuntimeMessage";
       method: "configure";
       payload: Partial<RuntimeConfig>;
     }
@@ -224,6 +229,16 @@ export class TimelineRuntime {
     debugState.push("runtime.configure", this.config);
     this.engine.syncAudioTransport();
     this.syncPlaybackButtons();
+  }
+
+  clear(): void {
+    this.engine.dispose();
+    this.blocks.reset();
+    this.scene.resetState();
+    this.audio.reset();
+    this.lastLocalSliderStep = -1;
+    this.lastSyncedStep = -1;
+    debugState.push("runtime.clear", null);
   }
 
   loadBlock(payload: {
@@ -462,6 +477,9 @@ export class TimelineRuntime {
     switch (message.method) {
       case "configure":
         this.configure(message.payload);
+        return;
+      case "clear":
+        this.clear();
         return;
       case "loadBlock":
         this.loadBlock(message.payload);

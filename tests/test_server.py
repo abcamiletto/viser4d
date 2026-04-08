@@ -38,6 +38,13 @@ def test_num_steps_must_be_positive() -> None:
     with pytest.raises(ValueError, match="num_steps must be >= 1"):
         viser4d.Viser4dServer(num_steps=0, port=0, verbose=False)
 
+    server = viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
+    try:
+        with pytest.raises(ValueError, match="num_steps must be >= 1"):
+            server.set_steps(0)
+    finally:
+        server.stop()
+
 
 def test_fps_and_speed_must_be_positive() -> None:
     with pytest.raises(ValueError, match="fps must be a positive finite float"):
@@ -132,6 +139,109 @@ def test_same_step_scene_updates_serialize_latest_value_once() -> None:
         ]
 
         assert positions == [(2.0, 0.0, 0.0)]
+    finally:
+        server.stop()
+
+
+def test_set_steps_can_grow_timeline() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with server.at(1) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+
+        server.set_steps(4)
+
+        with server.at(3):
+            joint.position = (3.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        positions = [
+            tuple(cast(list[float], message["position"]))
+            for _, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert positions == [(3.0, 0.0, 0.0)]
+    finally:
+        server.stop()
+
+
+def test_set_steps_can_shrink_timeline() -> None:
+    server = viser4d.Viser4dServer(num_steps=4, port=0, verbose=False)
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+
+        with server.at(3):
+            joint.position = (3.0, 0.0, 0.0)
+
+        server.set_steps(2)
+
+        with pytest.raises(IndexError, match="out of range"):
+            with server.at(3):
+                pass
+
+        with pytest.raises(ValueError, match="start_timestep must be in \\[0, 1\\]"):
+            server.serialize(start_timestep=2, end_timestep=2)
+    finally:
+        server.stop()
+
+
+def test_set_steps_rejects_active_timeline_recording() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with pytest.raises(
+            RuntimeError, match="cannot run while inside server.at\\(t\\)"
+        ):
+            with server.at(0):
+                server.set_steps(3)
+    finally:
+        server.stop()
+
+
+def test_clear_resets_timeline_and_shared_scene() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        server.scene.add_frame("/static")
+        with server.at(0) as timeline:
+            timeline.scene.add_frame("/joint")
+
+        server.clear()
+
+        assert server.scene.get_handle_by_name("/static") is None
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        assert all(message.get("name") != "/joint" for _, message in messages)
+
+        with server.at(1) as timeline:
+            timeline.scene.add_frame("/joint")
+
+        recording = _deserialize_recording(
+            server.serialize(start_timestep=1, end_timestep=1)
+        )
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        creation_messages = [
+            message
+            for _, message in messages
+            if message.get("type") == "FrameMessage" and message.get("name") == "/joint"
+        ]
+
+        assert len(creation_messages) == 1
+    finally:
+        server.stop()
+
+
+def test_clear_rejects_active_timeline_recording() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with pytest.raises(
+            RuntimeError, match="cannot run while inside server.at\\(t\\)"
+        ):
+            with server.at(0):
+                server.clear()
     finally:
         server.stop()
 

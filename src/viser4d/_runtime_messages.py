@@ -10,6 +10,7 @@ from . import _viser_private as impl
 
 RuntimeMethod = Literal[
     "applyMessageUpdate",
+    "clear",
     "configure",
     "evictBlock",
     "loadBlock",
