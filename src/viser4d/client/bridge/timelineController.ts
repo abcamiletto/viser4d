@@ -222,6 +222,10 @@ export class TimelineController {
       return true;
     }
     if (uuid === this.config.playButtonUuid) {
+      const isAtEnd = this.currentStep() === this.config.numSteps - 1;
+      if (!this.config.loop && isAtEnd) {
+        this.engine.seek({ step: 0 });
+      }
       this.engine.play({ speed: this.config.speed, loop: this.config.loop });
       return true;
     }
