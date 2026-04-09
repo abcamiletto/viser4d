@@ -68,8 +68,7 @@ class ClientPlaybackHandle:
         """Start playback on this client."""
         with self._lock:
             next_speed = self._speed
-            next_loop = self._server.loop
-        self._speed_slider.value = next_speed
+        next_loop = self._server.loop
         self._send_runtime_message(
             Viser4dRuntimeMessage(
                 method="play",
@@ -101,10 +100,10 @@ class ClientPlaybackHandle:
 
     def set_speed(self, speed: float) -> None:
         """Update playback speed on this client relative to timeline cadence."""
+        next_speed = require_positive_float("speed", speed)
         with self._lock:
-            self._speed = require_positive_float("speed", speed)
-            next_speed = self._speed
-            next_loop = self._server.loop
+            self._speed = next_speed
+        next_loop = self._server.loop
         self._speed_slider.value = next_speed
         self._send_runtime_message(
             Viser4dRuntimeMessage(
@@ -229,7 +228,7 @@ class ClientPlaybackHandle:
         """Send the current playback config and GUI ids to the browser runtime."""
         with self._lock:
             speed = self._speed
-            loop = self._server.loop
+        loop = self._server.loop
         self._send_runtime_message(
             Viser4dRuntimeMessage(
                 method="configure",
