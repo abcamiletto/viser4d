@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import warnings
 from concurrent.futures import Future
 from typing import TYPE_CHECKING
 
@@ -203,12 +204,24 @@ class ClientPlaybackHandle:
         if message.event == "blockRequest":
             assert message.step is not None, "blockRequest event missing 'step' field."
             if not 0 <= message.step < self._server.num_steps:
+                warnings.warn(
+                    f"Ignoring runtime {message.event!r} event with invalid "
+                    f"step={message.step}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 return
             self._sync_loaded_blocks(self._require_timestep(message.step), force=True)
             return
         if message.event == "timestep":
             assert message.step is not None, "timestep event missing 'step' field."
             if not 0 <= message.step < self._server.num_steps:
+                warnings.warn(
+                    f"Ignoring runtime {message.event!r} event with invalid "
+                    f"step={message.step}.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 return
             timestep = self._require_timestep(message.step)
             with self._lock:
