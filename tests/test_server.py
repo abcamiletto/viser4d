@@ -70,11 +70,12 @@ def test_fps_and_speed_must_be_positive() -> None:
 
 def test_play_no_longer_accepts_loop_or_speed_keywords() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    untyped_server = cast(Any, server)
     try:
         with pytest.raises(TypeError, match="unexpected keyword argument 'loop'"):
-            server.play(loop=True)
+            untyped_server.play(loop=True)
         with pytest.raises(TypeError, match="unexpected keyword argument 'speed'"):
-            server.play(speed=2.0)
+            untyped_server.play(speed=2.0)
     finally:
         server.stop()
 
