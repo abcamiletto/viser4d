@@ -244,10 +244,10 @@ Recorded messages are grouped into fixed-size blocks in the timeline store.
 JavaScript runtime (`TimelineRuntime`) alongside the normal viser viewer. Each
 tab manages its own independent transport: play, pause, seek, and speed are
 all client-local. The runtime fetches timeline blocks from the server on demand
-— only the blocks needed for the current playback position are requested. At
-each timestep the runtime replays the recorded viser messages for that step
-(and any prior steps in the same block that haven't been applied yet), keeping
-the rendered scene in sync with the timeline position.
+and keeps a small three-block circular window around the current playback
+position. At each timestep the runtime replays the recorded viser messages for
+that step (and any prior steps in the same block that haven't been applied
+yet), keeping the rendered scene in sync with the timeline position.
 
 - **Inside `at(t)`**: Use `timeline.scene` and `timeline.audio` from `with server.at(t) as timeline:`.
 - **Outside `at(t)`**: `server.scene` remains viser's live/static scene API.

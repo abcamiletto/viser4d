@@ -295,12 +295,16 @@ class ClientPlaybackHandle:
         return True
 
     def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
-        """Keep the current and next timeline blocks resident in the runtime."""
+        """Keep a three-block circular window centered on the current block."""
         timeline = self._server._timeline
+        block_count = timeline.block_count
         current_block = timeline.block_index_for_step(timestep)
-        desired = {current_block}
-        if current_block + 1 < timeline.block_count:
-            desired.add(current_block + 1)
+        if block_count <= 2:
+            desired = set(range(block_count))
+        else:
+            previous_block = (current_block - 1) % block_count
+            next_block = (current_block + 1) % block_count
+            desired = {previous_block, current_block, next_block}
         with self._lock:
             previous = set(self._loaded_blocks)
             self._loaded_blocks = desired
