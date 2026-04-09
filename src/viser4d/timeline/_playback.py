@@ -33,8 +33,7 @@ class ClientPlaybackHandle:
     ) -> None:
         self._server = server
         self._client = client
-        self._speed = 1.0
-        self._loop = False
+        self._speed = server.playback_speed
         self._is_playing = False
         self._current_timestep = 0
         self._loaded_blocks: set[int] = set()
@@ -43,7 +42,7 @@ class ClientPlaybackHandle:
         self._runtime_ready = False
         self._lock = threading.RLock()
         self._create_gui(brand_color)
-        self._sync_runtime_config()
+        self.sync_runtime_config()
         self._sync_loaded_blocks(self._current_timestep, force=True)
         # New clients need the initial timeline scene state before playback starts.
         self.seek(self._current_timestep)
@@ -66,16 +65,11 @@ class ClientPlaybackHandle:
     def current_timestep(self) -> int:
         return self._current_timestep
 
-    def play(self, speed: float | None = None, loop: bool | None = None) -> None:
+    def play(self) -> None:
         """Start playback on this client."""
         with self._lock:
-            if speed is not None:
-                self._speed = require_positive_float("speed", speed)
-            if loop is not None:
-                self._loop = bool(loop)
             next_speed = self._speed
-            next_loop = self._loop
-        self._speed_slider.value = next_speed
+        next_loop = self._server.loop
         self._send_runtime_message(
             Viser4dRuntimeMessage(
                 method="play",
@@ -107,10 +101,10 @@ class ClientPlaybackHandle:
 
     def set_speed(self, speed: float) -> None:
         """Update playback speed on this client relative to timeline cadence."""
+        next_speed = require_positive_float("speed", speed)
         with self._lock:
-            self._speed = require_positive_float("speed", speed)
-            next_speed = self._speed
-            next_loop = self._loop
+            self._speed = next_speed
+        next_loop = self._server.loop
         self._speed_slider.value = next_speed
         self._send_runtime_message(
             Viser4dRuntimeMessage(
@@ -141,7 +135,7 @@ class ClientPlaybackHandle:
                 )
             )
         self._timeline_slider.max = max_step
-        self._sync_runtime_config()
+        self.sync_runtime_config()
         self.seek(current_timestep)
 
     def clear(self) -> None:
@@ -149,7 +143,6 @@ class ClientPlaybackHandle:
         with self._lock:
             stale_futures = list(self._pending_block_loads.values())
             self._speed = 1.0
-            self._loop = False
             self._is_playing = False
             self._loaded_blocks = set()
             self._pending_block_loads = {}
@@ -159,7 +152,7 @@ class ClientPlaybackHandle:
             future.result()
         self._speed_slider.value = self._speed
         self._send_runtime_message(Viser4dRuntimeMessage(method="clear", payload=None))
-        self._sync_runtime_config()
+        self.sync_runtime_config()
         self.seek(0)
 
     def apply_message_update(self, message: StoredMessage) -> None:
@@ -232,10 +225,11 @@ class ClientPlaybackHandle:
                 self._is_playing = message.isPlaying
             self._server._dispatch_playback_change(self._client, message.isPlaying)
 
-    def _sync_runtime_config(self) -> None:
+    def sync_runtime_config(self) -> None:
         """Send the current playback config and GUI ids to the browser runtime."""
         with self._lock:
-            speed, loop = self._speed, self._loop
+            speed = self._speed
+        loop = self._server.loop
         self._send_runtime_message(
             Viser4dRuntimeMessage(
                 method="configure",
