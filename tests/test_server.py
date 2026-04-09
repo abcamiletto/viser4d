@@ -14,6 +14,7 @@ import viser4d
 from viser4d import _server as server_module
 from viser4d import _runtime as runtime_module
 from viser4d._runtime_messages import Viser4dRuntimeEventMessage
+from viser4d.timeline._playback import ClientPlaybackHandle
 
 
 def _deserialize_recording(blob: bytes) -> dict[str, object]:
@@ -60,6 +61,64 @@ def test_fps_and_speed_must_be_positive() -> None:
         server.stop()
 
 
+def test_play_no_longer_accepts_loop_keyword() -> None:
+    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
+    try:
+        with pytest.raises(TypeError, match="unexpected keyword argument 'loop'"):
+            server.play(loop=True)
+    finally:
+        server.stop()
+
+
+def test_server_loop_configuration_propagates_to_connected_and_future_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = viser4d.Viser4dServer(num_steps=2, loop=True, port=0, verbose=False)
+
+    class FakePlayback:
+        def __init__(self, server: Any, client: Any, **_kwargs) -> None:
+            self.client_id = client.client_id
+            self.loop_on_init = server._loop
+            self.config_syncs = 0
+            self.play_speeds: list[float | None] = []
+
+        def play(self, speed: float | None = None) -> None:
+            self.play_speeds.append(speed)
+
+        def _sync_runtime_config(self) -> None:
+            self.config_syncs += 1
+
+        def handle_runtime_event(self, _message: Viser4dRuntimeEventMessage) -> None:
+            pass
+
+    monkeypatch.setattr(server_module, "ClientPlaybackHandle", FakePlayback)
+
+    try:
+        attach_playback = server._client_connect_cb[-1]
+        attach_playback(cast(Any, SimpleNamespace(client_id=123)))
+        first = server.get_client_playback(123)
+
+        assert isinstance(first, FakePlayback)
+        assert first.loop_on_init is True
+
+        server.set_loop(False)
+
+        assert first.config_syncs == 1
+
+        attach_playback(cast(Any, SimpleNamespace(client_id=456)))
+        second = server.get_client_playback(456)
+
+        assert isinstance(second, FakePlayback)
+        assert second.loop_on_init is False
+
+        server.play()
+
+        assert first.play_speeds == [None]
+        assert second.play_speeds == [None]
+    finally:
+        server.stop()
+
+
 def test_timeline_operations_serialize_and_playback_commands() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
@@ -82,6 +141,48 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
         assert server.serialize(start_timestep=1, end_timestep=1)
     finally:
         server.stop()
+
+
+def test_client_playback_uses_current_server_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_create_gui(
+        self: ClientPlaybackHandle,
+        _brand_color: tuple[int, int, int] | None,
+    ) -> None:
+        self._timeline_slider = SimpleNamespace(value=0, max=1)
+        self._speed_slider = SimpleNamespace(value=self._speed)
+        self._step_buttons = SimpleNamespace()
+        self._play_button = SimpleNamespace()
+        self._pause_button = SimpleNamespace()
+
+    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", fake_create_gui)
+    monkeypatch.setattr(ClientPlaybackHandle, "_sync_runtime_config", lambda self: None)
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_sync_loaded_blocks",
+        lambda self, timestep, force=False: None,
+    )
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_send_runtime_message",
+        lambda self, message: messages.append(message),
+    )
+
+    server = cast(Any, SimpleNamespace(_loop=True, num_steps=2, fps=1.0))
+    client = cast(Any, SimpleNamespace(gui=None))
+    messages: list[Any] = []
+    playback = ClientPlaybackHandle(server, client)
+
+    messages.clear()
+    playback.play()
+
+    assert messages[-1].payload == {"speed": 1.0, "loop": True}
+
+    server._loop = False
+    playback.set_speed(0.5)
+
+    assert messages[-1].payload == {"speed": 0.5, "loop": False}
 
 
 def test_at_keeps_server_scene_live() -> None:

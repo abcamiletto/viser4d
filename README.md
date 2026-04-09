@@ -53,6 +53,8 @@ scrub, and step through the client-local timeline.
 - `server.play(...)` and `server.pause()` broadcast playback commands to the
   clients that are connected right now. They do not create a shared server
   clock or a persistent server-side playback speed.
+- `loop=` on `Viser4dServer(...)` and `server.set_loop(...)` control whether
+  playback wraps at the end for connected and future clients.
 
 ## Streaming ingest
 
@@ -157,12 +159,14 @@ playback.refresh()          # redraw current timestep from recorded state
 
 ## Server playback commands
 
-`server.play(speed=..., loop=...)` starts each connected client from that
-client's own current timestep. Omitting `speed` preserves each client's current
-speed; passing it overrides the connected clients only. `loop=True` enables
-looping; omitting it preserves each client's current loop state.
+`server.play(speed=...)` starts each connected client from that client's own
+current timestep. Omitting `speed` preserves each client's current speed;
+passing it overrides the connected clients only.
 `server.pause()` pauses each connected client wherever it currently is.
 `server.set_playback_speed(...)` updates speed without starting playback.
+`server.set_loop(...)` updates the loop setting for connected clients and for
+clients that connect later. You can also set the initial default with
+`Viser4dServer(..., loop=True)`.
 `server.refresh()` redraws the current timestep on all connected clients, which
 is useful after updating recorded scene data while paused.
 `server.set_steps(n)` resizes the timeline after initialization. Growing keeps
@@ -173,7 +177,8 @@ step `0` at speed `1.0`, and clears shared scene nodes added through
 `server.scene`.
 None of these change the base timeline step rate used for audio timing or
 export; set that with `fps=` when you construct the server. New clients always
-start paused at timestep `0` with speed `1.0`.
+start paused at timestep `0` with speed `1.0`, inheriting the current server
+loop setting.
 
 ## Export recordings
 

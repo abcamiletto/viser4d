@@ -33,7 +33,6 @@ class ClientPlaybackHandle:
         self._server = server
         self._client = client
         self._speed = 1.0
-        self._loop = False
         self._is_playing = False
         self._current_timestep = 0
         self._loaded_blocks: set[int] = set()
@@ -65,15 +64,13 @@ class ClientPlaybackHandle:
     def current_timestep(self) -> int:
         return self._current_timestep
 
-    def play(self, speed: float | None = None, loop: bool | None = None) -> None:
+    def play(self, speed: float | None = None) -> None:
         """Start playback on this client."""
         with self._lock:
             if speed is not None:
                 self._speed = require_positive_float("speed", speed)
-            if loop is not None:
-                self._loop = bool(loop)
             next_speed = self._speed
-            next_loop = self._loop
+            next_loop = self._server._loop
         self._speed_slider.value = next_speed
         self._send_runtime_message(
             Viser4dRuntimeMessage(
@@ -109,7 +106,7 @@ class ClientPlaybackHandle:
         with self._lock:
             self._speed = require_positive_float("speed", speed)
             next_speed = self._speed
-            next_loop = self._loop
+            next_loop = self._server._loop
         self._speed_slider.value = next_speed
         self._send_runtime_message(
             Viser4dRuntimeMessage(
@@ -148,7 +145,6 @@ class ClientPlaybackHandle:
         with self._lock:
             stale_futures = list(self._pending_block_loads.values())
             self._speed = 1.0
-            self._loop = False
             self._is_playing = False
             self._loaded_blocks = set()
             self._pending_block_loads = {}
@@ -234,7 +230,8 @@ class ClientPlaybackHandle:
     def _sync_runtime_config(self) -> None:
         """Send the current playback config and GUI ids to the browser runtime."""
         with self._lock:
-            speed, loop = self._speed, self._loop
+            speed = self._speed
+        loop = self._server._loop
         self._send_runtime_message(
             Viser4dRuntimeMessage(
                 method="configure",
