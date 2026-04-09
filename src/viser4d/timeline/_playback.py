@@ -203,27 +203,15 @@ class ClientPlaybackHandle:
             return
         if message.event == "blockRequest":
             assert message.step is not None, "blockRequest event missing 'step' field."
-            if not 0 <= message.step < self._server.num_steps:
-                warnings.warn(
-                    f"Ignoring runtime {message.event!r} event with invalid "
-                    f"step={message.step}.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+            if self._ignore_invalid_runtime_step(message.event, message.step):
                 return
-            self._sync_loaded_blocks(self._require_timestep(message.step), force=True)
+            self._sync_loaded_blocks(message.step, force=True)
             return
         if message.event == "timestep":
             assert message.step is not None, "timestep event missing 'step' field."
-            if not 0 <= message.step < self._server.num_steps:
-                warnings.warn(
-                    f"Ignoring runtime {message.event!r} event with invalid "
-                    f"step={message.step}.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+            if self._ignore_invalid_runtime_step(message.event, message.step):
                 return
-            timestep = self._require_timestep(message.step)
+            timestep = message.step
             with self._lock:
                 self._current_timestep = timestep
             self._sync_loaded_blocks(timestep)
@@ -295,6 +283,16 @@ class ClientPlaybackHandle:
         raise ValueError(
             f"timestep must be in [0, {self._server.num_steps - 1}], got {timestep}."
         )
+
+    def _ignore_invalid_runtime_step(self, event: str, step: int) -> bool:
+        if 0 <= step < self._server.num_steps:
+            return False
+        warnings.warn(
+            f"Ignoring runtime {event!r} event with invalid step={step}.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return True
 
     def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
         """Keep the current and next timeline blocks resident in the runtime."""
