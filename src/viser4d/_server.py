@@ -32,13 +32,17 @@ class Viser4dServer(viser.ViserServer):
         loop: bool = False,
         **kwargs,
     ) -> None:
-        """Initialize the timeline runtime and client playback state."""
+        """Initialize the timeline runtime and client playback state.
+
+        ``loop`` controls whether playback wraps at the end by default.
+        """
         if num_steps < 1:
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
         super().__init__(**kwargs)
 
         self._timeline_fps = require_positive_float("fps", fps)
-        self._loop = bool(loop)
+        self._playback_config_lock = threading.Lock()
+        self._loop = loop
         self._timeline = TimelineStore(
             num_steps,
             flush_executor=impl.server_thread_executor(self),
@@ -101,6 +105,12 @@ class Viser4dServer(viser.ViserServer):
         """Timeline step rate used for recording, audio timing, and export."""
         return self._timeline_fps
 
+    @property
+    def loop(self) -> bool:
+        """Whether playback wraps at the end for connected and future clients."""
+        with self._playback_config_lock:
+            return self._loop
+
     def play(self, speed: float | None = None) -> None:
         """Ask connected clients to play from their own current timesteps."""
         next_speed = None
@@ -127,9 +137,10 @@ class Viser4dServer(viser.ViserServer):
 
     def set_loop(self, loop: bool) -> None:
         """Update the looping policy for connected and future clients."""
-        self._loop = bool(loop)
+        with self._playback_config_lock:
+            self._loop = loop
         for playback in self._client_playback_values():
-            playback._sync_runtime_config()
+            playback.sync_runtime_config()
 
     def set_steps(self, num_steps: int) -> None:
         """Resize the timeline, preserving retained steps and dropping truncated ones."""
