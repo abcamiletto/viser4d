@@ -50,43 +50,62 @@ def test_num_steps_must_be_positive() -> None:
 def test_fps_and_speed_must_be_positive() -> None:
     with pytest.raises(ValueError, match="fps must be a positive finite float"):
         viser4d.Viser4dServer(num_steps=1, fps=0.0, port=0, verbose=False)
+    with pytest.raises(
+        ValueError, match="playback_speed must be a positive finite float"
+    ):
+        viser4d.Viser4dServer(
+            num_steps=1,
+            playback_speed=0.0,
+            port=0,
+            verbose=False,
+        )
 
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
-        with pytest.raises(ValueError, match="speed must be a positive finite float"):
-            server.play(speed=0.0)
         with pytest.raises(ValueError, match="speed must be a positive finite float"):
             server.set_playback_speed(-1.0)
     finally:
         server.stop()
 
 
-def test_play_no_longer_accepts_loop_keyword() -> None:
+def test_play_no_longer_accepts_loop_or_speed_keywords() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with pytest.raises(TypeError, match="unexpected keyword argument 'loop'"):
             server.play(loop=True)
+        with pytest.raises(TypeError, match="unexpected keyword argument 'speed'"):
+            server.play(speed=2.0)
     finally:
         server.stop()
 
 
-def test_server_loop_configuration_propagates_to_connected_and_future_clients(
+def test_server_playback_configuration_propagates_to_connected_and_future_clients(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    server = viser4d.Viser4dServer(num_steps=2, loop=True, port=0, verbose=False)
+    server = viser4d.Viser4dServer(
+        num_steps=2,
+        loop=True,
+        playback_speed=1.5,
+        port=0,
+        verbose=False,
+    )
 
     class FakePlayback:
         def __init__(self, server: Any, client: Any, **_kwargs) -> None:
             self.client_id = client.client_id
             self.loop_on_init = server.loop
+            self.speed_on_init = server.playback_speed
             self.config_syncs = 0
-            self.play_speeds: list[float | None] = []
+            self.play_calls = 0
 
-        def play(self, speed: float | None = None) -> None:
-            self.play_speeds.append(speed)
+        def play(self) -> None:
+            self.play_calls += 1
 
         def sync_runtime_config(self) -> None:
             self.config_syncs += 1
+
+        def set_speed(self, speed: float) -> None:
+            self.speed_on_init = speed
 
         def handle_runtime_event(self, _message: Viser4dRuntimeEventMessage) -> None:
             pass
@@ -100,23 +119,29 @@ def test_server_loop_configuration_propagates_to_connected_and_future_clients(
 
         assert isinstance(first, FakePlayback)
         assert first.loop_on_init is True
+        assert first.speed_on_init == 1.5
         assert server.loop is True
+        assert server.playback_speed == 1.5
 
         server.set_loop(False)
+        server.set_playback_speed(0.5)
 
         assert first.config_syncs == 1
+        assert first.speed_on_init == 0.5
         assert server.loop is False
+        assert server.playback_speed == 0.5
 
         attach_playback(cast(Any, SimpleNamespace(client_id=456)))
         second = server.get_client_playback(456)
 
         assert isinstance(second, FakePlayback)
         assert second.loop_on_init is False
+        assert second.speed_on_init == 0.5
 
         server.play()
 
-        assert first.play_speeds == [None]
-        assert second.play_speeds == [None]
+        assert first.play_calls == 1
+        assert second.play_calls == 1
     finally:
         server.stop()
 
@@ -145,7 +170,7 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
         server.stop()
 
 
-def test_client_playback_uses_current_server_loop(
+def test_client_playback_uses_current_server_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_create_gui(
@@ -171,7 +196,10 @@ def test_client_playback_uses_current_server_loop(
         lambda self, message: messages.append(message),
     )
 
-    server = cast(Any, SimpleNamespace(loop=True, num_steps=2, fps=1.0))
+    server = cast(
+        Any,
+        SimpleNamespace(loop=True, playback_speed=2.0, num_steps=2, fps=1.0),
+    )
     client = cast(Any, SimpleNamespace(gui=None))
     messages: list[Any] = []
     playback = ClientPlaybackHandle(server, client)
@@ -179,7 +207,7 @@ def test_client_playback_uses_current_server_loop(
     messages.clear()
     playback.play()
 
-    assert messages[-1].payload == {"speed": 1.0, "loop": True}
+    assert messages[-1].payload == {"speed": 2.0, "loop": True}
 
     server.loop = False
     playback.set_speed(0.5)

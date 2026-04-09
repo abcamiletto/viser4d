@@ -50,11 +50,13 @@ scrub, and step through the client-local timeline.
 - `server.on_playback_change(...)` fires whenever a client reports that its
   built-in transport changed between playing and paused, and passes
   `(client, is_playing)`.
-- `server.play(...)` and `server.pause()` broadcast playback commands to the
+- `server.play()` and `server.pause()` broadcast playback commands to the
   clients that are connected right now. They do not create a shared server
-  clock or a persistent server-side playback speed.
+  clock.
 - `loop=` on `Viser4dServer(...)` and `server.set_loop(...)` control whether
   playback wraps at the end for connected and future clients.
+- `playback_speed=` on `Viser4dServer(...)` and `server.set_playback_speed(...)`
+  control the default playback speed for connected and future clients.
 
 ## Streaming ingest
 
@@ -141,7 +143,7 @@ for client_id, playback in server.get_client_playbacks().items():
 ```
 
 `ClientPlaybackHandle.is_playing` reflects the last play/pause state reported by
-that browser tab. `server.play(...)` and `server.pause()` send commands, but the
+that browser tab. `server.play()` and `server.pause()` send commands, but the
 handle state only changes once the client reports the result back.
 `ClientPlaybackHandle.speed` is the tab's current playback-speed factor. If you
 need the effective playback FPS, compute `server.fps * playback.speed`.
@@ -151,19 +153,20 @@ commands but apply only to that one tab:
 
 ```python
 playback.seek(t)            # jump to a specific timestep
-playback.play(speed=2.0)    # start playback at 2× speed
+playback.play()             # start playback
 playback.pause()            # pause
-playback.set_speed(0.5)     # update speed without starting playback
+playback.set_speed(2.0)     # update speed without starting playback
 playback.refresh()          # redraw current timestep from recorded state
 ```
 
 ## Server playback commands
 
-`server.play(speed=...)` starts each connected client from that client's own
-current timestep. Omitting `speed` preserves each client's current speed;
-passing it overrides the connected clients only.
+`server.play()` starts each connected client from that client's own current
+timestep, using its current playback speed.
 `server.pause()` pauses each connected client wherever it currently is.
-`server.set_playback_speed(...)` updates speed without starting playback.
+`server.set_playback_speed(...)` updates the default playback speed and pushes
+it to connected clients without starting playback. You can also set the initial
+default with `Viser4dServer(..., playback_speed=2.0)`.
 `server.set_loop(...)` updates the loop setting for connected clients and for
 clients that connect later. You can also set the initial default with
 `Viser4dServer(..., loop=True)`.
@@ -177,7 +180,7 @@ step `0` at speed `1.0`, and clears shared scene nodes added through
 `server.scene`.
 None of these change the base timeline step rate used for audio timing or
 export; set that with `fps=` when you construct the server. New clients always
-start paused at timestep `0` with speed `1.0`, inheriting the current server
+start paused at timestep `0`, inheriting the current server playback speed and
 loop setting.
 
 ## Export recordings

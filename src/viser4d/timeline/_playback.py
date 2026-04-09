@@ -32,7 +32,7 @@ class ClientPlaybackHandle:
     ) -> None:
         self._server = server
         self._client = client
-        self._speed = 1.0
+        self._speed = server.playback_speed
         self._is_playing = False
         self._current_timestep = 0
         self._loaded_blocks: set[int] = set()
@@ -64,11 +64,9 @@ class ClientPlaybackHandle:
     def current_timestep(self) -> int:
         return self._current_timestep
 
-    def play(self, speed: float | None = None) -> None:
+    def play(self) -> None:
         """Start playback on this client."""
         with self._lock:
-            if speed is not None:
-                self._speed = require_positive_float("speed", speed)
             next_speed = self._speed
             next_loop = self._server.loop
         self._speed_slider.value = next_speed

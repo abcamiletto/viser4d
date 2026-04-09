@@ -30,11 +30,13 @@ class Viser4dServer(viser.ViserServer):
         fps: float = 30.0,
         *,
         loop: bool = False,
+        playback_speed: float = 1.0,
         **kwargs,
     ) -> None:
         """Initialize the timeline runtime and client playback state.
 
         ``loop`` controls whether playback wraps at the end by default.
+        ``playback_speed`` controls the default playback speed multiplier.
         """
         if num_steps < 1:
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
@@ -43,6 +45,7 @@ class Viser4dServer(viser.ViserServer):
         self._timeline_fps = require_positive_float("fps", fps)
         self._playback_config_lock = threading.Lock()
         self._loop = loop
+        self._playback_speed = require_positive_float("playback_speed", playback_speed)
         self._timeline = TimelineStore(
             num_steps,
             flush_executor=impl.server_thread_executor(self),
@@ -111,13 +114,16 @@ class Viser4dServer(viser.ViserServer):
         with self._playback_config_lock:
             return self._loop
 
-    def play(self, speed: float | None = None) -> None:
+    @property
+    def playback_speed(self) -> float:
+        """Default playback speed multiplier for connected and future clients."""
+        with self._playback_config_lock:
+            return self._playback_speed
+
+    def play(self) -> None:
         """Ask connected clients to play from their own current timesteps."""
-        next_speed = None
-        if speed is not None:
-            next_speed = require_positive_float("speed", speed)
         for playback in self._client_playback_values():
-            playback.play(speed=next_speed)
+            playback.play()
 
     def pause(self) -> None:
         """Ask connected clients to pause at their current timesteps."""
@@ -132,6 +138,8 @@ class Viser4dServer(viser.ViserServer):
     def set_playback_speed(self, speed: float) -> None:
         """Update connected client playback speed without starting playback."""
         next_speed = require_positive_float("speed", speed)
+        with self._playback_config_lock:
+            self._playback_speed = next_speed
         for playback in self._client_playback_values():
             playback.set_speed(next_speed)
 
