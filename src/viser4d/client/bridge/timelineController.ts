@@ -152,7 +152,7 @@ export class TimelineController {
     (messages) => this.io.pushMessages(messages),
     this.audio,
     this.blocks,
-    new Set<string>(),
+    new Map<string, string>(),
   );
   private readonly engine: PlaybackEngine = new PlaybackEngine(
     this.config,
