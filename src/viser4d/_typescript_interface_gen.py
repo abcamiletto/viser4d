@@ -20,6 +20,18 @@ class TypeScriptAnnotationOverride:
     annotation: str
 
 
+def _typescript_docstring(cls: type[Any]) -> str | None:
+    docstring = cls.__doc__
+    if docstring is None:
+        return None
+    stripped = docstring.strip()
+    if dataclasses.is_dataclass(cls) and stripped.startswith(f"{cls.__name__}("):
+        return None
+    if not stripped:
+        return None
+    return stripped
+
+
 def generate_typescript_interfaces(
     message_cls: Type[Any],
     *,
@@ -128,8 +140,9 @@ def generate_typescript_interfaces(
     tag_map = defaultdict(list)
 
     for cls in message_types:
-        if cls.__doc__ is not None:
-            docstring = "\n * ".join(line.strip() for line in cls.__doc__.split("\n"))
+        docstring = _typescript_docstring(cls)
+        if docstring is not None:
+            docstring = "\n * ".join(line.strip() for line in docstring.split("\n"))
             out_lines.append(f"/** {docstring}")
             out_lines.append(" *")
             out_lines.append(" * (automatically generated)")
