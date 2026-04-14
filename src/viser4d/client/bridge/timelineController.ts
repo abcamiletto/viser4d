@@ -166,8 +166,19 @@ export class TimelineController {
   }
 
   private configure(message: RuntimeConfigureMessage): void {
-    const { type: _type, ...config } = message;
-    this.config = { ...this.config, ...config };
+    this.config = {
+      ...this.config,
+      numSteps: message.numSteps,
+      blockSize: message.blockSize,
+      timelineFps: message.timelineFps,
+      speed: message.speed,
+      loop: message.loop,
+      timelineSliderUuid: message.timelineSliderUuid,
+      speedSliderUuid: message.speedSliderUuid,
+      stepButtonsUuid: message.stepButtonsUuid,
+      playButtonUuid: message.playButtonUuid,
+      pauseButtonUuid: message.pauseButtonUuid,
+    };
     this.blocks.blockSize = this.config.blockSize;
     this.engine.updateConfig(this.config);
     this.audio.setStepRate(this.config.timelineFps);

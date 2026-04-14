@@ -1,14 +1,14 @@
 import dataclasses
 import uuid
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from typing_extensions import override
 
 from . import _viser_private as impl
 
 
-class RuntimeSceneMessage(dict[str, Any]):
-    """Marker type for scene/runtime messages forwarded to the browser runtime."""
+class RuntimeSceneMessage(dict[str, object]):
+    """Opaque forwarded viser scene/runtime message."""
 
 
 def runtime_scene_message(message: dict[str, object]) -> RuntimeSceneMessage:
@@ -38,7 +38,7 @@ class _RuntimeControlMessage(_RuntimeMessageBase, tag="RuntimeControlMessage"):
     pass
 
 
-class _RuntimeEventMessage(_RuntimeMessageBase, tag="RuntimeEventMessage"):
+class RuntimeEventMessage(_RuntimeMessageBase, tag="RuntimeEventMessage"):
     pass
 
 
@@ -106,27 +106,27 @@ class RuntimeApplyMessageUpdateMessage(_RuntimeControlMessage):
 
 
 @dataclasses.dataclass
-class RuntimeBlockRequestMessage(_RuntimeEventMessage):
+class RuntimeBlockRequestMessage(RuntimeEventMessage):
     step: int
 
 
 @dataclasses.dataclass
-class RuntimeTimestepMessage(_RuntimeEventMessage):
+class RuntimeTimestepMessage(RuntimeEventMessage):
     step: int
 
 
 @dataclasses.dataclass
-class RuntimeSpeedMessage(_RuntimeEventMessage):
+class RuntimeSpeedMessage(RuntimeEventMessage):
     speed: float
 
 
 @dataclasses.dataclass
-class RuntimePlaybackStateMessage(_RuntimeEventMessage):
+class RuntimePlaybackStateMessage(RuntimeEventMessage):
     isPlaying: bool
 
 
 @dataclasses.dataclass
-class RuntimeReadyMessage(_RuntimeEventMessage):
+class RuntimeReadyMessage(RuntimeEventMessage):
     pass
 
 

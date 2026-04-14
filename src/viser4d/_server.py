@@ -9,7 +9,11 @@ import viser
 from . import _viser_private as impl
 from ._export import ExportBuilder
 from ._runtime import runtime_source
-from ._runtime_messages import RUNTIME_EVENT_MESSAGE_TYPES, RuntimeReadyMessage
+from ._runtime_messages import (
+    RUNTIME_EVENT_MESSAGE_TYPES,
+    RuntimeEventMessage,
+    RuntimeReadyMessage,
+)
 from ._validation import require_positive_float
 from .timeline._playback import ClientPlaybackHandle
 from .timeline._recording import SceneRecorder, TimelineContext
@@ -238,7 +242,9 @@ class Viser4dServer(viser.ViserServer):
         with self._client_playbacks_lock:
             return list(self._client_playbacks.values())
 
-    def _handle_runtime_event(self, client_id: int, message: impl.Message) -> None:
+    def _handle_runtime_event(
+        self, client_id: int, message: RuntimeEventMessage
+    ) -> None:
         with self._client_playbacks_lock:
             playback = self._client_playbacks.get(client_id)
             if playback is None:
@@ -248,9 +254,7 @@ class Viser4dServer(viser.ViserServer):
                 return
         playback.handle_runtime_event(message)
 
-    def _dispatch_timestep_change(
-        self, client: "ClientHandle", timestep: int
-    ) -> None:
+    def _dispatch_timestep_change(self, client: "ClientHandle", timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
             result = callback(client, timestep)
             if asyncio.iscoroutine(result):

@@ -13,6 +13,7 @@ from .._runtime_messages import (
     RuntimeClearMessage,
     RuntimeConfigureMessage,
     RuntimeEvictBlockMessage,
+    RuntimeEventMessage,
     RuntimeLoadBlockMessage,
     RuntimePauseMessage,
     RuntimePlaybackStateMessage,
@@ -174,7 +175,7 @@ class ClientPlaybackHandle:
             )
         )
 
-    def handle_runtime_event(self, message: impl.Message) -> None:
+    def handle_runtime_event(self, message: RuntimeEventMessage) -> None:
         """Mirror browser runtime events back into the Python playback state."""
         if isinstance(message, RuntimeReadyMessage):
             with self._lock:

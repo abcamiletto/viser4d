@@ -1,12 +1,11 @@
 import dataclasses
 import types
 from collections import defaultdict
-from typing import Any, Type, Union, cast
+from typing import Any, Literal, Type, Union, cast
 
 import numpy as np
 from typing_extensions import (
     Annotated,
-    Literal,
     Never,
     NotRequired,
     get_args,
@@ -14,11 +13,6 @@ from typing_extensions import (
     get_type_hints,
     is_typeddict,
 )
-
-try:
-    from typing import Literal as LiteralAlt
-except ImportError:
-    LiteralAlt = Literal
 
 
 @dataclasses.dataclass(frozen=True)
@@ -31,6 +25,12 @@ def generate_typescript_interfaces(
     *,
     raw_type_mapping: dict[type[Any], str] | None = None,
 ) -> str:
+    message_types = [
+        cls
+        for cls in message_cls.get_subclasses()
+        if dataclasses.is_dataclass(cls) or is_typeddict(cls)
+    ]
+
     type_mapping = {
         bool: "boolean",
         float: "number",
@@ -78,8 +78,14 @@ def generate_typescript_interfaces(
             return get_ts_type(get_args(typ)[0]) + "[]"
         if origin_typ is dict:
             key_type, value_type = get_args(typ)
-            return "{[key: " + get_ts_type(key_type) + "]: " + get_ts_type(value_type) + "}"
-        if origin_typ in (Literal, LiteralAlt):
+            return (
+                "{[key: "
+                + get_ts_type(key_type)
+                + "]: "
+                + get_ts_type(value_type)
+                + "}"
+            )
+        if origin_typ is Literal:
             return " | ".join(
                 repr(value).lower() if type(value) is bool else repr(value)
                 for value in get_args(typ)
@@ -93,7 +99,9 @@ def generate_typescript_interfaces(
         if is_typeddict(typ) or dataclasses.is_dataclass(typ):
             hints = get_type_hints(typ)
             if dataclasses.is_dataclass(typ):
-                hints = {field.name: hints[field.name] for field in dataclasses.fields(typ)}
+                hints = {
+                    field.name: hints[field.name] for field in dataclasses.fields(typ)
+                }
             optional_keys = getattr(typ, "__optional_keys__", [])
 
             def fmt(key: str) -> str:
@@ -119,7 +127,7 @@ def generate_typescript_interfaces(
     out_lines: list[str] = []
     tag_map = defaultdict(list)
 
-    for cls in message_cls.get_subclasses():
+    for cls in message_types:
         if cls.__doc__ is not None:
             docstring = "\n * ".join(line.strip() for line in cls.__doc__.split("\n"))
             out_lines.append(f"/** {docstring}")
@@ -140,7 +148,7 @@ def generate_typescript_interfaces(
     out_lines.append("")
 
     out_lines.append("export type Message = ")
-    for cls in message_cls.get_subclasses():
+    for cls in message_types:
         out_lines.append(f"  | {cls.__name__}")
     out_lines[-1] += ";"
 
