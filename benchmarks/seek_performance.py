@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Benchmark: seek (block_payload) latency and memory across a heavy timeline.
 
 Simulates a client seeking to various positions in a large recorded sequence.
@@ -8,6 +6,8 @@ block_payload(N) is what the server calls when a client requests block N.
 Usage:
     uv run --group dev python benchmarks/seek_performance.py
 """
+
+from __future__ import annotations
 
 import gc
 import time

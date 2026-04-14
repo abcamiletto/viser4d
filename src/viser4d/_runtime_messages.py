@@ -7,7 +7,7 @@ from typing import ClassVar, NewType
 from typing_extensions import override
 
 from . import _viser_private as impl
-from ._types import RuntimePayload, RuntimeValue
+from ._types import RuntimePayload
 
 RuntimeSceneMessage = NewType("RuntimeSceneMessage", RuntimePayload)
 
