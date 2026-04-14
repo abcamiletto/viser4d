@@ -2,7 +2,12 @@ from typing import Any, cast
 
 import numpy as np
 
-from ._types import StoredMessage
+from ._types import (
+    RuntimePayload,
+    RuntimeValue,
+    StoredMessage,
+    StoredPayload,
+)
 
 _BINARY_INDEX_KEY = "__binary_index"
 _DTYPE_KEY = "dtype"
@@ -57,11 +62,11 @@ def stored_message_as_serializable_dict(
     message: StoredMessage,
     *,
     binary_buffers: list[memoryview],
-) -> dict[str, object]:
+) -> StoredPayload:
     buffer_offset = len(binary_buffers)
     binary_buffers.extend(_byte_view(buffer) for buffer in message.buffers)
     return cast(
-        dict[str, object],
+        StoredPayload,
         _remap_placeholders(
             message.payload,
             buffer_offset=buffer_offset,
@@ -74,32 +79,33 @@ def _inflate_placeholders(
     value: object,
     *,
     buffers: tuple[bytes, ...],
-) -> object:
+) -> RuntimeValue:
     if isinstance(value, dict):
-        record = cast(dict[str, object], value)
+        record = cast(StoredPayload, value)
         idx = record.get(_BINARY_INDEX_KEY)
         dtype = record.get(_DTYPE_KEY)
         if isinstance(idx, int) and isinstance(dtype, str):
             if not 0 <= idx < len(buffers):
                 raise ValueError(f"Binary buffer index {idx} is out of range.")
-            return np.frombuffer(buffers[idx], dtype=np.dtype(dtype))
+            return cast(
+                RuntimeValue,
+                np.frombuffer(buffers[idx], dtype=np.dtype(dtype)),
+            )
         return {
             str(key): _inflate_placeholders(inner, buffers=buffers)
             for key, inner in record.items()
         }
     if isinstance(value, list):
         return [_inflate_placeholders(item, buffers=buffers) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_inflate_placeholders(item, buffers=buffers) for item in value)
-    return value
+    return cast(RuntimeValue, value)
 
 
-def inflate_stored_message(message: StoredMessage) -> dict[str, object]:
+def inflate_stored_message(message: StoredMessage) -> RuntimePayload:
     return cast(
-        dict[str, object],
+        RuntimePayload,
         _inflate_placeholders(message.payload, buffers=message.buffers),
     )
 
 
-def inflate_stored_messages(messages: list[StoredMessage]) -> list[dict[str, object]]:
+def inflate_stored_messages(messages: list[StoredMessage]) -> list[RuntimePayload]:
     return [inflate_stored_message(message) for message in messages]

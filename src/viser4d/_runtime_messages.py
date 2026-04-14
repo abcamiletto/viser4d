@@ -5,18 +5,19 @@ from typing import ClassVar
 from typing_extensions import override
 
 from . import _viser_private as impl
+from ._types import RuntimePayload, RuntimeValue
 
 
-class RuntimeSceneMessage(dict[str, object]):
+class RuntimeSceneMessage(dict[str, RuntimeValue]):
     """Opaque forwarded viser scene/runtime message."""
 
 
-def runtime_scene_message(message: dict[str, object]) -> RuntimeSceneMessage:
+def runtime_scene_message(message: RuntimePayload) -> RuntimeSceneMessage:
     return RuntimeSceneMessage(message)
 
 
 def runtime_scene_messages(
-    messages: list[dict[str, object]],
+    messages: list[RuntimePayload],
 ) -> list[RuntimeSceneMessage]:
     return [runtime_scene_message(message) for message in messages]
 

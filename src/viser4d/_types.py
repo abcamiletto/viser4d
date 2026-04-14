@@ -1,8 +1,20 @@
 from dataclasses import dataclass
-from typing import TypeAlias, TypedDict
+from typing import Any, TypeAlias, TypedDict
 
+import numpy as np
 
+StoredScalar: TypeAlias = str | int | float | bool | None
 StoredPayload: TypeAlias = dict[str, object]
+
+RuntimeArray: TypeAlias = np.ndarray[Any, np.dtype[Any]]
+RuntimeValue: TypeAlias = (
+    StoredScalar
+    | RuntimeArray
+    | list["RuntimeValue"]
+    | tuple["RuntimeValue", ...]
+    | dict[str, "RuntimeValue"]
+)
+RuntimePayload: TypeAlias = dict[str, RuntimeValue]
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,7 @@ import zstandard
 
 from ..audio._api import audio_array_payload
 from ..audio._messages import AddAudioMessage
-from .._types import StoredMessage
+from .._types import StoredMessage, StoredPayload
 from ._messages_util import (
     TimelineStep,
     extract_message_name,
@@ -220,7 +220,7 @@ def _is_create_scene_message(message: StoredMessage) -> bool:
     return "props" in message.payload
 
 
-def _decode_audio_payload(payload: dict[str, object]) -> np.ndarray:
+def _decode_audio_payload(payload: StoredPayload) -> np.ndarray:
     dtype = np.dtype(str(payload["dtype"]))
     num_channels = stored_int(payload["numChannels"])
     num_frames = stored_int(payload["numFrames"])

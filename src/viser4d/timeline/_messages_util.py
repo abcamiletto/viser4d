@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from .. import _viser_private as impl
-from .._types import StoredMessage
+from .._types import StoredMessage, StoredPayload
 from ..audio._messages import is_audio_message_type
 
 
@@ -20,7 +20,7 @@ def store_raw_message(message: impl.Message) -> StoredMessage:
     """Capture one viser message in placeholder-plus-buffer form."""
     buffers: list[memoryview] = []
     payload = cast(
-        dict[str, object],
+        StoredPayload,
         message.as_serializable_dict(binary_buffers=buffers),
     )
     return StoredMessage(payload, tuple(bytes(buffer) for buffer in buffers))
@@ -40,10 +40,10 @@ def stored_float(value: object) -> float:
     return float(value)
 
 
-def stored_dict(value: object) -> dict[str, object]:
+def stored_dict(value: object) -> StoredPayload:
     if not isinstance(value, dict):
         raise TypeError(f"Expected dict stored value, got {type(value).__name__}.")
-    return cast(dict[str, object], value)
+    return cast(StoredPayload, value)
 
 
 def extract_message_name(message: StoredMessage) -> str | None:
