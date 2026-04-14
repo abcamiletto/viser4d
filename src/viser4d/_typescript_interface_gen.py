@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import types
 from collections import defaultdict
@@ -35,7 +37,7 @@ def _typescript_docstring(cls: type[Any]) -> str | None:
 def generate_typescript_interfaces(
     message_cls: Type[Any],
     *,
-    raw_type_mapping: dict[type[Any], str] | None = None,
+    raw_type_mapping: dict[object, str] | None = None,
 ) -> str:
     message_types = [
         cls

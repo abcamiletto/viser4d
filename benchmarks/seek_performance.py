@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Benchmark: seek (block_payload) latency and memory across a heavy timeline.
 
 Simulates a client seeking to various positions in a large recorded sequence.

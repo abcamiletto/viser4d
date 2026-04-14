@@ -4,6 +4,8 @@ Every underscore-prefixed import from viser is concentrated here so that
 upstream internal changes only require updating this one file.
 """
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor

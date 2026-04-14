@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -149,7 +151,7 @@ class AudioHandle:
 class AudioApi:
     """Entry point for timeline-aware audio creation."""
 
-    def __init__(self, recorder: "SceneRecorder") -> None:
+    def __init__(self, recorder: SceneRecorder) -> None:
         self._recorder = recorder
 
     def add_track(

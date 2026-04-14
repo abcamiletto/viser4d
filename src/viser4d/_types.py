@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, TypeAlias, TypedDict
 
@@ -14,7 +16,7 @@ RuntimeValue: TypeAlias = (
     | tuple["RuntimeValue", ...]
     | dict[str, "RuntimeValue"]
 )
-RuntimePayload: TypeAlias = dict[str, RuntimeValue]
+RuntimePayload: TypeAlias = dict[str, "RuntimeValue"]
 
 
 @dataclass(frozen=True)

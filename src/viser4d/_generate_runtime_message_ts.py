@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from ._runtime_messages import RuntimeSceneMessage, _RuntimeMessageBase

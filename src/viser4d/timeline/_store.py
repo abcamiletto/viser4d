@@ -1,5 +1,7 @@
 """Block-backed timeline storage with LRU caching and checkpoint management."""
 
+from __future__ import annotations
+
 import math
 import tempfile
 import threading
@@ -144,7 +146,7 @@ class TimelineStore:
             self._global_overrides.pop(redundancy_key, None)
             self._global_overrides[redundancy_key] = stored_message
 
-    def empty_copy(self, num_steps: int | None = None) -> "TimelineStore":
+    def empty_copy(self, num_steps: int | None = None) -> TimelineStore:
         """Return a fresh timeline store with matching storage settings."""
         return TimelineStore(
             self.num_steps if num_steps is None else num_steps,
@@ -154,7 +156,7 @@ class TimelineStore:
             flush_executor=self._flush_executor,
         )
 
-    def resized_copy(self, num_steps: int) -> "TimelineStore":
+    def resized_copy(self, num_steps: int) -> TimelineStore:
         """Clone this timeline into a new store with ``num_steps`` timesteps."""
         with self._lock:
             resized = self.empty_copy(num_steps)

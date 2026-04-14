@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import threading
 from collections.abc import Callable
@@ -36,7 +38,7 @@ class SceneRecorder:
 
     _CLIENT_REFRESH_DELAY_SECONDS = 0.05
 
-    def __init__(self, server: "Viser4dServer") -> None:
+    def __init__(self, server: Viser4dServer) -> None:
         self._server = server
         self._live_scene = server.scene
         self._pending_refresh_from_block: int | None = None
@@ -135,14 +137,14 @@ class SceneRecorder:
         """Stop any deferred client refresh work."""
         self._cancel_pending_refresh()
 
-    def resize_timeline(self, num_steps: int) -> "TimelineStore":
+    def resize_timeline(self, num_steps: int) -> TimelineStore:
         """Replace the timeline with a resized copy."""
         return self._replace_timeline(
             lambda timeline: timeline.resized_copy(num_steps),
             "server.set_steps() cannot run while inside server.at(t).",
         )
 
-    def clear_timeline(self) -> "TimelineStore":
+    def clear_timeline(self) -> TimelineStore:
         """Replace the timeline with an empty copy."""
         return self._replace_timeline(
             lambda timeline: timeline.empty_copy(),
@@ -159,9 +161,9 @@ class SceneRecorder:
 
     def _replace_timeline(
         self,
-        replace: Callable[["TimelineStore"], "TimelineStore"],
+        replace: Callable[[TimelineStore], TimelineStore],
         active_session_error: str,
-    ) -> "TimelineStore":
+    ) -> TimelineStore:
         self._cancel_pending_refresh()
         if self._active_session is not None:
             raise RuntimeError(active_session_error)
@@ -219,7 +221,7 @@ class SceneRecorder:
 class _TimelineTransport(impl.WebsockMessageHandler):
     """Minimal transport that feeds ``SceneApi`` messages back into the recorder."""
 
-    def __init__(self, server: "Viser4dServer", recorder: SceneRecorder) -> None:
+    def __init__(self, server: Viser4dServer, recorder: SceneRecorder) -> None:
         super().__init__()
         self._server = server
         self._recorder = recorder

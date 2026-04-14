@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import threading
 from collections.abc import Coroutine
@@ -56,10 +58,10 @@ class Viser4dServer(viser.ViserServer):
         self._pending_runtime_ready_client_ids: set[int] = set()
         self._client_playbacks_lock = threading.Lock()
         self._timestep_callbacks: list[
-            Callable[["ClientHandle", int], None | Coroutine[Any, Any, None]]
+            Callable[[ClientHandle, int], None | Coroutine[Any, Any, None]]
         ] = []
         self._playback_callbacks: list[
-            Callable[["ClientHandle", bool], None | Coroutine[Any, Any, None]]
+            Callable[[ClientHandle, bool], None | Coroutine[Any, Any, None]]
         ] = []
         self._stop_event = threading.Event()
         self._recorder = SceneRecorder(self)
@@ -75,7 +77,7 @@ class Viser4dServer(viser.ViserServer):
             )
 
         @self.on_client_connect
-        def _attach_playback(client: "ClientHandle") -> None:
+        def _attach_playback(client: ClientHandle) -> None:
             playback = ClientPlaybackHandle(
                 self,
                 client,
@@ -92,7 +94,7 @@ class Viser4dServer(viser.ViserServer):
                 playback.handle_runtime_event(RuntimeReadyMessage())
 
         @self.on_client_disconnect
-        def _detach_playback(client: "ClientHandle") -> None:
+        def _detach_playback(client: ClientHandle) -> None:
             with self._client_playbacks_lock:
                 self._client_playbacks.pop(client.client_id, None)
                 self._pending_runtime_ready_client_ids.discard(client.client_id)
@@ -178,14 +180,14 @@ class Viser4dServer(viser.ViserServer):
 
     def on_timestep_change(
         self,
-        callback: Callable[["ClientHandle", int], None | Coroutine[Any, Any, None]],
+        callback: Callable[[ClientHandle, int], None | Coroutine[Any, Any, None]],
     ) -> None:
         """Register a callback for any committed client timestep change."""
         self._timestep_callbacks.append(callback)
 
     def on_playback_change(
         self,
-        callback: Callable[["ClientHandle", bool], None | Coroutine[Any, Any, None]],
+        callback: Callable[[ClientHandle, bool], None | Coroutine[Any, Any, None]],
     ) -> None:
         """Register a callback for client play/pause state changes."""
         self._playback_callbacks.append(callback)
@@ -254,15 +256,13 @@ class Viser4dServer(viser.ViserServer):
                 return
         playback.handle_runtime_event(message)
 
-    def _dispatch_timestep_change(self, client: "ClientHandle", timestep: int) -> None:
+    def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
         for callback in list(self._timestep_callbacks):
             result = callback(client, timestep)
             if asyncio.iscoroutine(result):
                 self.get_event_loop().create_task(result)
 
-    def _dispatch_playback_change(
-        self, client: "ClientHandle", is_playing: bool
-    ) -> None:
+    def _dispatch_playback_change(self, client: ClientHandle, is_playing: bool) -> None:
         for callback in list(self._playback_callbacks):
             result = callback(client, is_playing)
             if asyncio.iscoroutine(result):

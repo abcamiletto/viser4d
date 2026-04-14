@@ -1,15 +1,15 @@
+from __future__ import annotations
+
 import dataclasses
 import uuid
-from typing import ClassVar
+from typing import ClassVar, NewType
 
 from typing_extensions import override
 
 from . import _viser_private as impl
 from ._types import RuntimePayload, RuntimeValue
 
-
-class RuntimeSceneMessage(dict[str, RuntimeValue]):
-    """Opaque forwarded viser scene/runtime message."""
+RuntimeSceneMessage = NewType("RuntimeSceneMessage", RuntimePayload)
 
 
 def runtime_scene_message(message: RuntimePayload) -> RuntimeSceneMessage:

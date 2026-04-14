@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from viser4d._generate_runtime_message_ts import (
     generate_runtime_messages_typescript,
     generated_runtime_messages_path,

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import threading
 import warnings
 from concurrent.futures import Future
@@ -44,8 +46,8 @@ class ClientPlaybackHandle:
 
     def __init__(
         self,
-        server: "Viser4dServer",
-        client: "ClientHandle",
+        server: Viser4dServer,
+        client: ClientHandle,
         brand_color: tuple[int, int, int] | None = None,
     ) -> None:
         self._server = server
