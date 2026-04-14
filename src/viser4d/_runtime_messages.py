@@ -1,46 +1,139 @@
-from __future__ import annotations
-
 import dataclasses
 import uuid
-from typing import Literal
+from typing import Any, ClassVar
 
 from typing_extensions import override
 
 from . import _viser_private as impl
 
-RuntimeMethod = Literal[
-    "applyMessageUpdate",
-    "clear",
-    "configure",
-    "evictBlock",
-    "loadBlock",
-    "pause",
-    "play",
-    "refresh",
-    "seek",
-    "setSpeed",
-]
 
-RuntimeEvent = Literal["blockRequest", "playbackState", "ready", "speed", "timestep"]
+class RuntimeSceneMessage(dict[str, Any]):
+    """Marker type for scene/runtime messages forwarded to the browser runtime."""
 
 
-@dataclasses.dataclass
-class Viser4dRuntimeMessage(impl.Message):
-    method: RuntimeMethod
-    payload: object | None
+def runtime_scene_message(message: dict[str, object]) -> RuntimeSceneMessage:
+    return RuntimeSceneMessage(message)
+
+
+def runtime_scene_messages(
+    messages: list[dict[str, object]],
+) -> list[RuntimeSceneMessage]:
+    return [runtime_scene_message(message) for message in messages]
+
+
+class _RuntimeMessageBase(impl.Message):
+    _tags: ClassVar[tuple[str, ...]] = tuple()
 
     @override
     def redundancy_key(self) -> str:
         return str(uuid.uuid4())
 
+    def __init_subclass__(cls, tag: str | None = None) -> None:
+        super().__init_subclass__()
+        if tag is not None:
+            cls._tags = cls._tags + (tag,)
+
+
+class _RuntimeControlMessage(_RuntimeMessageBase, tag="RuntimeControlMessage"):
+    pass
+
+
+class _RuntimeEventMessage(_RuntimeMessageBase, tag="RuntimeEventMessage"):
+    pass
+
 
 @dataclasses.dataclass
-class Viser4dRuntimeEventMessage(impl.Message):
-    event: RuntimeEvent
-    step: int | None = None
-    speed: float | None = None
-    isPlaying: bool | None = None
+class RuntimeClearMessage(_RuntimeControlMessage):
+    pass
 
-    @override
-    def redundancy_key(self) -> str:
-        return str(uuid.uuid4())
+
+@dataclasses.dataclass
+class RuntimeConfigureMessage(_RuntimeControlMessage):
+    numSteps: int
+    blockSize: int
+    timelineFps: float
+    speed: float
+    loop: bool
+    timelineSliderUuid: str
+    speedSliderUuid: str
+    stepButtonsUuid: str
+    playButtonUuid: str
+    pauseButtonUuid: str
+
+
+@dataclasses.dataclass
+class RuntimeLoadBlockMessage(_RuntimeControlMessage):
+    block: int
+    checkpointMessages: list[RuntimeSceneMessage]
+    stepMessages: list[list[RuntimeSceneMessage]]
+
+
+@dataclasses.dataclass
+class RuntimeEvictBlockMessage(_RuntimeControlMessage):
+    block: int
+
+
+@dataclasses.dataclass
+class RuntimeSeekMessage(_RuntimeControlMessage):
+    step: int
+
+
+@dataclasses.dataclass
+class RuntimeRefreshMessage(_RuntimeControlMessage):
+    pass
+
+
+@dataclasses.dataclass
+class RuntimePlayMessage(_RuntimeControlMessage):
+    speed: float
+    loop: bool
+
+
+@dataclasses.dataclass
+class RuntimePauseMessage(_RuntimeControlMessage):
+    pass
+
+
+@dataclasses.dataclass
+class RuntimeSetSpeedMessage(_RuntimeControlMessage):
+    speed: float
+    loop: bool
+
+
+@dataclasses.dataclass
+class RuntimeApplyMessageUpdateMessage(_RuntimeControlMessage):
+    message: RuntimeSceneMessage
+
+
+@dataclasses.dataclass
+class RuntimeBlockRequestMessage(_RuntimeEventMessage):
+    step: int
+
+
+@dataclasses.dataclass
+class RuntimeTimestepMessage(_RuntimeEventMessage):
+    step: int
+
+
+@dataclasses.dataclass
+class RuntimeSpeedMessage(_RuntimeEventMessage):
+    speed: float
+
+
+@dataclasses.dataclass
+class RuntimePlaybackStateMessage(_RuntimeEventMessage):
+    isPlaying: bool
+
+
+@dataclasses.dataclass
+class RuntimeReadyMessage(_RuntimeEventMessage):
+    pass
+
+
+RUNTIME_EVENT_MESSAGE_TYPES = (
+    RuntimeBlockRequestMessage,
+    RuntimeTimestepMessage,
+    RuntimeSpeedMessage,
+    RuntimePlaybackStateMessage,
+    RuntimeReadyMessage,
+)

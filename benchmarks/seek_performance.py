@@ -7,8 +7,6 @@ Usage:
     uv run --group dev python benchmarks/seek_performance.py
 """
 
-from __future__ import annotations
-
 import gc
 import time
 import tracemalloc

@@ -21,7 +21,6 @@ export type GuiUpdateMessage = {
 
 export type ViewerMessage = {
   type: string;
-  [key: string]: unknown;
 };
 
 type GuiConfigStoreLike = {

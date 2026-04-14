@@ -1,7 +1,5 @@
 """Checkpoint state model and all logic for building, applying, and persisting checkpoints."""
 
-from __future__ import annotations
-
 import base64
 from dataclasses import dataclass, field
 from pathlib import Path

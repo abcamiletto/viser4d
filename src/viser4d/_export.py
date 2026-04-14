@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import sys
 from typing import TYPE_CHECKING
 
@@ -17,7 +15,7 @@ if TYPE_CHECKING:
 class ExportBuilder:
     """Serialize the current timeline with viser's native recording API."""
 
-    def __init__(self, server: Viser4dServer) -> None:
+    def __init__(self, server: "Viser4dServer") -> None:
         self._server = server
 
     def serialize(
@@ -69,7 +67,7 @@ class ExportBuilder:
 
     def _build_serializer(
         self, *, start_timestep: int, end_timestep: int | None
-    ) -> viser.infra.StateSerializer:
+    ) -> "viser.infra.StateSerializer":
         """Build viser's serializer populated with timeline state for the range."""
         start, end = self._validate_timesteps(
             start_timestep=start_timestep,
