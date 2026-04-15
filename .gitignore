@@ -196,6 +196,7 @@ cython_debug/
 
 # Generated runtime bundle
 src/viser4d/runtime.js
+src/viser4d/client/bridge/generatedRuntimeMessages.ts
 
 # Visual Studio Code
 #   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 

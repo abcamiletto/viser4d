@@ -9,6 +9,12 @@ import warnings
 
 CLIENT_SOURCE_SUFFIXES = (".ts", ".json", ".mjs")
 CLIENT_IGNORED_DIRS = {".nodeenv", "node_modules"}
+CODEGEN_DEPENDENCY_PATHS = (
+    "_generate_runtime_message_ts.py",
+    "_runtime_messages.py",
+    "_typescript_interface_gen.py",
+    "_types.py",
+)
 
 
 def client_dir() -> pathlib.Path:
@@ -37,7 +43,7 @@ def ensure_client_is_built() -> None:
     if runtime_exists:
         has_client_sources = package_json_path.exists()
         bundle_is_fresh = has_client_sources and (
-            _modified_time_recursive(client_root) <= runtime_path.stat().st_mtime
+            _build_inputs_mtime(client_root) <= runtime_path.stat().st_mtime
         )
         can_use_existing_bundle = (
             not _is_editable_install() or not has_client_sources or bundle_is_fresh
@@ -65,6 +71,17 @@ def _modified_time_recursive(root: pathlib.Path) -> float:
         if path.is_file()
         and path.suffix in CLIENT_SOURCE_SUFFIXES
         and not any(part in CLIENT_IGNORED_DIRS for part in path.parts)
+    )
+
+
+def _build_inputs_mtime(client_root: pathlib.Path) -> float:
+    package_root = pathlib.Path(__file__).resolve().parent
+    return max(
+        _modified_time_recursive(client_root),
+        *(
+            (package_root / relative_path).stat().st_mtime
+            for relative_path in CODEGEN_DEPENDENCY_PATHS
+        ),
     )
 
 
@@ -101,6 +118,7 @@ def _build_client() -> None:
         npm_path = npm_path.with_suffix(".cmd")
 
     env = os.environ.copy()
+    env["VISER4D_PYTHON"] = sys.executable
     env["NODE_VIRTUAL_ENV"] = str(node_bin_dir.parent)
     env["PATH"] = str(node_bin_dir) + (os.pathsep + env["PATH"])
 

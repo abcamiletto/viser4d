@@ -6,8 +6,9 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "generate-runtime-messages": "node generate-runtime-messages.mjs",
     "build": "node build-runtime.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "node generate-runtime-messages.mjs && tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "esbuild": "^0.25.10",

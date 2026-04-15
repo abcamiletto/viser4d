@@ -13,7 +13,11 @@ import zstandard
 import viser4d
 from viser4d import _server as server_module
 from viser4d import _runtime as runtime_module
-from viser4d._runtime_messages import Viser4dRuntimeEventMessage
+from viser4d._runtime_messages import (
+    RuntimePlayMessage,
+    RuntimeReadyMessage,
+    RuntimeSetSpeedMessage,
+)
 from viser4d.timeline._playback import ClientPlaybackHandle
 
 
@@ -190,7 +194,7 @@ def test_server_playback_configuration_propagates_to_connected_and_future_client
         def set_speed(self, speed: float) -> None:
             self.speed_on_init = speed
 
-        def handle_runtime_event(self, _message: Viser4dRuntimeEventMessage) -> None:
+        def handle_runtime_event(self, _message: object) -> None:
             pass
 
     monkeypatch.setattr(server_module, "ClientPlaybackHandle", FakePlayback)
@@ -280,12 +284,16 @@ def test_client_playback_uses_current_server_config(
     messages.clear()
     playback.play()
 
-    assert messages[-1].payload == {"speed": 2.0, "loop": True}
+    assert isinstance(messages[-1], RuntimePlayMessage)
+    assert messages[-1].speed == 2.0
+    assert messages[-1].loop is True
 
     server.loop = False
     playback.set_speed(0.5)
 
-    assert messages[-1].payload == {"speed": 0.5, "loop": False}
+    assert isinstance(messages[-1], RuntimeSetSpeedMessage)
+    assert messages[-1].speed == 0.5
+    assert messages[-1].loop is False
 
 
 def test_at_keeps_server_scene_live() -> None:
@@ -813,20 +821,20 @@ def test_runtime_ready_before_playback_attach_is_replayed(
         def __init__(self, *_args, **_kwargs) -> None:
             self.events: list[str] = []
 
-        def handle_runtime_event(self, message: Viser4dRuntimeEventMessage) -> None:
-            self.events.append(message.event)
+        def handle_runtime_event(self, message: object) -> None:
+            self.events.append(type(message).__name__)
 
     monkeypatch.setattr(server_module, "ClientPlaybackHandle", FakePlayback)
 
     try:
-        server._handle_runtime_event(123, Viser4dRuntimeEventMessage(event="ready"))
+        server._handle_runtime_event(123, RuntimeReadyMessage())
         attach_playback = server._client_connect_cb[-1]
         attach_playback(cast(Any, SimpleNamespace(client_id=123)))
 
         playback = server.get_client_playback(123)
 
         assert isinstance(playback, FakePlayback)
-        assert playback.events == ["ready"]
+        assert playback.events == ["RuntimeReadyMessage"]
         assert 123 not in server._pending_runtime_ready_client_ids
     finally:
         server.stop()

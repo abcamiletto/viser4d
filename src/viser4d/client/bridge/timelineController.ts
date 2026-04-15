@@ -2,91 +2,21 @@ import type { RuntimeMessage, RuntimeValue } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { isAudioMessage } from "../audio/messages";
 import { BlockCache } from "./blockCache";
+import {
+  isRuntimeControlMessage,
+  type RuntimeApplyMessageUpdateMessage,
+  type RuntimeConfigureMessage,
+  type RuntimeControlMessage,
+  type RuntimeEventMessage,
+  type RuntimeEvictBlockMessage,
+  type RuntimeLoadBlockMessage,
+  type RuntimePlayMessage,
+  type RuntimeSeekMessage,
+  type RuntimeSetSpeedMessage,
+} from "./generatedRuntimeMessages";
 import { PlaybackEngine } from "./playbackEngine";
 import { SceneApplicator } from "./sceneApplicator";
 import { type GuiUpdateMessage, type RuntimeConfig } from "./protocol";
-
-type RuntimeControlMessage =
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "clear";
-      payload: null;
-    }
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "configure";
-      payload: Partial<RuntimeConfig>;
-    }
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "loadBlock";
-      payload: {
-        block: number;
-        checkpointMessages: RuntimeMessage[];
-        stepMessages: RuntimeMessage[][];
-      };
-    }
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "evictBlock";
-      payload: { block: number };
-    }
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "seek";
-      payload: { step: number };
-    }
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "refresh";
-      payload: null;
-    }
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "play";
-      payload: { speed: number; loop: boolean };
-    }
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "pause";
-      payload: null;
-    }
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "setSpeed";
-      payload: { speed: number; loop: boolean };
-    }
-  | {
-      type: "Viser4dRuntimeMessage";
-      method: "applyMessageUpdate";
-      payload: RuntimeMessage;
-    };
-
-type RuntimeEventMessage =
-  | {
-      type: "Viser4dRuntimeEventMessage";
-      event: "blockRequest";
-      step: number;
-    }
-  | {
-      type: "Viser4dRuntimeEventMessage";
-      event: "timestep";
-      step: number;
-    }
-  | {
-      type: "Viser4dRuntimeEventMessage";
-      event: "speed";
-      speed: number;
-    }
-  | {
-      type: "Viser4dRuntimeEventMessage";
-      event: "playbackState";
-      isPlaying: boolean;
-    }
-  | {
-      type: "Viser4dRuntimeEventMessage";
-      event: "ready";
-    };
 
 type TimelineControllerIO = {
   pushMessages(messages: RuntimeMessage[]): void;
@@ -143,8 +73,7 @@ export class TimelineController {
   );
   private readonly blocks: BlockCache = new BlockCache((step) =>
     this.sendRuntimeEvent({
-      type: "Viser4dRuntimeEventMessage",
-      event: "blockRequest",
+      type: "RuntimeBlockRequestMessage",
       step,
     }),
   );
@@ -152,7 +81,7 @@ export class TimelineController {
     (messages) => this.io.pushMessages(messages),
     this.audio,
     this.blocks,
-    new Set<string>(),
+    new Map<string, string>(),
   );
   private readonly engine: PlaybackEngine = new PlaybackEngine(
     this.config,
@@ -182,14 +111,14 @@ export class TimelineController {
     if (!isWebsocket) {
       return;
     }
-    this.sendRuntimeEvent({ type: "Viser4dRuntimeEventMessage", event: "ready" });
+    this.sendRuntimeEvent({ type: "RuntimeReadyMessage" });
   }
 
   handleQueuedMessage(message: RuntimeMessage): boolean {
-    if (message.type !== "Viser4dRuntimeMessage") {
+    if (!isRuntimeControlMessage(message)) {
       return false;
     }
-    this.handleRuntimeMessage(message as RuntimeControlMessage);
+    this.handleRuntimeMessage(message);
     return true;
   }
 
@@ -236,8 +165,20 @@ export class TimelineController {
     return false;
   }
 
-  private configure(config: Partial<RuntimeConfig>): void {
-    this.config = { ...this.config, ...config };
+  private configure(message: RuntimeConfigureMessage): void {
+    this.config = {
+      ...this.config,
+      numSteps: message.numSteps,
+      blockSize: message.blockSize,
+      timelineFps: message.timelineFps,
+      speed: message.speed,
+      loop: message.loop,
+      timelineSliderUuid: message.timelineSliderUuid,
+      speedSliderUuid: message.speedSliderUuid,
+      stepButtonsUuid: message.stepButtonsUuid,
+      playButtonUuid: message.playButtonUuid,
+      pauseButtonUuid: message.pauseButtonUuid,
+    };
     this.blocks.blockSize = this.config.blockSize;
     this.engine.updateConfig(this.config);
     this.audio.setStepRate(this.config.timelineFps);
@@ -256,19 +197,15 @@ export class TimelineController {
     debugState.push("runtime.clear", null);
   }
 
-  private loadBlock(payload: {
-    block: number;
-    checkpointMessages: RuntimeMessage[];
-    stepMessages: RuntimeMessage[][];
-  }): void {
+  private loadBlock(message: RuntimeLoadBlockMessage): void {
     const currentStep = this.currentStep();
-    this.blocks.loadBlock(payload.block, {
-      checkpointMessages: payload.checkpointMessages,
-      stepMessages: payload.stepMessages,
+    this.blocks.loadBlock(message.block, {
+      checkpointMessages: message.checkpointMessages,
+      stepMessages: message.stepMessages,
     });
     const activeBlock = this.blocks.blockIndexOf(currentStep);
     const shouldRebuildCurrentBlock =
-      payload.block === activeBlock && this.scene.appliedBlock === activeBlock;
+      message.block === activeBlock && this.scene.appliedBlock === activeBlock;
     if (shouldRebuildCurrentBlock) {
       this.scene.rebuildThrough(currentStep);
       return;
@@ -285,76 +222,77 @@ export class TimelineController {
     this.engine.seek({ step: pendingStep });
   }
 
-  private evictBlock(payload: { block: number }): void {
-    this.blocks.evictBlock(payload.block, this.scene.appliedBlock);
+  private evictBlock(message: RuntimeEvictBlockMessage): void {
+    this.blocks.evictBlock(message.block, this.scene.appliedBlock);
   }
 
-  private seek(payload: { step: number }): void {
-    this.engine.seek(payload);
+  private seek(message: RuntimeSeekMessage): void {
+    this.engine.seek({ step: message.step });
   }
 
   private refresh(): void {
     this.engine.refresh();
   }
 
-  private play(payload: { speed: number; loop: boolean }): void {
-    this.engine.play(payload);
+  private play(message: RuntimePlayMessage): void {
+    this.engine.play({ speed: message.speed, loop: message.loop });
   }
 
   private pause(): void {
     this.engine.pause();
   }
 
-  private setSpeed(payload: { speed: number; loop: boolean }): void {
-    this.engine.setSpeed(payload);
+  private setSpeed(message: RuntimeSetSpeedMessage): void {
+    this.engine.setSpeed({ speed: message.speed, loop: message.loop });
   }
 
-  private applyMessageUpdate(message: RuntimeMessage): void {
+  private applyMessageUpdate(message: RuntimeApplyMessageUpdateMessage): void {
     const currentStep = this.currentStep();
-    const name = typeof message.name === "string" ? message.name : null;
+    const updatedMessage = message.message;
+    const name = typeof updatedMessage.name === "string" ? updatedMessage.name : null;
     debugState.push("runtime.apply_message_update", {
-      type: message.type,
+      type: updatedMessage.type,
       name,
       step: currentStep,
     });
-    if (isAudioMessage(message)) {
-      this.audio.applyLiveMessages(currentStep, [message]);
+    if (isAudioMessage(updatedMessage)) {
+      this.audio.applyLiveMessages(currentStep, [updatedMessage]);
       return;
     }
-    this.io.pushMessages([message]);
+    this.io.pushMessages([updatedMessage]);
   }
 
   private handleRuntimeMessage(message: RuntimeControlMessage): void {
-    switch (message.method) {
-      case "configure":
-        this.configure(message.payload);
+    switch (message.type) {
+      case "RuntimeConfigureMessage":
+        this.configure(message);
         return;
-      case "clear":
+      case "RuntimeClearMessage":
         this.clear();
         return;
-      case "loadBlock":
-        this.loadBlock(message.payload);
+      case "RuntimeLoadBlockMessage":
+        this.loadBlock(message);
         return;
-      case "evictBlock":
-        this.evictBlock(message.payload);
+      case "RuntimeEvictBlockMessage":
+        this.evictBlock(message);
         return;
-      case "seek":
-        this.seek(message.payload);
+      case "RuntimeSeekMessage":
+        this.seek(message);
         return;
-      case "refresh":
+      case "RuntimeRefreshMessage":
         this.refresh();
         return;
-      case "play":
-        this.play(message.payload);
+      case "RuntimePlayMessage":
+        this.play(message);
         return;
-      case "pause":
+      case "RuntimePauseMessage":
         this.pause();
         return;
-      case "setSpeed":
-        this.setSpeed(message.payload);
+      case "RuntimeSetSpeedMessage":
+        this.setSpeed(message);
         return;
-      case "applyMessageUpdate":
-        this.applyMessageUpdate(message.payload);
+      case "RuntimeApplyMessageUpdateMessage":
+        this.applyMessageUpdate(message);
         return;
     }
   }
@@ -401,8 +339,7 @@ export class TimelineController {
     }
     this.lastSyncedStep = clampedStep;
     this.sendRuntimeEvent({
-      type: "Viser4dRuntimeEventMessage",
-      event: "timestep",
+      type: "RuntimeTimestepMessage",
       step: clampedStep,
     });
   }
@@ -451,16 +388,14 @@ export class TimelineController {
 
   private sendSpeedToServer(speed: number): void {
     this.sendRuntimeEvent({
-      type: "Viser4dRuntimeEventMessage",
-      event: "speed",
+      type: "RuntimeSpeedMessage",
       speed,
     });
   }
 
   private sendPlaybackStateToServer(isPlaying: boolean): void {
     this.sendRuntimeEvent({
-      type: "Viser4dRuntimeEventMessage",
-      event: "playbackState",
+      type: "RuntimePlaybackStateMessage",
       isPlaying,
     });
   }
