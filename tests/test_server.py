@@ -119,6 +119,29 @@ def test_client_chunk_cache_size_rejects_invalid_env(
         viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
 
 
+def test_chunk_streaming_config_is_public_and_overrides_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISER4D_BLOCK_SIZE", "16")
+    monkeypatch.setenv("VISER4D_CLIENT_CHUNK_CACHE_SIZE", "2MB")
+    config = viser4d.ChunkStreamingConfig(
+        block_size=8,
+        client_chunk_cache_bytes=1234,
+    )
+    server = viser4d.Viser4dServer(
+        num_steps=100,
+        chunk_streaming=config,
+        port=0,
+        verbose=False,
+    )
+    try:
+        assert server.chunk_streaming == config
+        assert server.block_size == 8
+        assert server.client_chunk_cache_bytes == 1234
+    finally:
+        server.stop()
+
+
 def test_server_uses_32_step_chunks_by_default() -> None:
     server = viser4d.Viser4dServer(num_steps=100, port=0, verbose=False)
     try:

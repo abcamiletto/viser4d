@@ -27,6 +27,14 @@ def require_positive_float(name: str, value: float) -> float:
     return number
 
 
+def require_positive_int(name: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+    return value
+
+
 def env_positive_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None:

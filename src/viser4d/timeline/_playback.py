@@ -12,6 +12,7 @@ from .._hybrid import inflate_stored_message, inflate_stored_messages
 from .._runtime_messages import Viser4dRuntimeEventMessage, Viser4dRuntimeMessage
 from .._types import ClientRuntimeConfig, RuntimeBlockPayload, StoredMessage
 from .._validation import require_positive_float
+from ._streaming import PreloadPlanner
 
 if TYPE_CHECKING:
     from .._viser_private import ClientHandle
@@ -37,7 +38,6 @@ class ClientPlaybackHandle:
         self._is_playing = False
         self._current_timestep = 0
         self._loaded_blocks: set[int] = set()
-        self._known_block_bytes: dict[int, int] = {}
         self._pending_block_loads: dict[int, Future[RuntimeBlockPayload]] = {}
         self._pending_runtime_messages: list[impl.Message] = []
         self._runtime_ready = False
@@ -125,7 +125,6 @@ class ClientPlaybackHandle:
             previous_blocks = set(self._loaded_blocks)
             stale_futures = list(self._pending_block_loads.values())
             self._loaded_blocks = set()
-            self._known_block_bytes = {}
             self._pending_block_loads = {}
         for future in stale_futures:
             future.result()
@@ -147,7 +146,6 @@ class ClientPlaybackHandle:
             self._speed = 1.0
             self._is_playing = False
             self._loaded_blocks = set()
-            self._known_block_bytes = {}
             self._pending_block_loads = {}
             if not self._runtime_ready:
                 self._pending_runtime_messages = []
@@ -292,43 +290,28 @@ class ClientPlaybackHandle:
         return True
 
     def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
-        """Keep one wrapped block behind and a budgeted number of blocks ahead."""
+        """Load the current block first, then previous, then budgeted forward blocks."""
         timeline = self._server._timeline
-        block_count = timeline.block_count
         current_block = timeline.block_index_for_step(timestep)
+        manifests = timeline.block_manifests()
         with self._lock:
             previous = set(self._loaded_blocks)
-            known_block_bytes = dict(self._known_block_bytes)
-        desired = {current_block}
-        used_bytes = known_block_bytes.get(current_block, 0)
-        previous_block = (current_block - 1) % block_count
-        if previous_block != current_block:
-            desired.add(previous_block)
-            used_bytes += known_block_bytes.get(previous_block, 0)
-        budget = self._server.client_chunk_cache_bytes
-        for offset in range(1, block_count):
-            if used_bytes >= budget:
-                break
-            block_index = (current_block + offset) % block_count
-            if block_index in desired:
-                continue
-            block_bytes = known_block_bytes.get(block_index)
-            if block_bytes is None:
-                desired.add(block_index)
-                break
-            if used_bytes + block_bytes > budget:
-                break
-            desired.add(block_index)
-            used_bytes += block_bytes
+            pending = set(self._pending_block_loads)
+        plan = PreloadPlanner.plan(
+            current_block,
+            manifests,
+            self._server.client_chunk_cache_bytes,
+            loaded_blocks=previous,
+            pending_blocks=pending,
+            force=force,
+        )
         with self._lock:
-            self._loaded_blocks = desired
-        if force:
-            for block_index in sorted(desired):
-                self._queue_block_load(block_index)
-        else:
-            for block_index in sorted(desired - previous):
-                self._queue_block_load(block_index)
-        for block_index in sorted(previous - desired):
+            self._loaded_blocks = set(plan.desired_blocks)
+        for block_index in plan.required_loads:
+            self._queue_block_load(block_index)
+        for block_index in plan.speculative_loads:
+            self._queue_block_load(block_index)
+        for block_index in plan.evictions:
             self._send_runtime_message(
                 Viser4dRuntimeMessage(
                     method="evictBlock",
@@ -361,7 +344,6 @@ class ClientPlaybackHandle:
             self._pending_block_loads.pop(block_index)
         payload = future.result()
         with self._lock:
-            self._known_block_bytes[block_index] = payload["byteSize"]
             should_send = block_index in self._loaded_blocks
             current_timestep = self._current_timestep
         if should_send:

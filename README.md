@@ -15,9 +15,11 @@ Features include:
 The goal is to keep viser's live scene API while adding a separate recorded
 timeline API for playback and export.
 
-The timeline chunk size defaults to `32` steps and can be set process-wide with
-`VISER4D_BLOCK_SIZE`. The per-client chunk cache defaults to `1GB` and can be
-set process-wide with `VISER4D_CLIENT_CHUNK_CACHE_SIZE`.
+Chunking is controlled by `viser4d.ChunkStreamingConfig`. By default,
+`Viser4dServer` populates it from `VISER4D_BLOCK_SIZE` and
+`VISER4D_CLIENT_CHUNK_CACHE_SIZE`, falling back to `32` steps per block and a
+`1GB` per-client preload budget. You can also pass
+`chunk_streaming=viser4d.ChunkStreamingConfig(...)` for one server instance.
 
 ## Installation
 
