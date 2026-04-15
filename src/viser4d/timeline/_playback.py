@@ -292,22 +292,26 @@ class ClientPlaybackHandle:
         return True
 
     def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
-        """Keep one block behind and a budgeted number of blocks ahead."""
+        """Keep one wrapped block behind and a budgeted number of blocks ahead."""
         timeline = self._server._timeline
+        block_count = timeline.block_count
         current_block = timeline.block_index_for_step(timestep)
         with self._lock:
             previous = set(self._loaded_blocks)
             known_block_bytes = dict(self._known_block_bytes)
         desired = {current_block}
         used_bytes = known_block_bytes.get(current_block, 0)
-        previous_block = current_block - 1
-        if previous_block >= 0:
+        previous_block = (current_block - 1) % block_count
+        if previous_block != current_block:
             desired.add(previous_block)
             used_bytes += known_block_bytes.get(previous_block, 0)
         budget = self._server.client_chunk_cache_bytes
-        for block_index in range(current_block + 1, timeline.block_count):
+        for offset in range(1, block_count):
             if used_bytes >= budget:
                 break
+            block_index = (current_block + offset) % block_count
+            if block_index in desired:
+                continue
             block_bytes = known_block_bytes.get(block_index)
             if block_bytes is None:
                 desired.add(block_index)
