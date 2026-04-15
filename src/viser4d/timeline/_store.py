@@ -46,7 +46,6 @@ class _BlockManifestState:
     checkpoint_block_index: int | None = None
     payload_byte_size: int | None = None
     dirty: bool = True
-    revision: int = 0
 
 
 class _BlockFilePayload(msgspec.Struct):
@@ -243,9 +242,6 @@ class TimelineStore:
         """Build the checkpoint-plus-step payload consumed by the browser runtime."""
         with self._lock:
             block_index = self._validate_block_index(block_index)
-            manifest = self._manifest_states[block_index]
-            manifest_revision = manifest.revision
-            payload_byte_size = manifest.payload_byte_size
             ckpt = self._checkpoint_for_block(block_index)
             block = self._load_block(block_index)
             block_start = block_index * self.block_size
@@ -254,12 +250,6 @@ class TimelineStore:
                 for offset, step_state in enumerate(block.steps)
             ]
         ckpt_messages = checkpoint_messages(ckpt)
-        if payload_byte_size is None:
-            self._cache_block_payload_size(
-                block_index,
-                manifest_revision,
-                _block_payload_byte_size(ckpt_messages, step_messages),
-            )
         return {
             "block": block_index,
             "checkpointMessages": ckpt_messages,
@@ -361,28 +351,29 @@ class TimelineStore:
         pending_flush = self._pending_flushes.get(block_index)
         # Eagerly compute the checkpoint for block_index+1 while we still have
         # the block data in hand, so seeks never need to replay prior blocks.
-        # Only possible when blocks are flushed in contiguous order from 0.
+        # When a block is written, also write its manifest metadata so playback
+        # planning never needs to measure payload size on the read path.
         next_block = block_index + 1
         ckpt: tuple[Path, CheckpointState] | None = None
         if block_index == self._eager_checkpoint_next_block:
-            checkpoint_messages_for_block = checkpoint_messages(
-                copy_checkpoint(self._eager_checkpoint)
+            checkpoint_state = copy_checkpoint(self._eager_checkpoint)
+        else:
+            checkpoint_state = self._checkpoint_for_block(block_index)
+        step_messages = [
+            self._merged_step_messages(
+                block_index * self.block_size + offset,
+                step_state,
             )
-            step_messages_for_block = [
-                self._merged_step_messages(
-                    block_index * self.block_size + offset,
-                    step_state,
-                )
-                for offset, step_state in enumerate(block.steps)
-            ]
-            self._cache_block_payload_size(
-                block_index,
-                self._manifest_states[block_index].revision,
-                _block_payload_byte_size(
-                    checkpoint_messages_for_block,
-                    step_messages_for_block,
-                ),
-            )
+            for offset, step_state in enumerate(block.steps)
+        ]
+        manifest = self._manifest_states[block_index]
+        manifest.checkpoint_block_index = None if block_index == 0 else block_index - 1
+        manifest.payload_byte_size = _block_payload_byte_size(
+            checkpoint_messages(checkpoint_state),
+            step_messages,
+        )
+        manifest.dirty = False
+        if block_index == self._eager_checkpoint_next_block:
             apply_steps(self._eager_checkpoint, block.steps)
             self._eager_checkpoint_next_block = next_block
             if next_block < self.block_count:
@@ -413,7 +404,6 @@ class TimelineStore:
             manifest.checkpoint_block_index = None
             manifest.payload_byte_size = None
             manifest.dirty = True
-            manifest.revision += 1
 
     def _checkpoint_for_block(self, block_index: int) -> CheckpointState:
         block_index = self._validate_block_index(block_index)
@@ -454,22 +444,6 @@ class TimelineStore:
         while len(self._checkpoint_cache) > self._max_cached_checkpoints:
             self._checkpoint_cache.popitem(last=False)
 
-    def _cache_block_payload_size(
-        self,
-        block_index: int,
-        revision: int,
-        payload_byte_size: int,
-    ) -> None:
-        with self._lock:
-            manifest = self._manifest_states[block_index]
-            if manifest.revision != revision:
-                return
-            manifest.checkpoint_block_index = (
-                None if block_index == 0 else block_index - 1
-            )
-            manifest.payload_byte_size = payload_byte_size
-            manifest.dirty = False
-
     def _block_manifest_locked(self, block_index: int) -> BlockManifest:
         manifest = self._manifest_states[block_index]
         step_start = block_index * self.block_size
@@ -481,7 +455,6 @@ class TimelineStore:
             checkpoint_block_index=manifest.checkpoint_block_index,
             payload_byte_size=manifest.payload_byte_size,
             dirty=manifest.dirty,
-            revision=manifest.revision,
         )
 
 

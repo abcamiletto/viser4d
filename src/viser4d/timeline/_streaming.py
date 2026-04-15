@@ -45,7 +45,6 @@ class BlockManifest:
     checkpoint_block_index: int | None
     payload_byte_size: int | None
     dirty: bool
-    revision: int
 
 
 @dataclass(frozen=True)
