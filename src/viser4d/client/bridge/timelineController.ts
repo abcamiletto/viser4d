@@ -54,7 +54,7 @@ export class TimelineController {
 
   private config: RuntimeConfig = {
     numSteps: 1,
-    blockSize: 64,
+    blockSize: 32,
     timelineFps: 30,
     speed: 1,
     loop: false,
