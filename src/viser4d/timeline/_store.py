@@ -232,11 +232,6 @@ class TimelineStore:
     def block_index_for_step(self, step: int) -> int:
         return self.validate_step(step) // self.block_size
 
-    def block_manifest(self, block_index: int) -> BlockManifest:
-        with self._lock:
-            block_index = self._validate_block_index(block_index)
-            return self._block_manifest_locked(block_index)
-
     def block_manifests(self) -> tuple[BlockManifest, ...]:
         with self._lock:
             return tuple(

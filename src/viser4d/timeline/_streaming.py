@@ -72,12 +72,12 @@ class PreloadPlanner:
             return PreloadPlan((), (), (), ())
 
         required_blocks = [current_block]
-        used_bytes = _known_block_bytes(manifests[current_block])
+        used_bytes = manifests[current_block].payload_byte_size or 0
 
         previous_block = (current_block - 1) % block_count
         if previous_block != current_block:
             required_blocks.append(previous_block)
-            used_bytes += _known_block_bytes(manifests[previous_block])
+            used_bytes += manifests[previous_block].payload_byte_size or 0
 
         desired_blocks = list(required_blocks)
         desired_set = set(desired_blocks)
@@ -98,8 +98,7 @@ class PreloadPlanner:
             used_bytes += block_bytes
         desired_blocks.extend(speculative_blocks)
 
-        resident_blocks = set(loaded_blocks)
-        resident_blocks.update(pending_blocks)
+        resident_blocks = set(loaded_blocks) | set(pending_blocks)
         if force:
             required_loads = tuple(required_blocks)
             speculative_loads = tuple(speculative_blocks)
@@ -123,7 +122,3 @@ class PreloadPlanner:
             speculative_loads=speculative_loads,
             evictions=evictions,
         )
-
-
-def _known_block_bytes(manifest: BlockManifest) -> int:
-    return 0 if manifest.payload_byte_size is None else manifest.payload_byte_size
