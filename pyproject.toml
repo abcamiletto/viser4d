@@ -1,6 +1,6 @@
 [project]
 name = "viser4d"
-version = "0.15.1"
+version = "0.16.0"
 description = "A viser extension with out-of-the-box support for the time dimension"
 readme = "README.md"
 license = "Apache-2.0"
@@ -53,6 +53,9 @@ viser4d = [
     "client/**/*.json",
     "client/**/*.mjs",
 ]
+
+[tool.setuptools.exclude-package-data]
+viser4d = ["client/bridge/generatedRuntimeMessages.ts"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -11,7 +11,11 @@ import viser
 from . import _viser_private as impl
 from ._export import ExportBuilder
 from ._runtime import runtime_source
-from ._runtime_messages import Viser4dRuntimeEventMessage
+from ._runtime_messages import (
+    RUNTIME_EVENT_MESSAGE_TYPES,
+    RuntimeEventMessage,
+    RuntimeReadyMessage,
+)
 from ._validation import require_positive_float
 from .timeline._playback import ClientPlaybackHandle
 from .timeline._recording import SceneRecorder, TimelineContext
@@ -65,11 +69,12 @@ class Viser4dServer(viser.ViserServer):
 
         impl.queue_server_message(self, impl.run_javascript_message(runtime_source()))
 
-        impl.register_message_handler(
-            self,
-            Viser4dRuntimeEventMessage,
-            self._handle_runtime_event,
-        )
+        for message_cls in RUNTIME_EVENT_MESSAGE_TYPES:
+            impl.register_message_handler(
+                self,
+                message_cls,
+                self._handle_runtime_event,
+            )
 
         @self.on_client_connect
         def _attach_playback(client: ClientHandle) -> None:
@@ -86,7 +91,7 @@ class Viser4dServer(viser.ViserServer):
                 )
                 self._pending_runtime_ready_client_ids.discard(client.client_id)
             if replay_ready:
-                playback.handle_runtime_event(Viser4dRuntimeEventMessage(event="ready"))
+                playback.handle_runtime_event(RuntimeReadyMessage())
 
         @self.on_client_disconnect
         def _detach_playback(client: ClientHandle) -> None:
@@ -240,12 +245,12 @@ class Viser4dServer(viser.ViserServer):
             return list(self._client_playbacks.values())
 
     def _handle_runtime_event(
-        self, client_id: int, message: Viser4dRuntimeEventMessage
+        self, client_id: int, message: RuntimeEventMessage
     ) -> None:
         with self._client_playbacks_lock:
             playback = self._client_playbacks.get(client_id)
             if playback is None:
-                if message.event != "ready":
+                if not isinstance(message, RuntimeReadyMessage):
                     return
                 self._pending_runtime_ready_client_ids.add(client_id)
                 return
