@@ -26,7 +26,6 @@ from viser4d.timeline._store import TimelineStore
 
 NUM_OBJECTS = 200  # scene objects per step (frames with position/rotation)
 NUM_STEPS = 512  # total timeline steps
-BLOCK_SIZE = 32  # default in TimelineStore
 FPS = 30.0
 
 
@@ -132,7 +131,7 @@ def run_benchmark(
     block_count = store.block_count
     block_kb, ckpt_kb = disk_usage_kb(store)
     print(
-        f"Timeline: {num_steps} steps, {block_count} blocks of {BLOCK_SIZE} steps each"
+        f"Timeline: {num_steps} steps, {block_count} blocks of {store.block_size} steps each"
     )
     print(f"Disk: {block_kb:.0f} KB blocks  +  {ckpt_kb:.0f} KB checkpoints")
 

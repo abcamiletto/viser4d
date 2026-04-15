@@ -12,7 +12,7 @@ from . import _viser_private as impl
 from ._export import ExportBuilder
 from ._runtime import runtime_source
 from ._runtime_messages import Viser4dRuntimeEventMessage
-from ._validation import env_byte_size, require_positive_float
+from ._validation import env_byte_size, env_positive_int, require_positive_float
 from .timeline._playback import ClientPlaybackHandle
 from .timeline._recording import SceneRecorder, TimelineContext
 from .timeline._store import TimelineStore
@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from ._viser_private import ClientHandle
 
 
+_BLOCK_SIZE_ENV = "VISER4D_BLOCK_SIZE"
+_DEFAULT_BLOCK_SIZE = 32
 _CLIENT_CHUNK_CACHE_SIZE_ENV = "VISER4D_CLIENT_CHUNK_CACHE_SIZE"
 _DEFAULT_CLIENT_CHUNK_CACHE_BYTES = 1_000_000_000
 
@@ -45,6 +47,7 @@ class Viser4dServer(viser.ViserServer):
         if num_steps < 1:
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
         timeline_fps = require_positive_float("fps", fps)
+        block_size = env_positive_int(_BLOCK_SIZE_ENV, _DEFAULT_BLOCK_SIZE)
         client_chunk_cache_bytes = env_byte_size(
             _CLIENT_CHUNK_CACHE_SIZE_ENV,
             _DEFAULT_CLIENT_CHUNK_CACHE_BYTES,
@@ -56,12 +59,14 @@ class Viser4dServer(viser.ViserServer):
         super().__init__(**kwargs)
 
         self._timeline_fps = timeline_fps
+        self._block_size = block_size
         self._client_chunk_cache_bytes = client_chunk_cache_bytes
         self._playback_config_lock = threading.Lock()
         self._loop = loop
         self._playback_speed = default_playback_speed
         self._timeline = TimelineStore(
             num_steps,
+            block_size=block_size,
             flush_executor=impl.server_thread_executor(self),
         )
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
@@ -121,6 +126,11 @@ class Viser4dServer(viser.ViserServer):
     def fps(self) -> float:
         """Timeline step rate used for recording, audio timing, and export."""
         return self._timeline_fps
+
+    @property
+    def block_size(self) -> int:
+        """Timeline chunk size sourced from ``VISER4D_BLOCK_SIZE``."""
+        return self._block_size
 
     @property
     def client_chunk_cache_bytes(self) -> int:

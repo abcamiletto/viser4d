@@ -27,6 +27,19 @@ def require_positive_float(name: str, value: float) -> float:
     return number
 
 
+def env_positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}.") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}.")
+    return value
+
+
 def env_byte_size(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None:

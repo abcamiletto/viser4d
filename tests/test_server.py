@@ -90,6 +90,25 @@ def test_client_chunk_cache_size_comes_from_env(
         server.stop()
 
 
+def test_block_size_comes_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VISER4D_BLOCK_SIZE", "16")
+    server = viser4d.Viser4dServer(num_steps=100, port=0, verbose=False)
+    try:
+        assert server.block_size == 16
+        assert server._timeline.block_size == 16
+    finally:
+        server.stop()
+
+
+def test_block_size_rejects_invalid_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VISER4D_BLOCK_SIZE", "invalid")
+    with pytest.raises(
+        ValueError,
+        match="VISER4D_BLOCK_SIZE must be a positive integer",
+    ):
+        viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
+
+
 def test_client_chunk_cache_size_rejects_invalid_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -104,7 +123,7 @@ def test_client_chunk_cache_size_rejects_invalid_env(
 def test_server_uses_32_step_chunks_by_default() -> None:
     server = viser4d.Viser4dServer(num_steps=100, port=0, verbose=False)
     try:
-        assert server._timeline.block_size == 32
+        assert server.block_size == 32
         assert server._timeline.block_payload(0)["byteSize"] > 0
     finally:
         server.stop()
@@ -270,6 +289,7 @@ def test_client_playback_preloads_one_chunk_behind_and_budgeted_chunks_ahead(
         SimpleNamespace(
             loop=False,
             playback_speed=1.0,
+            block_size=32,
             client_chunk_cache_bytes=90,
             num_steps=5 * 32,
             fps=1.0,

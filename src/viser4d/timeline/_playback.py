@@ -238,7 +238,7 @@ class ClientPlaybackHandle:
                 method="configure",
                 payload=ClientRuntimeConfig(
                     numSteps=self._server.num_steps,
-                    blockSize=self._server._timeline.block_size,
+                    blockSize=self._server.block_size,
                     timelineFps=self._server.fps,
                     speed=speed,
                     loop=loop,
