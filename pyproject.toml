@@ -54,5 +54,8 @@ viser4d = [
     "client/**/*.mjs",
 ]
 
+[tool.setuptools.exclude-package-data]
+viser4d = ["client/bridge/generatedRuntimeMessages.ts"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
