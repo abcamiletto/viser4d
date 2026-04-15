@@ -15,6 +15,9 @@ Features include:
 The goal is to keep viser's live scene API while adding a separate recorded
 timeline API for playback and export.
 
+The per-client chunk cache defaults to `1GB` and can be set process-wide with
+`VISER4D_CLIENT_CHUNK_CACHE_SIZE`.
+
 ## Installation
 
 You can install `viser4d` with `pip`:

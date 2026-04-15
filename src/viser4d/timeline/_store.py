@@ -56,7 +56,7 @@ class TimelineStore:
         self,
         num_steps: int,
         *,
-        block_size: int = 64,
+        block_size: int = 32,
         max_loaded_blocks: int = 4,
         max_cached_checkpoints: int = 4,
         flush_executor: Executor,
@@ -236,6 +236,7 @@ class TimelineStore:
         ckpt_messages = checkpoint_messages(ckpt)
         return {
             "block": block_index,
+            "byteSize": _block_payload_byte_size(ckpt_messages, step_messages),
             "checkpointMessages": ckpt_messages,
             "stepMessages": step_messages,
         }
@@ -427,3 +428,17 @@ def _write_block_and_checkpoint_after(
     _write_block_file(block_path, block)
     if checkpoint is not None:
         write_checkpoint_file(*checkpoint)
+
+
+def _block_payload_byte_size(
+    checkpoint_messages: list[StoredMessage],
+    step_messages: list[list[StoredMessage]],
+) -> int:
+    return len(
+        msgspec.msgpack.encode(
+            {
+                "checkpointMessages": checkpoint_messages,
+                "stepMessages": step_messages,
+            }
+        )
+    )

@@ -26,7 +26,7 @@ from viser4d.timeline._store import TimelineStore
 
 NUM_OBJECTS = 200  # scene objects per step (frames with position/rotation)
 NUM_STEPS = 512  # total timeline steps
-BLOCK_SIZE = 64  # default in TimelineStore
+BLOCK_SIZE = 32  # default in TimelineStore
 FPS = 30.0
 
 

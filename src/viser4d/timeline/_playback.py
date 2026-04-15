@@ -37,6 +37,7 @@ class ClientPlaybackHandle:
         self._is_playing = False
         self._current_timestep = 0
         self._loaded_blocks: set[int] = set()
+        self._known_block_bytes: dict[int, int] = {}
         self._pending_block_loads: dict[int, Future[RuntimeBlockPayload]] = {}
         self._pending_runtime_messages: list[impl.Message] = []
         self._runtime_ready = False
@@ -124,6 +125,7 @@ class ClientPlaybackHandle:
             previous_blocks = set(self._loaded_blocks)
             stale_futures = list(self._pending_block_loads.values())
             self._loaded_blocks = set()
+            self._known_block_bytes = {}
             self._pending_block_loads = {}
         for future in stale_futures:
             future.result()
@@ -145,6 +147,7 @@ class ClientPlaybackHandle:
             self._speed = 1.0
             self._is_playing = False
             self._loaded_blocks = set()
+            self._known_block_bytes = {}
             self._pending_block_loads = {}
             if not self._runtime_ready:
                 self._pending_runtime_messages = []
@@ -289,21 +292,37 @@ class ClientPlaybackHandle:
         return True
 
     def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
-        """Keep a three-block circular window centered on the current block."""
+        """Keep one block behind and a budgeted number of blocks ahead."""
         timeline = self._server._timeline
-        block_count = timeline.block_count
         current_block = timeline.block_index_for_step(timestep)
-        if block_count <= 2:
-            desired = set(range(block_count))
-        else:
-            previous_block = (current_block - 1) % block_count
-            next_block = (current_block + 1) % block_count
-            desired = {previous_block, current_block, next_block}
         with self._lock:
             previous = set(self._loaded_blocks)
+            known_block_bytes = dict(self._known_block_bytes)
+        desired = {current_block}
+        used_bytes = known_block_bytes.get(current_block, 0)
+        previous_block = current_block - 1
+        if previous_block >= 0:
+            desired.add(previous_block)
+            used_bytes += known_block_bytes.get(previous_block, 0)
+        budget = self._server.client_chunk_cache_bytes
+        for block_index in range(current_block + 1, timeline.block_count):
+            if used_bytes >= budget:
+                break
+            block_bytes = known_block_bytes.get(block_index)
+            if block_bytes is None:
+                desired.add(block_index)
+                break
+            if used_bytes + block_bytes > budget:
+                break
+            desired.add(block_index)
+            used_bytes += block_bytes
+        with self._lock:
             self._loaded_blocks = desired
-        for block_index in sorted(desired):
-            if force or block_index not in previous:
+        if force:
+            for block_index in sorted(desired):
+                self._queue_block_load(block_index)
+        else:
+            for block_index in sorted(desired - previous):
                 self._queue_block_load(block_index)
         for block_index in sorted(previous - desired):
             self._send_runtime_message(
@@ -336,9 +355,14 @@ class ClientPlaybackHandle:
             if self._pending_block_loads.get(block_index) is not future:
                 return
             self._pending_block_loads.pop(block_index)
+        payload = future.result()
+        with self._lock:
+            self._known_block_bytes[block_index] = payload["byteSize"]
             should_send = block_index in self._loaded_blocks
+            current_timestep = self._current_timestep
         if should_send:
-            self.load_block(future.result())
+            self.load_block(payload)
+        self._sync_loaded_blocks(current_timestep)
 
     def _send_runtime_message(self, message: impl.Message) -> None:
         with self._lock:

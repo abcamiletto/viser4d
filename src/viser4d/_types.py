@@ -38,5 +38,6 @@ class ClientRuntimeConfig(RuntimeConfig):
 
 class RuntimeBlockPayload(TypedDict):
     block: int
+    byteSize: int
     checkpointMessages: list[StoredMessage]
     stepMessages: list[list[StoredMessage]]

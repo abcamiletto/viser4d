@@ -27,6 +27,17 @@ def _deserialize_recording(blob: bytes) -> dict[str, object]:
     return cast(dict[str, object], msgspec.msgpack.decode(inner[8 : 8 + msgpack_size]))
 
 
+def _fake_create_gui(
+    self: ClientPlaybackHandle,
+    _brand_color: tuple[int, int, int] | None,
+) -> None:
+    self._timeline_slider = SimpleNamespace(value=0, max=1)
+    self._speed_slider = SimpleNamespace(value=self._speed)
+    self._step_buttons = SimpleNamespace()
+    self._play_button = SimpleNamespace()
+    self._pause_button = SimpleNamespace()
+
+
 def test_server_does_not_expose_audio_api() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
@@ -64,6 +75,37 @@ def test_fps_and_speed_must_be_positive() -> None:
     try:
         with pytest.raises(ValueError, match="speed must be a positive finite float"):
             server.set_playback_speed(-1.0)
+    finally:
+        server.stop()
+
+
+def test_client_chunk_cache_size_comes_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISER4D_CLIENT_CHUNK_CACHE_SIZE", "2MB")
+    server = viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
+    try:
+        assert server.client_chunk_cache_bytes == 2_000_000
+    finally:
+        server.stop()
+
+
+def test_client_chunk_cache_size_rejects_invalid_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISER4D_CLIENT_CHUNK_CACHE_SIZE", "invalid")
+    with pytest.raises(
+        ValueError,
+        match="VISER4D_CLIENT_CHUNK_CACHE_SIZE must be an integer byte count",
+    ):
+        viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
+
+
+def test_server_uses_32_step_chunks_by_default() -> None:
+    server = viser4d.Viser4dServer(num_steps=100, port=0, verbose=False)
+    try:
+        assert server._timeline.block_size == 32
+        assert server._timeline.block_payload(0)["byteSize"] > 0
     finally:
         server.stop()
 
@@ -174,17 +216,7 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
 def test_client_playback_uses_current_server_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_create_gui(
-        self: ClientPlaybackHandle,
-        _brand_color: tuple[int, int, int] | None,
-    ) -> None:
-        self._timeline_slider = SimpleNamespace(value=0, max=1)
-        self._speed_slider = SimpleNamespace(value=self._speed)
-        self._step_buttons = SimpleNamespace()
-        self._play_button = SimpleNamespace()
-        self._pause_button = SimpleNamespace()
-
-    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", fake_create_gui)
+    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
     monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
     monkeypatch.setattr(
         ClientPlaybackHandle,
@@ -214,6 +246,81 @@ def test_client_playback_uses_current_server_config(
     playback.set_speed(0.5)
 
     assert messages[-1].payload == {"speed": 0.5, "loop": False}
+
+
+def test_client_playback_preloads_one_chunk_behind_and_budgeted_chunks_ahead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_sync_loaded_blocks = ClientPlaybackHandle._sync_loaded_blocks
+    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
+    monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_sync_loaded_blocks",
+        lambda self, timestep, force=False: None,
+    )
+    sent_messages: list[Any] = []
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_send_runtime_message",
+        lambda self, message: sent_messages.append(message),
+    )
+    server = cast(
+        Any,
+        SimpleNamespace(
+            loop=False,
+            playback_speed=1.0,
+            client_chunk_cache_bytes=90,
+            num_steps=5 * 32,
+            fps=1.0,
+            _timeline=SimpleNamespace(
+                block_count=5,
+                block_size=32,
+                block_index_for_step=lambda step: step // 32,
+            ),
+        ),
+    )
+    playback = ClientPlaybackHandle(server, cast(Any, SimpleNamespace(gui=None)))
+
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_sync_loaded_blocks",
+        real_sync_loaded_blocks,
+    )
+    queued_loads: list[int] = []
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_queue_block_load",
+        lambda self, block_index: queued_loads.append(block_index),
+    )
+
+    queued_loads.clear()
+    playback._known_block_bytes = {1: 30, 2: 30}
+    playback._loaded_blocks = {1, 2}
+    playback._sync_loaded_blocks(2 * 32)
+
+    assert playback.loaded_blocks == {1, 2, 3}
+    assert queued_loads == [3]
+
+    queued_loads.clear()
+    server.client_chunk_cache_bytes = 120
+    playback._known_block_bytes[3] = 30
+    playback._loaded_blocks = {1, 2, 3}
+    playback._sync_loaded_blocks(2 * 32)
+
+    assert playback.loaded_blocks == {1, 2, 3, 4}
+    assert queued_loads == [4]
+
+    sent_messages.clear()
+    queued_loads.clear()
+    server.client_chunk_cache_bytes = 90
+    playback._known_block_bytes = {0: 30, 1: 30, 2: 30, 3: 30}
+    playback._loaded_blocks = {0, 1, 2, 3}
+    playback._sync_loaded_blocks(0)
+
+    assert playback.loaded_blocks == {0, 1, 2}
+    assert queued_loads == []
+    assert [message.payload for message in sent_messages] == [{"block": 3}]
 
 
 def test_at_keeps_server_scene_live() -> None:

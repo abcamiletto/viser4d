@@ -6,7 +6,7 @@ export type LoadedBlock = {
 };
 
 export class BlockCache {
-  blockSize = 64;
+  blockSize = 32;
   pendingStep: number | null = null;
   private blocks = new Map<number, LoadedBlock>();
   private requestedBlocks = new Set<number>();

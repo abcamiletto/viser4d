@@ -12,13 +12,17 @@ from . import _viser_private as impl
 from ._export import ExportBuilder
 from ._runtime import runtime_source
 from ._runtime_messages import Viser4dRuntimeEventMessage
-from ._validation import require_positive_float
+from ._validation import env_byte_size, require_positive_float
 from .timeline._playback import ClientPlaybackHandle
 from .timeline._recording import SceneRecorder, TimelineContext
 from .timeline._store import TimelineStore
 
 if TYPE_CHECKING:
     from ._viser_private import ClientHandle
+
+
+_CLIENT_CHUNK_CACHE_SIZE_ENV = "VISER4D_CLIENT_CHUNK_CACHE_SIZE"
+_DEFAULT_CLIENT_CHUNK_CACHE_BYTES = 1_000_000_000
 
 
 class Viser4dServer(viser.ViserServer):
@@ -40,12 +44,22 @@ class Viser4dServer(viser.ViserServer):
         """
         if num_steps < 1:
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
+        timeline_fps = require_positive_float("fps", fps)
+        client_chunk_cache_bytes = env_byte_size(
+            _CLIENT_CHUNK_CACHE_SIZE_ENV,
+            _DEFAULT_CLIENT_CHUNK_CACHE_BYTES,
+        )
+        default_playback_speed = require_positive_float(
+            "playback_speed",
+            playback_speed,
+        )
         super().__init__(**kwargs)
 
-        self._timeline_fps = require_positive_float("fps", fps)
+        self._timeline_fps = timeline_fps
+        self._client_chunk_cache_bytes = client_chunk_cache_bytes
         self._playback_config_lock = threading.Lock()
         self._loop = loop
-        self._playback_speed = require_positive_float("playback_speed", playback_speed)
+        self._playback_speed = default_playback_speed
         self._timeline = TimelineStore(
             num_steps,
             flush_executor=impl.server_thread_executor(self),
@@ -107,6 +121,11 @@ class Viser4dServer(viser.ViserServer):
     def fps(self) -> float:
         """Timeline step rate used for recording, audio timing, and export."""
         return self._timeline_fps
+
+    @property
+    def client_chunk_cache_bytes(self) -> int:
+        """Per-client chunk cache budget sourced from ``VISER4D_CLIENT_CHUNK_CACHE_SIZE``."""
+        return self._client_chunk_cache_bytes
 
     @property
     def loop(self) -> bool:
