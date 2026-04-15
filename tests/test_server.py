@@ -2,6 +2,7 @@ import base64
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -9,6 +10,14 @@ import msgspec
 import numpy as np
 import pytest
 import zstandard
+from viser._messages import (
+    FrameMessage,
+    FrameProps,
+    MeshMessage,
+    MeshProps,
+    SetPositionMessage,
+    SetSceneNodeVisibilityMessage,
+)
 
 import viser4d
 from viser4d import _server as server_module
@@ -19,6 +28,7 @@ from viser4d._runtime_messages import (
     RuntimeSetSpeedMessage,
 )
 from viser4d.timeline._playback import ClientPlaybackHandle
+from viser4d.timeline._store import TimelineStore
 
 
 def _deserialize_recording(blob: bytes) -> dict[str, object]:
@@ -738,6 +748,83 @@ def test_serialization_survives_block_eviction_to_disk() -> None:
         ]
     finally:
         server.stop()
+
+
+def test_stale_disk_checkpoints_are_rejected_by_source_revision() -> None:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        store = TimelineStore(
+            130,
+            block_size=64,
+            max_loaded_blocks=1,
+            flush_executor=executor,
+        )
+        try:
+            store.record_step(
+                0,
+                [
+                    FrameMessage(
+                        "/sample_0/body",
+                        FrameProps(
+                            show_axes=False,
+                            axes_length=0.0,
+                            axes_radius=0.0,
+                            origin_radius=0.0,
+                            origin_color=(0, 0, 0),
+                        ),
+                    ),
+                    MeshMessage(
+                        "/sample_0/body/body",
+                        MeshProps(
+                            vertices=np.array(
+                                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                                dtype=np.float32,
+                            ),
+                            faces=np.array([[0, 1, 2]], dtype=np.uint32),
+                            color=(90, 90, 90),
+                            wireframe=False,
+                            opacity=None,
+                            flat_shading=False,
+                            side="front",
+                            material="standard",
+                            scale=1.0,
+                            cast_shadow=False,
+                            receive_shadow=False,
+                        ),
+                    ),
+                    SetSceneNodeVisibilityMessage("/sample_0/body", True),
+                ],
+            )
+            store.record_step(
+                64,
+                [SetPositionMessage("/sample_0/body", (64.0, 0.0, 0.0))],
+            )
+            store._wait_for_pending_flush(0)
+            checkpoint_path = store._checkpoint_path(1)
+            assert checkpoint_path.exists()
+
+            store.record_step(
+                0,
+                [SetSceneNodeVisibilityMessage("/sample_0/body", False)],
+            )
+            assert checkpoint_path.exists()
+
+            payload = store.block_payload(1)
+            visibility_messages = [
+                message.payload
+                for message in payload["checkpointMessages"]
+                if message.payload.get("type") == "SetSceneNodeVisibilityMessage"
+                and message.payload.get("name") == "/sample_0/body"
+            ]
+
+            assert visibility_messages == [
+                {
+                    "type": "SetSceneNodeVisibilityMessage",
+                    "name": "/sample_0/body",
+                    "visible": False,
+                }
+            ]
+        finally:
+            store.close()
 
 
 def test_runtime_ready_before_playback_attach_is_replayed(

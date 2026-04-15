@@ -41,7 +41,16 @@ class CheckpointState:
     audio_tracks: dict[str, AudioTrackState] = field(default_factory=dict)
 
 
+@dataclass
+class CheckpointSnapshot:
+    """Checkpoint state plus the source revision it was derived from."""
+
+    state: CheckpointState
+    source_revision: int
+
+
 class _CheckpointFilePayload(msgspec.Struct):
+    sourceRevision: int
     sceneUpdates: list[tuple[str, StoredMessage]]
     keyToNode: list[tuple[str, str | None]]
     audioTracks: list["_CheckpointAudioTrackPayload"]
@@ -169,7 +178,9 @@ def checkpoint_messages(state: CheckpointState) -> list[StoredMessage]:
     return scene_messages + audio_messages
 
 
-def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
+def write_checkpoint_file(
+    path: Path, state: CheckpointState, source_revision: int
+) -> None:
     """Persist a checkpoint snapshot to disk."""
     audio_tracks = [
         _CheckpointAudioTrackPayload(
@@ -183,6 +194,7 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
         for name, track in sorted(state.audio_tracks.items())
     ]
     payload = _CheckpointFilePayload(
+        sourceRevision=source_revision,
         sceneUpdates=list(state.scene_updates.items()),
         keyToNode=list(state.key_to_node.items()),
         audioTracks=audio_tracks,
@@ -192,7 +204,7 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
     path.write_bytes(compressed)
 
 
-def load_checkpoint_file(path: Path) -> CheckpointState:
+def load_checkpoint_file(path: Path) -> CheckpointSnapshot:
     """Load a checkpoint snapshot written by :func:`write_checkpoint_file`."""
     raw = zstandard.ZstdDecompressor().decompress(path.read_bytes())
     payload = msgspec.msgpack.decode(raw, type=_CheckpointFilePayload)
@@ -207,10 +219,13 @@ def load_checkpoint_file(path: Path) -> CheckpointState:
             waveform=np.ascontiguousarray(arr.reshape(shape)),
             volume=td.volume,
         )
-    return CheckpointState(
-        scene_updates=scene_updates,
-        key_to_node=key_to_node,
-        audio_tracks=audio_tracks,
+    return CheckpointSnapshot(
+        state=CheckpointState(
+            scene_updates=scene_updates,
+            key_to_node=key_to_node,
+            audio_tracks=audio_tracks,
+        ),
+        source_revision=payload.sourceRevision,
     )
 
 

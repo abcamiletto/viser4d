@@ -18,6 +18,7 @@ from ..audio._messages import is_audio_message
 from .._types import RuntimeBlockPayload, StoredMessage
 from ._checkpoint import (
     CheckpointState,
+    CheckpointSnapshot,
     apply_steps,
     checkpoint_messages,
     copy_checkpoint,
@@ -78,7 +79,7 @@ class TimelineStore:
         self._lock = threading.RLock()
         self._loaded_blocks: OrderedDict[int, TimelineBlock] = OrderedDict()
         self._max_loaded_blocks = max_loaded_blocks
-        self._checkpoint_cache: OrderedDict[int, CheckpointState] = OrderedDict()
+        self._checkpoint_cache: OrderedDict[int, CheckpointSnapshot] = OrderedDict()
         self._max_cached_checkpoints = max_cached_checkpoints
         self._flush_executor = flush_executor
         self._pending_flushes: dict[int, Future[None]] = {}
@@ -86,7 +87,10 @@ class TimelineStore:
         self._block_dir = Path(self._block_dir_root.name)
         # Running checkpoint for eager incremental persistence during sequential recording.
         self._eager_checkpoint = CheckpointState()
+        self._eager_checkpoint_source_revision = 0
         self._eager_checkpoint_next_block = 0
+        self._block_revisions: dict[int, int] = {}
+        self._next_revision = 1
 
     def validate_step(self, step: int) -> int:
         """Return ``step`` if it is in range, else raise ``IndexError``."""
@@ -131,6 +135,8 @@ class TimelineStore:
                 if is_audio_message(message):
                     step_state.audio_updates.append(stored_message)
             block.dirty = True
+            self._block_revisions[block_index] = self._next_revision
+            self._next_revision += 1
             self._invalidate_checkpoints_after_block(block_index)
 
     def record_global_override(self, message: impl.Message) -> None:
@@ -337,16 +343,22 @@ class TimelineStore:
         # the block data in hand, so seeks never need to replay prior blocks.
         # Only possible when blocks are flushed in contiguous order from 0.
         next_block = block_index + 1
-        ckpt: tuple[Path, CheckpointState] | None = None
+        ckpt: tuple[Path, CheckpointState, int] | None = None
         if (
             block_index == self._eager_checkpoint_next_block
             and next_block < self.block_count
         ):
             apply_steps(self._eager_checkpoint, block.steps)
+            source_revision = max(
+                self._eager_checkpoint_source_revision,
+                self._block_revisions.get(block_index, 0),
+            )
+            self._eager_checkpoint_source_revision = source_revision
             self._eager_checkpoint_next_block = next_block
             ckpt = (
                 self._checkpoint_path(next_block),
                 copy_checkpoint(self._eager_checkpoint),
+                source_revision,
             )
         self._pending_flushes[block_index] = self._flush_executor.submit(
             _write_block_and_checkpoint_after,
@@ -365,45 +377,88 @@ class TimelineStore:
         stale = [i for i in self._checkpoint_cache if i > block_index]
         for i in stale:
             del self._checkpoint_cache[i]
+        if self._eager_checkpoint_next_block > block_index:
+            self._eager_checkpoint = (
+                CheckpointState()
+                if block_index == 0
+                else self._checkpoint_for_block(block_index)
+            )
+            self._eager_checkpoint_source_revision = self._checkpoint_source_revision(
+                block_index
+            )
+            self._eager_checkpoint_next_block = block_index
 
     def _checkpoint_for_block(self, block_index: int) -> CheckpointState:
         block_index = self._validate_block_index(block_index)
+        expected_source_revision = self._checkpoint_source_revision(block_index)
         cached = self._checkpoint_cache.get(block_index)
-        if cached is not None:
+        if (
+            cached is not None
+            and cached.source_revision == expected_source_revision
+        ):
             self._checkpoint_cache.move_to_end(block_index)
-            return copy_checkpoint(cached)
+            return copy_checkpoint(cached.state)
         # Check disk before falling back to block replay.
-        disk_state = self._load_checkpoint_from_disk(block_index)
-        if disk_state is not None:
-            self._cache_checkpoint(block_index, disk_state)
-            return disk_state
+        snapshot = self._load_checkpoint_from_disk(block_index)
+        if snapshot is not None:
+            self._cache_checkpoint(
+                block_index,
+                snapshot.state,
+                snapshot.source_revision,
+            )
+            return copy_checkpoint(snapshot.state)
         prior_blocks = [i for i in self._checkpoint_cache if i < block_index]
         base_index = max(prior_blocks, default=0)
         state = (
-            copy_checkpoint(self._checkpoint_cache[base_index])
+            copy_checkpoint(self._checkpoint_cache[base_index].state)
             if base_index in self._checkpoint_cache
             else CheckpointState()
         )
         for index in range(base_index, block_index):
             block = self._load_block(index)
             apply_steps(state, block.steps)
-            self._cache_checkpoint(index + 1, state)
+            self._cache_checkpoint(
+                index + 1,
+                state,
+                self._checkpoint_source_revision(index + 1),
+            )
         return copy_checkpoint(state)
 
-    def _load_checkpoint_from_disk(self, block_index: int) -> CheckpointState | None:
+    def _load_checkpoint_from_disk(
+        self, block_index: int
+    ) -> CheckpointSnapshot | None:
         # Wait for any in-flight flush that might be writing this checkpoint.
         if block_index > 0:
             pending = self._pending_flushes.get(block_index - 1)
             if pending is not None:
                 pending.result()
         path = self._checkpoint_path(block_index)
-        return load_checkpoint_file(path) if path.exists() else None
+        if not path.exists():
+            return None
+        snapshot = load_checkpoint_file(path)
+        if snapshot.source_revision != self._checkpoint_source_revision(block_index):
+            return None
+        return snapshot
 
-    def _cache_checkpoint(self, block_index: int, state: CheckpointState) -> None:
-        self._checkpoint_cache[block_index] = copy_checkpoint(state)
+    def _cache_checkpoint(
+        self,
+        block_index: int,
+        state: CheckpointState,
+        source_revision: int,
+    ) -> None:
+        self._checkpoint_cache[block_index] = CheckpointSnapshot(
+            state=copy_checkpoint(state),
+            source_revision=source_revision,
+        )
         self._checkpoint_cache.move_to_end(block_index)
         while len(self._checkpoint_cache) > self._max_cached_checkpoints:
             self._checkpoint_cache.popitem(last=False)
+
+    def _checkpoint_source_revision(self, block_index: int) -> int:
+        return max(
+            (self._block_revisions.get(index, 0) for index in range(block_index)),
+            default=0,
+        )
 
 
 def _write_block_file(path: Path, block: TimelineBlock) -> None:
@@ -420,7 +475,7 @@ def _write_block_and_checkpoint_after(
     previous_flush: Future[None] | None,
     block_path: Path,
     block: TimelineBlock,
-    checkpoint: tuple[Path, CheckpointState] | None,
+    checkpoint: tuple[Path, CheckpointState, int] | None,
 ) -> None:
     if previous_flush is not None:
         previous_flush.result()
