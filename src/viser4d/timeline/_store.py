@@ -88,9 +88,7 @@ class TimelineStore:
         self._max_loaded_blocks = max_loaded_blocks
         self._checkpoint_cache: OrderedDict[int, CheckpointState] = OrderedDict()
         self._max_cached_checkpoints = max_cached_checkpoints
-        self._manifest_states = [
-            _BlockManifestState() for _ in range(self.block_count)
-        ]
+        self._manifest_states = [_BlockManifestState() for _ in range(self.block_count)]
         self._flush_executor = flush_executor
         self._pending_flushes: dict[int, Future[None]] = {}
         self._block_dir_root = tempfile.TemporaryDirectory(prefix="viser4d-timeline-")
