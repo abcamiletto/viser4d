@@ -230,15 +230,20 @@ export class TimelineController {
   private patchBlock(message: RuntimePatchBlockMessage): void {
     const activeStep = this.currentStep();
     const activeBlock = this.blocks.blockIndexOf(activeStep);
+    const blockStart = this.blocks.blockStartStep(message.block);
+    const touchesAppliedState =
+      message.checkpointMessages !== null ||
+      message.stepDeltas.some(({ offset }) => blockStart + offset <= activeStep);
     const shouldRebuildCurrentBlock =
       message.block === activeBlock &&
       this.scene.appliedBlock === activeBlock &&
-      this.patchTouchesAppliedState(activeStep, message);
-    const patched = this.blocks.patchBlock(message.block, {
-      checkpointMessages: message.checkpointMessages,
-      stepDeltas: message.stepDeltas,
-    });
-    if (!patched || !shouldRebuildCurrentBlock) {
+      touchesAppliedState;
+    this.blocks.patchBlock(
+      message.block,
+      message.checkpointMessages,
+      message.stepDeltas,
+    );
+    if (!shouldRebuildCurrentBlock) {
       return;
     }
     this.scene.rebuildThrough(activeStep);
@@ -405,19 +410,6 @@ export class TimelineController {
 
   private currentStep(): number {
     return Math.floor(this.engine.currentStep);
-  }
-
-  private patchTouchesAppliedState(
-    activeStep: number,
-    message: RuntimePatchBlockMessage,
-  ): boolean {
-    if (message.checkpointMessages !== null) {
-      return true;
-    }
-    const blockStart = this.blocks.blockStartStep(message.block);
-    return message.stepDeltas.some(
-      (stepDelta) => blockStart + stepDelta.offset <= activeStep,
-    );
   }
 
   private sendSpeedToServer(speed: number): void {

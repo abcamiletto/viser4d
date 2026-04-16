@@ -10,11 +10,6 @@ export type BlockStepDelta = {
   messages: RuntimeMessage[];
 };
 
-export type BlockPatch = {
-  checkpointMessages: RuntimeMessage[] | null;
-  stepDeltas: BlockStepDelta[];
-};
-
 export class BlockCache {
   blockSize = 32;
   pendingStep: number | null = null;
@@ -40,26 +35,31 @@ export class BlockCache {
     this.blocks.set(blockIndex, block);
   }
 
-  patchBlock(blockIndex: number, patch: BlockPatch): boolean {
+  patchBlock(
+    blockIndex: number,
+    checkpointMessages: RuntimeMessage[] | null,
+    stepDeltas: BlockStepDelta[],
+  ): void {
     const block = this.blocks.get(blockIndex);
     if (!block) {
-      return false;
+      throw new Error(`[viser4d] Cannot patch unloaded block ${blockIndex}.`);
     }
     const nextStepMessages = block.stepMessages.slice();
-    for (const { offset, messages } of patch.stepDeltas) {
+    for (const { offset, messages } of stepDeltas) {
       if (offset < 0 || offset >= nextStepMessages.length) {
-        return false;
+        throw new Error(
+          `[viser4d] Invalid step delta ${offset} for block ${blockIndex}.`,
+        );
       }
       nextStepMessages[offset] = messages;
     }
     this.blocks.set(blockIndex, {
       checkpointMessages:
-        patch.checkpointMessages === null
+        checkpointMessages === null
           ? block.checkpointMessages
-          : patch.checkpointMessages,
+          : checkpointMessages,
       stepMessages: nextStepMessages,
     });
-    return true;
   }
 
   evictBlock(blockIndex: number, appliedBlock: number): void {
