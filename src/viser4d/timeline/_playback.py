@@ -222,6 +222,12 @@ class ClientPlaybackHandle:
             )
         )
 
+    def evict_block(self, block_index: int) -> None:
+        """Evict one block from this client's cache."""
+        with self._lock:
+            self._loaded_blocks.discard(block_index)
+        self._send_runtime_message(RuntimeEvictBlockMessage(block=block_index))
+
     def handle_runtime_event(self, message: RuntimeEventMessage) -> None:
         """Mirror browser runtime events back into the Python playback state."""
         if isinstance(message, RuntimeReadyMessage):

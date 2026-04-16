@@ -256,23 +256,33 @@ class SceneRecorder:
     def _flush_delta_refresh(
         self, changes: dict[int, _BlockChangeInfo]
     ) -> None:
-        """Delta path: send step-level patches for edited blocks and checkpoint
-        replacements for downstream loaded blocks."""
+        """Delta path: send step-level patches for edited blocks; evict
+        downstream speculative preloads so the preload planner reloads them
+        with fresh checkpoints on demand."""
         max_changed = max(changes)
         with self._timeline_lock:
             timeline = self._server._timeline
             for playback in self._server.get_client_playbacks().values():
                 loaded = playback.loaded_blocks
+                viewed_block = timeline.block_index_for_step(
+                    playback.current_timestep
+                )
                 # Patch blocks that have direct step changes.
                 for changed_block, info in changes.items():
                     if changed_block not in loaded or not info.step_offsets:
                         continue
                     playback.patch_block(timeline, changed_block, info.step_offsets)
-                # Send updated checkpoints for downstream loaded blocks.
+                # Downstream loaded blocks have stale checkpoints.  Send a
+                # checkpoint replacement only for the block the client is
+                # actively viewing; evict the rest so the preload planner
+                # reloads them with correct checkpoints on demand.
                 for block_index in sorted(loaded):
                     if block_index <= max_changed or block_index in changes:
                         continue
-                    playback.patch_block_checkpoint(timeline, block_index)
+                    if block_index == viewed_block:
+                        playback.patch_block_checkpoint(timeline, block_index)
+                    else:
+                        playback.evict_block(block_index)
 
     def _validate_step_messages(self, messages: list[impl.Message]) -> None:
         for message in messages:

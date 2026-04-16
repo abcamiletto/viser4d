@@ -485,17 +485,19 @@ class TimelineStore:
     ) -> StoredMessage | None:
         """Return the latest ``StoredMessage`` for *key* across the block range.
 
+        Scans backward so it returns at the first hit — O(1) in the common
+        case where the key appears in the most recently edited block.
+
         Returns ``None`` when *key* does not appear in any step within the
         range ``[from_block, to_block_exclusive)``.
         """
-        latest: StoredMessage | None = None
-        for block_idx in range(from_block, to_block_exclusive):
+        for block_idx in range(to_block_exclusive - 1, from_block - 1, -1):
             block = self._load_block(block_idx)
-            for step_state in block.steps:
+            for step_state in reversed(block.steps):
                 value = step_state.scene_updates.get(key)
                 if value is not None:
-                    latest = value
-        return latest
+                    return value
+        return None
 
     def _invalidate_manifest_for_block(self, block_index: int) -> None:
         """Mark only the edited block's manifest as needing a size update."""
