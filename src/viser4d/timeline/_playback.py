@@ -36,6 +36,7 @@ from .._types import (
     ClientRuntimeConfig,
     RuntimeBlockPatchPayload,
     RuntimeBlockPayload,
+    StepPatchUpdate,
     StoredMessage,
     StoredMessageEntry,
     StoredStatePatch,

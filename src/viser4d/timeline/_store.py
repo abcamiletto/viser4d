@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import tempfile
 import threading
+from collections.abc import Sequence
 from collections import OrderedDict
 from concurrent.futures import Executor, Future
 from dataclasses import dataclass
@@ -25,7 +26,6 @@ from ._checkpoint import (
     checkpoint_scene_entries,
     copy_checkpoint,
     load_checkpoint_file,
-    remove_scene_node_subtree,
     step_patch_messages,
     write_checkpoint_file,
 )
@@ -562,9 +562,9 @@ def _write_block_after(
 
 
 def _block_payload_byte_size(
-    scene_entries: object,
-    audio_messages: object,
-    step_patches: object,
+    scene_entries: Sequence[object],
+    audio_messages: Sequence[object],
+    step_patches: Sequence[object],
 ) -> int:
     return len(
         msgspec.msgpack.encode(
