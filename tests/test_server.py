@@ -301,7 +301,7 @@ def test_client_playback_uses_current_server_config(
             playback_speed=2.0,
             num_steps=2,
             fps=1.0,
-            _timeline=SimpleNamespace(global_override_items=lambda: ()),
+            _timeline=SimpleNamespace(scene_override_items=lambda: ()),
         ),
     )
     client = cast(Any, SimpleNamespace(gui=None))
@@ -323,7 +323,7 @@ def test_client_playback_uses_current_server_config(
     assert messages[-1].loop is False
 
 
-def test_client_playback_syncs_existing_global_overrides_on_init(
+def test_client_playback_syncs_existing_scene_overrides_on_init(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
@@ -354,7 +354,7 @@ def test_client_playback_syncs_existing_global_overrides_on_init(
             num_steps=2,
             fps=1.0,
             _timeline=SimpleNamespace(
-                global_override_items=lambda: (
+                scene_override_items=lambda: (
                     ("scene.node:/frame:prop:position", override),
                 )
             ),
@@ -887,6 +887,31 @@ def test_timeline_global_overrides_reapply_after_recorded_updates() -> None:
             (0.0, (2.0, 0.0, 0.0)),
             (1.0 / server.fps, (1.0, 0.0, 0.0)),
             (1.0 / server.fps, (2.0, 0.0, 0.0)),
+        ]
+    finally:
+        server.stop()
+
+
+def test_live_scene_overrides_wait_for_late_created_nodes_in_export() -> None:
+    server = viser4d.Viser4dServer(num_steps=3, fps=2.0, port=0, verbose=False)
+    try:
+        with server.at(1) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+
+        joint.position = (2.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        positions = [
+            (time, tuple(cast(list[float], message["position"])))
+            for time, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert positions == [
+            (1.0 / server.fps, (2.0, 0.0, 0.0)),
+            (2.0 / server.fps, (2.0, 0.0, 0.0)),
         ]
     finally:
         server.stop()

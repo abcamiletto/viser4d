@@ -125,11 +125,10 @@ class SceneRecorder:
                 raise RuntimeError(
                     "Timeline scene node creation is only valid inside server.at(t)."
                 )
-            self._server._timeline.record_global_override(message)
+            self._server._timeline.record_scene_override(message)
             puts, delete_nodes = scene_entries_for_message(stored_message)
-        # Forward the keyed override directly to connected clients instead of
-        # triggering a full block refresh.  Global overrides are applied as a
-        # client-side overlay, independent of stored block state.
+        # Forward scene overrides directly to connected clients. They live in a
+        # client-side overlay, independent of recorded block state.
         for entry in puts:
             for playback in self._server.get_client_playbacks().values():
                 playback.apply_message_update(entry["key"], entry["message"])

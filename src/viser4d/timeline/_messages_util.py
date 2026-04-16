@@ -19,6 +19,10 @@ class TimelineStep:
     audio_messages: list[StoredMessage] = field(default_factory=list)
 
 
+def _is_same_node_or_descendant(name: str, root: str) -> bool:
+    return name == root or name.startswith(f"{root}/")
+
+
 def store_raw_message(message: impl.Message) -> StoredMessage:
     """Capture one viser message in placeholder-plus-buffer form."""
     buffers: list[memoryview] = []
@@ -130,6 +134,39 @@ def scene_entries_for_message(
 
     key = scene_message_state_key(message)
     return ([{"key": key, "message": message}], []) if key is not None else ([], [])
+
+
+def record_scene_delete(step: TimelineStep, node_name: str) -> None:
+    """Record one scene-node removal into a step patch."""
+    if any(
+        _is_same_node_or_descendant(node_name, existing)
+        for existing in step.scene_delete_nodes
+    ):
+        return
+    step.scene_delete_nodes = [
+        existing
+        for existing in step.scene_delete_nodes
+        if not _is_same_node_or_descendant(existing, node_name)
+    ]
+    step.scene_delete_nodes.append(node_name)
+    step.scene_puts = {
+        key: message
+        for key, message in step.scene_puts.items()
+        if not _is_same_node_or_descendant(
+            extract_message_name(message) or "",
+            node_name,
+        )
+    }
+
+
+def record_scene_message(step: TimelineStep, message: StoredMessage) -> None:
+    """Fold one stored scene message into a step patch."""
+    entries, delete_nodes = scene_entries_for_message(message)
+    for node_name in delete_nodes:
+        record_scene_delete(step, node_name)
+    for entry in entries:
+        step.scene_puts.pop(entry["key"], None)
+        step.scene_puts[entry["key"]] = entry["message"]
 
 
 def step_patch_payload(step: TimelineStep) -> StoredStatePatch:

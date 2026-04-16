@@ -26,6 +26,7 @@ from ._checkpoint import (
     checkpoint_scene_entries,
     copy_checkpoint,
     load_checkpoint_file,
+    remove_scene_node_subtree,
     step_patch_messages,
     write_checkpoint_file,
 )
@@ -33,6 +34,8 @@ from ._messages_util import (
     TimelineStep,
     extract_message_name,
     is_scene_message,
+    record_scene_delete,
+    record_scene_message,
     scene_delete_state_key,
     scene_entries_for_message,
     step_patch_payload,
@@ -60,12 +63,8 @@ class _BlockFilePayload(msgspec.Struct):
     stepPatches: list[StoredStatePatch]
 
 
-def _is_same_node_or_descendant(name: str, root: str) -> bool:
-    return name == root or name.startswith(f"{root}/")
-
-
 class TimelineStore:
-    """Block-backed storage for timeline-owned steps and global scene overrides."""
+    """Block-backed storage for timeline-owned steps and live scene overrides."""
 
     def __init__(
         self,
@@ -88,7 +87,7 @@ class TimelineStore:
             )
         self.num_steps = num_steps
         self.block_size = block_size
-        self._global_overrides: dict[str, StoredMessage] = {}
+        self._scene_overrides = TimelineStep()
         self._lock = threading.RLock()
         self._loaded_blocks: OrderedDict[int, TimelineBlock] = OrderedDict()
         self._max_loaded_blocks = max_loaded_blocks
@@ -145,25 +144,15 @@ class TimelineStore:
             self._next_revision += 1
             self._invalidate_manifests_after_block(block_index)
 
-    def record_global_override(self, message: impl.Message) -> None:
-        """Store a live scene override that should replay for all future steps."""
+    def record_scene_override(self, message: impl.Message) -> None:
+        """Store one live scene override for playback replay and export."""
         with self._lock:
-            stored_message = store_raw_message(message)
-            puts, delete_nodes = scene_entries_for_message(stored_message)
-            for node_name in delete_nodes:
-                self._prune_removed_node_overrides(node_name)
-                delete_key = scene_delete_state_key(node_name)
-                self._global_overrides.pop(delete_key, None)
-                self._global_overrides[delete_key] = stored_message
-            for entry in puts:
-                key = entry["key"]
-                self._global_overrides.pop(key, None)
-                self._global_overrides[key] = entry["message"]
+            record_scene_message(self._scene_overrides, store_raw_message(message))
 
-    def global_override_items(self) -> tuple[tuple[str, StoredMessage], ...]:
-        """Return the keyed live scene corrections in replay order."""
+    def scene_override_items(self) -> tuple[tuple[str, StoredMessage], ...]:
+        """Return keyed live scene overrides in client replay order."""
         with self._lock:
-            return tuple(self._global_overrides.items())
+            return tuple(self._scene_override_items())
 
     def empty_copy(self, num_steps: int | None = None) -> TimelineStore:
         """Return a fresh timeline store with matching storage settings."""
@@ -198,7 +187,10 @@ class TimelineStore:
                         audio_messages=list(src.audio_messages),
                     )
 
-            resized._global_overrides = dict(self._global_overrides)
+            resized._scene_overrides = TimelineStep(
+                scene_puts=dict(self._scene_overrides.scene_puts),
+                scene_delete_nodes=list(self._scene_overrides.scene_delete_nodes),
+            )
 
             return resized
 
@@ -224,7 +216,7 @@ class TimelineStore:
     ) -> None:
         scene_puts, scene_delete_nodes = scene_entries_for_message(stored_message)
         for node_name in scene_delete_nodes:
-            _record_scene_delete(step, node_name)
+            record_scene_delete(step, node_name)
             remove_scene_node_subtree(state, node_name)
 
         node_name = extract_message_name(stored_message)
@@ -240,25 +232,15 @@ class TimelineStore:
         )
         if recreates_existing_node:
             assert node_name is not None
-            _record_scene_delete(step, node_name)
+            record_scene_delete(step, node_name)
             remove_scene_node_subtree(state, node_name)
 
         for entry in scene_puts:
             step.scene_puts[entry["key"]] = entry["message"]
             apply_scene_message(state, entry["key"], entry["message"])
 
-    def _prune_removed_node_overrides(self, removed_node: str) -> None:
-        self._global_overrides = {
-            key: message
-            for key, message in self._global_overrides.items()
-            if (
-                (node_name := extract_message_name(message)) is None
-                or not _is_same_node_or_descendant(node_name, removed_node)
-            )
-        }
-
     def messages_for_step(self, step: int) -> list[StoredMessage]:
-        """Return all messages visible at ``step``, including global overrides."""
+        """Return the recorded step delta plus visible live scene overrides."""
         with self._lock:
             step = self.validate_step(step)
             block_index = step // self.block_size
@@ -268,7 +250,7 @@ class TimelineStore:
             apply_steps(state, block.steps[: step_offset + 1])
             return [
                 *step_patch_messages(block.steps[step_offset]),
-                *self._global_override_messages_for_state(state),
+                *step_patch_messages(self._visible_scene_overrides_for_state(state)),
             ]
 
     def block_index_for_step(self, step: int) -> int:
@@ -304,31 +286,46 @@ class TimelineStore:
             "stepPatches": step_patches,
         }
 
-    def _global_override_messages_for_state(
+    def _scene_override_items(self) -> list[tuple[str, StoredMessage]]:
+        items = [
+            (
+                scene_delete_state_key(node_name),
+                StoredMessage(
+                    payload={"type": "RemoveSceneNodeMessage", "name": node_name}
+                ),
+            )
+            for node_name in self._scene_overrides.scene_delete_nodes
+        ]
+        items.extend(self._scene_overrides.scene_puts.items())
+        return items
+
+    def _visible_scene_overrides_for_state(
         self, state: CheckpointState
-    ) -> list[StoredMessage]:
+    ) -> TimelineStep:
         visible_nodes = {
             node_name
             for node_name in state.key_to_node.values()
             if isinstance(node_name, str)
         }
-        messages: list[StoredMessage] = []
-        for message in self._global_overrides.values():
-            node_name = extract_message_name(message)
-            if node_name is None:
-                messages.append(message)
-                continue
-            if message.payload.get("type") == "RemoveSceneNodeMessage":
+        return TimelineStep(
+            scene_puts={
+                key: message
+                for key, message in self._scene_overrides.scene_puts.items()
+                if (
+                    (node_name := extract_message_name(message)) is None
+                    or node_name in visible_nodes
+                )
+            },
+            scene_delete_nodes=[
+                node_name
+                for node_name in self._scene_overrides.scene_delete_nodes
                 if any(
-                    node_name == vn or vn.startswith(f"{node_name}/")
-                    for vn in visible_nodes
-                ):
-                    messages.append(message)
-                continue
-            if node_name not in visible_nodes:
-                continue
-            messages.append(message)
-        return messages
+                    node_name == visible_name
+                    or visible_name.startswith(f"{node_name}/")
+                    for visible_name in visible_nodes
+                )
+            ],
+        )
 
     def close(self) -> None:
         """Flush any dirty blocks and release temporary on-disk storage."""
@@ -527,19 +524,6 @@ class TimelineStore:
             payload_byte_size=manifest.payload_byte_size,
             dirty=manifest.dirty,
         )
-
-
-def _record_scene_delete(step: TimelineStep, node_name: str) -> None:
-    if node_name not in step.scene_delete_nodes:
-        step.scene_delete_nodes.append(node_name)
-    step.scene_puts = {
-        key: message
-        for key, message in step.scene_puts.items()
-        if not _is_same_node_or_descendant(
-            extract_message_name(message) or "",
-            node_name,
-        )
-    }
 
 
 def _write_block_file(path: Path, block: TimelineBlock) -> None:
