@@ -4,6 +4,7 @@ import contextlib
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from types import MethodType
 from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
@@ -55,6 +56,7 @@ class SceneRecorder:
         )
         # Reuse viser's existing server-owned client lookup for inbound events.
         impl.set_scene_owner(self.scene, server)
+        self._install_scene_ancestor_resolver()
         self.audio = AudioApi(self)
         self._transport.start()
 
@@ -72,7 +74,6 @@ class SceneRecorder:
             finally:
                 self._active_session = None
                 if session.messages:
-                    self._validate_step_messages(session.messages)
                     self._server._timeline.record_step(session.step, session.messages)
                     changed_block = self._server._timeline.block_index_for_step(
                         session.step
@@ -206,16 +207,24 @@ class SceneRecorder:
                         payloads[block_index] = payload
                     playback.load_block(payload)
 
-    def _validate_step_messages(self, messages: list[impl.Message]) -> None:
-        for message in messages:
-            if not impl.is_create_scene_node_message(message):
-                continue
-            name = message.name  # type: ignore[union-attr]
-            if impl.scene_has_node(self._live_scene, name):
-                raise RuntimeError(
-                    f"Cannot create timeline node {name!r} because a static scene node "
-                    "with the same name already exists."
-                )
+    def _install_scene_ancestor_resolver(self) -> None:
+        """Let timeline nodes find ancestors that exist on the static scene."""
+
+        def _ensure_ancestors_exist(api: impl.SceneApi, name: str) -> None:
+            parts = name.split("/")
+            for index in range(2, len(parts)):
+                ancestor = "/".join(parts[:index])
+                if (
+                    ancestor in api._handle_from_node_name
+                    or ancestor in self._live_scene._handle_from_node_name
+                ):
+                    continue
+                api.add_frame(ancestor, show_axes=False)
+
+        self.scene._ensure_ancestors_exist = MethodType(  # type: ignore[attr-defined]
+            _ensure_ancestors_exist,
+            self.scene,
+        )
 
 
 class _TimelineTransport(impl.WebsockMessageHandler):

@@ -408,13 +408,25 @@ def test_serialize_rejects_invalid_timestep_range() -> None:
         server.stop()
 
 
-def test_at_rejects_static_name_collisions() -> None:
+def test_timeline_scene_supports_static_parents() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
-        with pytest.raises(RuntimeError, match="static scene node"):
-            with server.at(0) as timeline:
-                timeline.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
+        server.scene.add_frame("/group", show_axes=False)
+
+        with server.at(0) as timeline:
+            timeline.scene.add_frame("/group/child", position=(1.0, 0.0, 0.0))
+
+        recording = _deserialize_recording(
+            server.serialize(start_timestep=0, end_timestep=0)
+        )
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        frame_names = {
+            cast(str, message["name"])
+            for _, message in messages
+            if message.get("type") == "FrameMessage"
+            and isinstance(message.get("name"), str)
+        }
+        assert "/group/child" in frame_names
     finally:
         server.stop()
 
