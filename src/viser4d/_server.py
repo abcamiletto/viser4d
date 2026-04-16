@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import uuid
 from collections.abc import Coroutine
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any, Callable
@@ -64,6 +65,7 @@ class Viser4dServer(viser.ViserServer):
         self._playback_config_lock = threading.Lock()
         self._loop = loop
         self._playback_speed = default_playback_speed
+        self._client_chunk_cache_version = uuid.uuid4().hex
         self._timeline = TimelineStore(
             num_steps,
             block_size=streaming.block_size,
@@ -144,6 +146,12 @@ class Viser4dServer(viser.ViserServer):
         return self._chunk_streaming.client_chunk_cache_bytes
 
     @property
+    def client_chunk_cache_version(self) -> str:
+        """Version token for client-side persistent chunk caching."""
+        with self._playback_config_lock:
+            return self._client_chunk_cache_version
+
+    @property
     def loop(self) -> bool:
         """Whether playback wraps at the end for connected and future clients."""
         with self._playback_config_lock:
@@ -191,6 +199,7 @@ class Viser4dServer(viser.ViserServer):
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
         if num_steps == self.num_steps:
             return
+        self.bump_client_chunk_cache_version()
         old_timeline = self._recorder.resize_timeline(num_steps)
         try:
             for playback in self._client_playback_values():
@@ -200,6 +209,7 @@ class Viser4dServer(viser.ViserServer):
 
     def clear(self) -> None:
         """Reset the timeline, playback state, and shared scene content."""
+        self.bump_client_chunk_cache_version()
         old_timeline = self._recorder.clear_timeline()
         try:
             self.scene.reset()
@@ -236,6 +246,12 @@ class Viser4dServer(viser.ViserServer):
         """Block until the server is stopped."""
         while not self._stop_event.wait(3600):
             pass
+
+    def bump_client_chunk_cache_version(self) -> str:
+        """Invalidate any persistent client-side chunk cache for this timeline."""
+        with self._playback_config_lock:
+            self._client_chunk_cache_version = uuid.uuid4().hex
+            return self._client_chunk_cache_version
 
     def serialize(
         self,

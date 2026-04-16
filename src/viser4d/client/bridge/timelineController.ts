@@ -14,8 +14,10 @@ import {
   type RuntimeSeekMessage,
   type RuntimeSetSpeedMessage,
 } from "./generatedRuntimeMessages";
+import { PersistentBlockStore } from "./persistentBlockStore";
 import { PlaybackEngine } from "./playbackEngine";
 import { SceneApplicator } from "./sceneApplicator";
+import type { LoadedBlock } from "./blockCache";
 import { type GuiUpdateMessage, type RuntimeConfig } from "./protocol";
 
 type TimelineControllerIO = {
@@ -58,6 +60,7 @@ export class TimelineController {
     timelineFps: 30,
     speed: 1,
     loop: false,
+    chunkCacheVersion: "",
     timelineSliderUuid: null,
     speedSliderUuid: null,
     stepButtonsUuid: null,
@@ -66,16 +69,14 @@ export class TimelineController {
   };
   private lastLocalSliderStep = -1;
   private lastSyncedStep = -1;
+  private readonly persistentBlocks = new PersistentBlockStore();
 
   private readonly audio: AudioRuntime = new AudioRuntime(
     () => this.engine.getTransportStep(),
     (event, payload) => debugState.push(event, payload),
   );
-  private readonly blocks: BlockCache = new BlockCache((step) =>
-    this.sendRuntimeEvent({
-      type: "RuntimeBlockRequestMessage",
-      step,
-    }),
+  private readonly blocks: BlockCache = new BlockCache((blockIndex, step) =>
+    this.requestBlock(blockIndex, step),
   );
   private readonly scene: SceneApplicator = new SceneApplicator(
     (messages) => this.io.pushMessages(messages),
@@ -173,6 +174,7 @@ export class TimelineController {
       timelineFps: message.timelineFps,
       speed: message.speed,
       loop: message.loop,
+      chunkCacheVersion: message.chunkCacheVersion,
       timelineSliderUuid: message.timelineSliderUuid,
       speedSliderUuid: message.speedSliderUuid,
       stepButtonsUuid: message.stepButtonsUuid,
@@ -180,6 +182,7 @@ export class TimelineController {
       pauseButtonUuid: message.pauseButtonUuid,
     };
     this.blocks.blockSize = this.config.blockSize;
+    this.persistentBlocks.configure(this.config.chunkCacheVersion);
     this.engine.updateConfig(this.config);
     this.audio.setStepRate(this.config.timelineFps);
     debugState.push("runtime.configure", this.config);
@@ -198,14 +201,20 @@ export class TimelineController {
   }
 
   private loadBlock(message: RuntimeLoadBlockMessage): void {
-    const currentStep = this.currentStep();
-    this.blocks.loadBlock(message.block, {
+    const block = {
       checkpointMessages: message.checkpointMessages,
       stepMessages: message.stepMessages,
-    });
+    } satisfies LoadedBlock;
+    this.applyLoadedBlock(message.block, block);
+    void this.persistentBlocks.storeBlock(message.block, block);
+  }
+
+  private applyLoadedBlock(blockIndex: number, block: LoadedBlock): void {
+    const currentStep = this.currentStep();
+    this.blocks.loadBlock(blockIndex, block);
     const activeBlock = this.blocks.blockIndexOf(currentStep);
     const shouldRebuildCurrentBlock =
-      message.block === activeBlock && this.scene.appliedBlock === activeBlock;
+      blockIndex === activeBlock && this.scene.appliedBlock === activeBlock;
     if (shouldRebuildCurrentBlock) {
       this.scene.rebuildThrough(currentStep);
       return;
@@ -220,6 +229,23 @@ export class TimelineController {
     }
     this.blocks.pendingStep = null;
     this.engine.seek({ step: pendingStep });
+  }
+
+  private requestBlock(blockIndex: number, step: number): void {
+    void this.persistentBlocks.loadBlock(blockIndex).then((block) => {
+      if (block) {
+        debugState.push("runtime.load_block.cache_hit", { block: blockIndex });
+        if (!this.blocks.hasBlockIndex(blockIndex)) {
+          this.applyLoadedBlock(blockIndex, block);
+        }
+        return;
+      }
+      debugState.push("runtime.load_block.cache_miss", { block: blockIndex });
+      this.sendRuntimeEvent({
+        type: "RuntimeBlockRequestMessage",
+        step,
+      });
+    });
   }
 
   private evictBlock(message: RuntimeEvictBlockMessage): void {

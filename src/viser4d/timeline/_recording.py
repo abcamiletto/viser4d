@@ -42,6 +42,7 @@ class SceneRecorder:
         self._server = server
         self._live_scene = server.scene
         self._pending_refresh_from_block: int | None = None
+        self._pending_runtime_config_sync = False
         self._refresh_timer: threading.Timer | None = None
         self._refresh_lock = threading.Lock()
         self._timeline_lock = threading.RLock()
@@ -156,6 +157,7 @@ class SceneRecorder:
             timer = self._refresh_timer
             self._refresh_timer = None
             self._pending_refresh_from_block = None
+            self._pending_runtime_config_sync = False
         if timer is not None:
             timer.cancel()
 
@@ -177,6 +179,9 @@ class SceneRecorder:
             pending_block = self._pending_refresh_from_block
             if pending_block is None or changed_block < pending_block:
                 self._pending_refresh_from_block = changed_block
+            if not self._pending_runtime_config_sync:
+                self._server.bump_client_chunk_cache_version()
+                self._pending_runtime_config_sync = True
             if self._refresh_timer is not None:
                 self._refresh_timer.cancel()
             timer = threading.Timer(
@@ -191,12 +196,16 @@ class SceneRecorder:
         with self._refresh_lock:
             changed_block = self._pending_refresh_from_block
             self._pending_refresh_from_block = None
+            should_sync_runtime_config = self._pending_runtime_config_sync
+            self._pending_runtime_config_sync = False
             self._refresh_timer = None
         if changed_block is None:
             return
         payloads: dict[int, RuntimeBlockPayload] = {}
         with self._timeline_lock:
             for playback in self._server.get_client_playbacks().values():
+                if should_sync_runtime_config:
+                    playback.sync_runtime_config()
                 for block_index in sorted(playback.loaded_blocks):
                     if block_index < changed_block:
                         continue

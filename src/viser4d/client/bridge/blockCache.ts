@@ -11,10 +11,14 @@ export class BlockCache {
   private blocks = new Map<number, LoadedBlock>();
   private requestedBlocks = new Set<number>();
 
-  constructor(private requestStep: (step: number) => void) {}
+  constructor(private requestBlock: (blockIndex: number, step: number) => void) {}
 
   getBlock(step: number): LoadedBlock | null {
     return this.blocks.get(Math.floor(step / this.blockSize)) ?? null;
+  }
+
+  hasBlockIndex(blockIndex: number): boolean {
+    return this.blocks.has(blockIndex);
   }
 
   blockIndexOf(step: number): number {
@@ -56,7 +60,7 @@ export class BlockCache {
     const blockIndex = this.blockIndexOf(step);
     if (!this.requestedBlocks.has(blockIndex)) {
       this.requestedBlocks.add(blockIndex);
-      this.requestStep(step);
+      this.requestBlock(blockIndex, step);
     }
     return false;
   }

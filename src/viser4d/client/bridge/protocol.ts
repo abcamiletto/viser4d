@@ -6,6 +6,7 @@ export type RuntimeConfig = {
   timelineFps: number;
   speed: number;
   loop: boolean;
+  chunkCacheVersion: string;
   timelineSliderUuid: string | null;
   speedSliderUuid: string | null;
   stepButtonsUuid: string | null;
