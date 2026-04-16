@@ -10,6 +10,7 @@ import {
   type RuntimeEventMessage,
   type RuntimeEvictBlockMessage,
   type RuntimeLoadBlockMessage,
+  type RuntimePatchBlockMessage,
   type RuntimePlayMessage,
   type RuntimeSeekMessage,
   type RuntimeSetSpeedMessage,
@@ -226,6 +227,23 @@ export class TimelineController {
     this.blocks.evictBlock(message.block, this.scene.appliedBlock);
   }
 
+  private patchBlock(message: RuntimePatchBlockMessage): void {
+    const activeStep = this.currentStep();
+    const activeBlock = this.blocks.blockIndexOf(activeStep);
+    const shouldRebuildCurrentBlock =
+      message.block === activeBlock &&
+      this.scene.appliedBlock === activeBlock &&
+      this.patchTouchesAppliedState(activeStep, message);
+    const patched = this.blocks.patchBlock(message.block, {
+      checkpointMessages: message.checkpointMessages,
+      stepDeltas: message.stepDeltas,
+    });
+    if (!patched || !shouldRebuildCurrentBlock) {
+      return;
+    }
+    this.scene.rebuildThrough(activeStep);
+  }
+
   private seek(message: RuntimeSeekMessage): void {
     this.engine.seek({ step: message.step });
   }
@@ -272,6 +290,9 @@ export class TimelineController {
         return;
       case "RuntimeLoadBlockMessage":
         this.loadBlock(message);
+        return;
+      case "RuntimePatchBlockMessage":
+        this.patchBlock(message);
         return;
       case "RuntimeEvictBlockMessage":
         this.evictBlock(message);
@@ -384,6 +405,19 @@ export class TimelineController {
 
   private currentStep(): number {
     return Math.floor(this.engine.currentStep);
+  }
+
+  private patchTouchesAppliedState(
+    activeStep: number,
+    message: RuntimePatchBlockMessage,
+  ): boolean {
+    if (message.checkpointMessages !== null) {
+      return true;
+    }
+    const blockStart = this.blocks.blockStartStep(message.block);
+    return message.stepDeltas.some(
+      (stepDelta) => blockStart + stepDelta.offset <= activeStep,
+    );
   }
 
   private sendSpeedToServer(speed: number): void {

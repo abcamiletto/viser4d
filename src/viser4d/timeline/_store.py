@@ -15,7 +15,7 @@ import zstandard
 
 from .. import _viser_private as impl
 from ..audio._messages import is_audio_message
-from .._types import RuntimeBlockPayload, StoredMessage
+from .._types import RuntimeBlockDeltaPayload, RuntimeBlockPayload, StoredMessage
 from ._checkpoint import (
     CheckpointState,
     apply_steps,
@@ -252,6 +252,44 @@ class TimelineStore:
             "block": block_index,
             "checkpointMessages": ckpt_messages,
             "stepMessages": step_messages,
+        }
+
+    def block_delta_payload(
+        self,
+        block_index: int,
+        *,
+        include_checkpoint: bool = False,
+        step_offsets: frozenset[int] = frozenset(),
+    ) -> RuntimeBlockDeltaPayload:
+        """Build a sparse block patch for one already loaded browser chunk."""
+        with self._lock:
+            block_index = self._validate_block_index(block_index)
+            block = self._load_block(block_index)
+            block_start = block_index * self.block_size
+            step_deltas = []
+            for offset in sorted(step_offsets):
+                if offset < 0 or offset >= len(block.steps):
+                    raise IndexError(
+                        f"Step offset {offset} is out of range for block {block_index}."
+                    )
+                step_deltas.append(
+                    {
+                        "offset": offset,
+                        "messages": self._merged_step_messages(
+                            block_start + offset,
+                            block.steps[offset],
+                        ),
+                    }
+                )
+            checkpoint_payload = None
+            if include_checkpoint:
+                checkpoint_payload = checkpoint_messages(
+                    self._checkpoint_for_block(block_index)
+                )
+        return {
+            "block": block_index,
+            "checkpointMessages": checkpoint_payload,
+            "stepDeltas": step_deltas,
         }
 
     def _merged_step_messages(

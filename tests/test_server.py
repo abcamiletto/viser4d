@@ -13,6 +13,7 @@ import zstandard
 import viser4d
 from viser4d import _server as server_module
 from viser4d import _runtime as runtime_module
+from viser4d._types import StoredMessage
 from viser4d._runtime_messages import (
     RuntimePlayMessage,
     RuntimeReadyMessage,
@@ -40,6 +41,26 @@ def _fake_create_gui(
     self._step_buttons = SimpleNamespace()
     self._play_button = SimpleNamespace()
     self._pause_button = SimpleNamespace()
+
+
+class _FakeLoadedPlayback:
+    def __init__(self, *loaded_blocks: int) -> None:
+        self.loaded_blocks = set(loaded_blocks)
+        self.loaded_payloads: list[dict[str, object]] = []
+        self.patched_payloads: list[dict[str, object]] = []
+
+    def load_block(self, payload: dict[str, object]) -> None:
+        self.loaded_payloads.append(payload)
+
+    def patch_block(self, payload: dict[str, object]) -> None:
+        self.patched_payloads.append(payload)
+
+
+def _stored_message_types(messages: object) -> list[str]:
+    return [
+        str(message.payload["type"])
+        for message in cast(list[StoredMessage], messages)
+    ]
 
 
 def test_server_does_not_expose_audio_api() -> None:
@@ -729,6 +750,66 @@ def test_timeline_global_overrides_reapply_after_recorded_updates() -> None:
             (1.0 / server.fps, (1.0, 0.0, 0.0)),
             (1.0 / server.fps, (2.0, 0.0, 0.0)),
         ]
+    finally:
+        server.stop()
+
+
+def test_recorded_step_updates_patch_loaded_blocks() -> None:
+    server = viser4d.Viser4dServer(num_steps=65, fps=1.0, port=0, verbose=False)
+    try:
+        server._recorder._CLIENT_REFRESH_DELAY_SECONDS = 60.0
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+        server._recorder._cancel_pending_refresh()
+
+        playback = _FakeLoadedPlayback(0, 1)
+        server._client_playbacks = {1: cast(Any, playback)}
+
+        with server.at(1):
+            joint.visible = False
+        server._recorder._flush_client_block_refreshes()
+
+        assert playback.loaded_payloads == []
+        assert [payload["block"] for payload in playback.patched_payloads] == [0, 1]
+
+        current_block, future_block = playback.patched_payloads
+        assert current_block["checkpointMessages"] is None
+        current_step_deltas = cast(
+            list[dict[str, object]],
+            current_block["stepDeltas"],
+        )
+        assert len(current_step_deltas) == 1
+        assert current_step_deltas[0]["offset"] == 1
+        assert _stored_message_types(current_step_deltas[0]["messages"]) == [
+            "SetSceneNodeVisibilityMessage"
+        ]
+
+        assert future_block["checkpointMessages"] is not None
+        assert future_block["stepDeltas"] == []
+        assert _stored_message_types(future_block["checkpointMessages"]) == [
+            "FrameMessage",
+            "SetSceneNodeVisibilityMessage",
+        ]
+    finally:
+        server.stop()
+
+
+def test_global_override_updates_fall_back_to_full_block_reload() -> None:
+    server = viser4d.Viser4dServer(num_steps=65, fps=1.0, port=0, verbose=False)
+    try:
+        server._recorder._CLIENT_REFRESH_DELAY_SECONDS = 60.0
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+        server._recorder._cancel_pending_refresh()
+
+        playback = _FakeLoadedPlayback(0, 1)
+        server._client_playbacks = {1: cast(Any, playback)}
+
+        joint.visible = False
+        server._recorder._flush_client_block_refreshes()
+
+        assert playback.patched_payloads == []
+        assert [payload["block"] for payload in playback.loaded_payloads] == [0, 1]
     finally:
         server.stop()
 

@@ -22,6 +22,12 @@ def runtime_scene_messages(
     return [runtime_scene_message(message) for message in messages]
 
 
+@dataclasses.dataclass(frozen=True)
+class RuntimeBlockStepDelta:
+    offset: int
+    messages: list[RuntimeSceneMessage]
+
+
 class _RuntimeMessageBase(impl.Message):
     _tags: ClassVar[tuple[str, ...]] = tuple()
 
@@ -67,6 +73,13 @@ class RuntimeLoadBlockMessage(_RuntimeControlMessage):
     block: int
     checkpointMessages: list[RuntimeSceneMessage]
     stepMessages: list[list[RuntimeSceneMessage]]
+
+
+@dataclasses.dataclass
+class RuntimePatchBlockMessage(_RuntimeControlMessage):
+    block: int
+    checkpointMessages: list[RuntimeSceneMessage] | None
+    stepDeltas: list[RuntimeBlockStepDelta]
 
 
 @dataclasses.dataclass

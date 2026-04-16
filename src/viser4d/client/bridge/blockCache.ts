@@ -5,6 +5,16 @@ export type LoadedBlock = {
   stepMessages: RuntimeMessage[][];
 };
 
+export type BlockStepDelta = {
+  offset: number;
+  messages: RuntimeMessage[];
+};
+
+export type BlockPatch = {
+  checkpointMessages: RuntimeMessage[] | null;
+  stepDeltas: BlockStepDelta[];
+};
+
 export class BlockCache {
   blockSize = 32;
   pendingStep: number | null = null;
@@ -28,6 +38,28 @@ export class BlockCache {
   loadBlock(blockIndex: number, block: LoadedBlock): void {
     this.requestedBlocks.delete(blockIndex);
     this.blocks.set(blockIndex, block);
+  }
+
+  patchBlock(blockIndex: number, patch: BlockPatch): boolean {
+    const block = this.blocks.get(blockIndex);
+    if (!block) {
+      return false;
+    }
+    const nextStepMessages = block.stepMessages.slice();
+    for (const { offset, messages } of patch.stepDeltas) {
+      if (offset < 0 || offset >= nextStepMessages.length) {
+        return false;
+      }
+      nextStepMessages[offset] = messages;
+    }
+    this.blocks.set(blockIndex, {
+      checkpointMessages:
+        patch.checkpointMessages === null
+          ? block.checkpointMessages
+          : patch.checkpointMessages,
+      stepMessages: nextStepMessages,
+    });
+    return true;
   }
 
   evictBlock(blockIndex: number, appliedBlock: number): void {

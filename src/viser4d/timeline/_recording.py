@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 import numpy as np
 
 from .. import _viser_private as impl
-from .._types import RuntimeBlockPayload
+from .._types import RuntimeBlockDeltaPayload, RuntimeBlockPayload
 from ..audio._api import AudioApi, AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
 from ._messages_util import store_raw_message
@@ -41,7 +41,8 @@ class SceneRecorder:
     def __init__(self, server: Viser4dServer) -> None:
         self._server = server
         self._live_scene = server.scene
-        self._pending_refresh_from_block: int | None = None
+        self._pending_full_refresh_from_block: int | None = None
+        self._pending_step_refreshes: dict[int, set[int]] = {}
         self._refresh_timer: threading.Timer | None = None
         self._refresh_lock = threading.Lock()
         self._timeline_lock = threading.RLock()
@@ -61,7 +62,7 @@ class SceneRecorder:
     @contextlib.contextmanager
     def at(self, t: int) -> Iterator[TimelineContext]:
         """Record scene and audio mutations into timestep ``t``."""
-        changed_block: int | None = None
+        changed_step: int | None = None
         with self._timeline_lock:
             if self._active_session is not None:
                 raise RuntimeError("server.at(t) cannot be nested.")
@@ -74,11 +75,9 @@ class SceneRecorder:
                 if session.messages:
                     self._validate_step_messages(session.messages)
                     self._server._timeline.record_step(session.step, session.messages)
-                    changed_block = self._server._timeline.block_index_for_step(
-                        session.step
-                    )
-        if changed_block is not None:
-            self._queue_client_block_refresh(changed_block)
+                    changed_step = session.step
+        if changed_step is not None:
+            self._queue_client_step_refresh(changed_step)
 
     def add_audio(
         self,
@@ -121,7 +120,7 @@ class SceneRecorder:
                     "Timeline scene node creation is only valid inside server.at(t)."
                 )
             self._server._timeline.record_global_override(message)
-        self._queue_client_block_refresh(0)
+        self._queue_client_full_refresh(0)
 
     def dispatch_audio_update(self, message: impl.Message) -> None:
         """Route audio handle updates to the active session or live runtimes."""
@@ -155,7 +154,8 @@ class SceneRecorder:
         with self._refresh_lock:
             timer = self._refresh_timer
             self._refresh_timer = None
-            self._pending_refresh_from_block = None
+            self._pending_full_refresh_from_block = None
+            self._pending_step_refreshes = {}
         if timer is not None:
             timer.cancel()
 
@@ -172,39 +172,86 @@ class SceneRecorder:
             self._server._timeline = replace(old_timeline)
         return old_timeline
 
-    def _queue_client_block_refresh(self, changed_block: int) -> None:
+    def _schedule_client_refresh_locked(self) -> None:
+        if self._refresh_timer is not None:
+            self._refresh_timer.cancel()
+        timer = threading.Timer(
+            self._CLIENT_REFRESH_DELAY_SECONDS,
+            self._flush_client_block_refreshes,
+        )
+        timer.daemon = True
+        self._refresh_timer = timer
+        timer.start()
+
+    def _queue_client_step_refresh(self, step: int) -> None:
+        block_index = self._server._timeline.block_index_for_step(step)
+        step_offset = step % self._server.block_size
         with self._refresh_lock:
-            pending_block = self._pending_refresh_from_block
+            self._pending_step_refreshes.setdefault(block_index, set()).add(step_offset)
+            self._schedule_client_refresh_locked()
+
+    def _queue_client_full_refresh(self, changed_block: int) -> None:
+        with self._refresh_lock:
+            pending_block = self._pending_full_refresh_from_block
             if pending_block is None or changed_block < pending_block:
-                self._pending_refresh_from_block = changed_block
-            if self._refresh_timer is not None:
-                self._refresh_timer.cancel()
-            timer = threading.Timer(
-                self._CLIENT_REFRESH_DELAY_SECONDS,
-                self._flush_client_block_refreshes,
-            )
-            timer.daemon = True
-            self._refresh_timer = timer
-            timer.start()
+                self._pending_full_refresh_from_block = changed_block
+            self._pending_step_refreshes = {
+                block_index: offsets
+                for block_index, offsets in self._pending_step_refreshes.items()
+                if block_index < self._pending_full_refresh_from_block
+            }
+            self._schedule_client_refresh_locked()
 
     def _flush_client_block_refreshes(self) -> None:
         with self._refresh_lock:
-            changed_block = self._pending_refresh_from_block
-            self._pending_refresh_from_block = None
+            full_refresh_from_block = self._pending_full_refresh_from_block
+            step_refreshes = {
+                block_index: frozenset(offsets)
+                for block_index, offsets in self._pending_step_refreshes.items()
+            }
+            self._pending_full_refresh_from_block = None
+            self._pending_step_refreshes = {}
             self._refresh_timer = None
-        if changed_block is None:
+        if full_refresh_from_block is None and not step_refreshes:
             return
         payloads: dict[int, RuntimeBlockPayload] = {}
+        delta_payloads: dict[
+            tuple[int, bool, frozenset[int]],
+            RuntimeBlockDeltaPayload,
+        ] = {}
+        earliest_delta_block = min(step_refreshes) if step_refreshes else None
         with self._timeline_lock:
             for playback in self._server.get_client_playbacks().values():
                 for block_index in sorted(playback.loaded_blocks):
-                    if block_index < changed_block:
+                    if (
+                        full_refresh_from_block is not None
+                        and block_index >= full_refresh_from_block
+                    ):
+                        payload = payloads.get(block_index)
+                        if payload is None:
+                            payload = self._server._timeline.block_payload(block_index)
+                            payloads[block_index] = payload
+                        playback.load_block(payload)
                         continue
-                    payload = payloads.get(block_index)
+                    if (
+                        earliest_delta_block is None
+                        or block_index < earliest_delta_block
+                    ):
+                        continue
+                    changed_steps = step_refreshes.get(block_index, frozenset())
+                    include_checkpoint = block_index > earliest_delta_block
+                    if not changed_steps and not include_checkpoint:
+                        continue
+                    delta_key = (block_index, include_checkpoint, changed_steps)
+                    payload = delta_payloads.get(delta_key)
                     if payload is None:
-                        payload = self._server._timeline.block_payload(block_index)
-                        payloads[block_index] = payload
-                    playback.load_block(payload)
+                        payload = self._server._timeline.block_delta_payload(
+                            block_index,
+                            include_checkpoint=include_checkpoint,
+                            step_offsets=changed_steps,
+                        )
+                        delta_payloads[delta_key] = payload
+                    playback.patch_block(payload)
 
     def _validate_step_messages(self, messages: list[impl.Message]) -> None:
         for message in messages:

@@ -52,3 +52,14 @@ class RuntimeBlockPayload(TypedDict):
     block: int
     checkpointMessages: list[StoredMessage]
     stepMessages: list[list[StoredMessage]]
+
+
+class RuntimeBlockStepDeltaPayload(TypedDict):
+    offset: int
+    messages: list[StoredMessage]
+
+
+class RuntimeBlockDeltaPayload(TypedDict):
+    block: int
+    checkpointMessages: list[StoredMessage] | None
+    stepDeltas: list[RuntimeBlockStepDeltaPayload]

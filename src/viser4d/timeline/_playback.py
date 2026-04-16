@@ -18,6 +18,8 @@ from .._runtime_messages import (
     RuntimeEventMessage,
     RuntimeLoadBlockMessage,
     RuntimePauseMessage,
+    RuntimePatchBlockMessage,
+    RuntimeBlockStepDelta,
     RuntimePlaybackStateMessage,
     RuntimePlayMessage,
     RuntimeReadyMessage,
@@ -29,7 +31,12 @@ from .._runtime_messages import (
     runtime_scene_message,
     runtime_scene_messages,
 )
-from .._types import ClientRuntimeConfig, RuntimeBlockPayload, StoredMessage
+from .._types import (
+    ClientRuntimeConfig,
+    RuntimeBlockDeltaPayload,
+    RuntimeBlockPayload,
+    StoredMessage,
+)
 from .._validation import require_positive_float
 from ._streaming import PreloadPlanner
 
@@ -174,6 +181,31 @@ class ClientPlaybackHandle:
                 stepMessages=[
                     runtime_scene_messages(inflate_stored_messages(step_messages))
                     for step_messages in payload["stepMessages"]
+                ],
+            )
+        )
+
+    def patch_block(self, payload: RuntimeBlockDeltaPayload) -> None:
+        """Patch one already loaded timeline block in the browser runtime."""
+        checkpoint_messages = payload["checkpointMessages"]
+        self._send_runtime_message(
+            RuntimePatchBlockMessage(
+                block=payload["block"],
+                checkpointMessages=(
+                    None
+                    if checkpoint_messages is None
+                    else runtime_scene_messages(
+                        inflate_stored_messages(checkpoint_messages)
+                    )
+                ),
+                stepDeltas=[
+                    RuntimeBlockStepDelta(
+                        offset=step_delta["offset"],
+                        messages=runtime_scene_messages(
+                            inflate_stored_messages(step_delta["messages"])
+                        ),
+                    )
+                    for step_delta in payload["stepDeltas"]
                 ],
             )
         )
