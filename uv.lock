@@ -1229,7 +1229,7 @@ wheels = [
 
 [[package]]
 name = "viser4d"
-version = "0.16.0"
+version = "0.16.2"
 source = { editable = "." }
 dependencies = [
     { name = "nodeenv" },

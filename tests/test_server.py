@@ -31,6 +31,17 @@ def _deserialize_recording(blob: bytes) -> dict[str, object]:
     return cast(dict[str, object], msgspec.msgpack.decode(inner[8 : 8 + msgpack_size]))
 
 
+def _fake_create_gui(
+    self: ClientPlaybackHandle,
+    _brand_color: tuple[int, int, int] | None,
+) -> None:
+    self._timeline_slider = SimpleNamespace(value=0, max=1)
+    self._speed_slider = SimpleNamespace(value=self._speed)
+    self._step_buttons = SimpleNamespace()
+    self._play_button = SimpleNamespace()
+    self._pause_button = SimpleNamespace()
+
+
 def test_server_does_not_expose_audio_api() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
@@ -68,6 +79,77 @@ def test_fps_and_speed_must_be_positive() -> None:
     try:
         with pytest.raises(ValueError, match="speed must be a positive finite float"):
             server.set_playback_speed(-1.0)
+    finally:
+        server.stop()
+
+
+def test_client_chunk_cache_size_comes_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISER4D_CLIENT_CHUNK_CACHE_SIZE", "2MB")
+    server = viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
+    try:
+        assert server.client_chunk_cache_bytes == 2_000_000
+    finally:
+        server.stop()
+
+
+def test_block_size_comes_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VISER4D_BLOCK_SIZE", "16")
+    server = viser4d.Viser4dServer(num_steps=100, port=0, verbose=False)
+    try:
+        assert server.block_size == 16
+    finally:
+        server.stop()
+
+
+def test_block_size_rejects_invalid_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VISER4D_BLOCK_SIZE", "invalid")
+    with pytest.raises(
+        ValueError,
+        match="VISER4D_BLOCK_SIZE must be a positive integer",
+    ):
+        viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
+
+
+def test_client_chunk_cache_size_rejects_invalid_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISER4D_CLIENT_CHUNK_CACHE_SIZE", "invalid")
+    with pytest.raises(
+        ValueError,
+        match="VISER4D_CLIENT_CHUNK_CACHE_SIZE must be an integer byte count",
+    ):
+        viser4d.Viser4dServer(num_steps=1, port=0, verbose=False)
+
+
+def test_chunk_streaming_config_is_public_and_overrides_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISER4D_BLOCK_SIZE", "16")
+    monkeypatch.setenv("VISER4D_CLIENT_CHUNK_CACHE_SIZE", "2MB")
+    config = viser4d.ChunkStreamingConfig(
+        block_size=8,
+        client_chunk_cache_bytes=1234,
+    )
+    server = viser4d.Viser4dServer(
+        num_steps=100,
+        chunk_streaming=config,
+        port=0,
+        verbose=False,
+    )
+    try:
+        assert server.chunk_streaming == config
+        assert server.block_size == 8
+        assert server.client_chunk_cache_bytes == 1234
+    finally:
+        server.stop()
+
+
+def test_server_uses_32_step_chunks_by_default() -> None:
+    server = viser4d.Viser4dServer(num_steps=100, port=0, verbose=False)
+    try:
+        assert server.block_size == 32
     finally:
         server.stop()
 
@@ -178,17 +260,7 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
 def test_client_playback_uses_current_server_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_create_gui(
-        self: ClientPlaybackHandle,
-        _brand_color: tuple[int, int, int] | None,
-    ) -> None:
-        self._timeline_slider = SimpleNamespace(value=0, max=1)
-        self._speed_slider = SimpleNamespace(value=self._speed)
-        self._step_buttons = SimpleNamespace()
-        self._play_button = SimpleNamespace()
-        self._pause_button = SimpleNamespace()
-
-    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", fake_create_gui)
+    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
     monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
     monkeypatch.setattr(
         ClientPlaybackHandle,

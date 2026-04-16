@@ -31,6 +31,7 @@ from .._runtime_messages import (
 )
 from .._types import ClientRuntimeConfig, RuntimeBlockPayload, StoredMessage
 from .._validation import require_positive_float
+from ._streaming import PreloadPlanner
 
 if TYPE_CHECKING:
     from .._viser_private import ClientHandle
@@ -226,7 +227,7 @@ class ClientPlaybackHandle:
             RuntimeConfigureMessage(
                 **ClientRuntimeConfig(
                     numSteps=self._server.num_steps,
-                    blockSize=self._server._timeline.block_size,
+                    blockSize=self._server.block_size,
                     timelineFps=self._server.fps,
                     speed=speed,
                     loop=loop,
@@ -280,23 +281,28 @@ class ClientPlaybackHandle:
         return True
 
     def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
-        """Keep a three-block circular window centered on the current block."""
+        """Load the current block first, then previous, then budgeted forward blocks."""
         timeline = self._server._timeline
-        block_count = timeline.block_count
         current_block = timeline.block_index_for_step(timestep)
-        if block_count <= 2:
-            desired = set(range(block_count))
-        else:
-            previous_block = (current_block - 1) % block_count
-            next_block = (current_block + 1) % block_count
-            desired = {previous_block, current_block, next_block}
+        manifests = timeline.block_manifests()
         with self._lock:
             previous = set(self._loaded_blocks)
-            self._loaded_blocks = desired
-        for block_index in sorted(desired):
-            if force or block_index not in previous:
-                self._queue_block_load(block_index)
-        for block_index in sorted(previous - desired):
+            pending = set(self._pending_block_loads)
+        plan = PreloadPlanner.plan(
+            current_block,
+            manifests,
+            self._server.client_chunk_cache_bytes,
+            loaded_blocks=previous,
+            pending_blocks=pending,
+            force=force,
+        )
+        with self._lock:
+            self._loaded_blocks = set(plan.desired_blocks)
+        for block_index in plan.required_loads:
+            self._queue_block_load(block_index)
+        for block_index in plan.speculative_loads:
+            self._queue_block_load(block_index)
+        for block_index in plan.evictions:
             self._send_runtime_message(RuntimeEvictBlockMessage(block=block_index))
 
     def _queue_block_load(self, block_index: int) -> None:
@@ -322,9 +328,13 @@ class ClientPlaybackHandle:
             if self._pending_block_loads.get(block_index) is not future:
                 return
             self._pending_block_loads.pop(block_index)
+        payload = future.result()
+        with self._lock:
             should_send = block_index in self._loaded_blocks
+            current_timestep = self._current_timestep
         if should_send:
-            self.load_block(future.result())
+            self.load_block(payload)
+        self._sync_loaded_blocks(current_timestep)
 
     def _send_runtime_message(self, message: impl.Message) -> None:
         with self._lock:

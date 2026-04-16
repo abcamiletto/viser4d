@@ -20,6 +20,7 @@ from ._validation import require_positive_float
 from .timeline._playback import ClientPlaybackHandle
 from .timeline._recording import SceneRecorder, TimelineContext
 from .timeline._store import TimelineStore
+from .timeline._streaming import ChunkStreamingConfig
 
 if TYPE_CHECKING:
     from ._viser_private import ClientHandle
@@ -33,25 +34,39 @@ class Viser4dServer(viser.ViserServer):
         num_steps: int,
         fps: float = 30.0,
         *,
+        chunk_streaming: ChunkStreamingConfig | None = None,
         loop: bool = False,
         playback_speed: float = 1.0,
         **kwargs,
     ) -> None:
         """Initialize the timeline runtime and client playback state.
 
+        ``chunk_streaming`` controls timeline block sizing and client preload budget.
         ``loop`` controls whether playback wraps at the end by default.
         ``playback_speed`` controls the default playback speed multiplier.
         """
         if num_steps < 1:
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
+        timeline_fps = require_positive_float("fps", fps)
+        streaming = (
+            ChunkStreamingConfig.from_env()
+            if chunk_streaming is None
+            else chunk_streaming
+        )
+        default_playback_speed = require_positive_float(
+            "playback_speed",
+            playback_speed,
+        )
         super().__init__(**kwargs)
 
-        self._timeline_fps = require_positive_float("fps", fps)
+        self._timeline_fps = timeline_fps
+        self._chunk_streaming = streaming
         self._playback_config_lock = threading.Lock()
         self._loop = loop
-        self._playback_speed = require_positive_float("playback_speed", playback_speed)
+        self._playback_speed = default_playback_speed
         self._timeline = TimelineStore(
             num_steps,
+            block_size=streaming.block_size,
             flush_executor=impl.server_thread_executor(self),
         )
         self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
@@ -112,6 +127,21 @@ class Viser4dServer(viser.ViserServer):
     def fps(self) -> float:
         """Timeline step rate used for recording, audio timing, and export."""
         return self._timeline_fps
+
+    @property
+    def chunk_streaming(self) -> ChunkStreamingConfig:
+        """Server-owned chunk streaming policy."""
+        return self._chunk_streaming
+
+    @property
+    def block_size(self) -> int:
+        """Timeline chunk size for storage and runtime block requests."""
+        return self._chunk_streaming.block_size
+
+    @property
+    def client_chunk_cache_bytes(self) -> int:
+        """Per-client chunk cache budget used by the preload planner."""
+        return self._chunk_streaming.client_chunk_cache_bytes
 
     @property
     def loop(self) -> bool:
