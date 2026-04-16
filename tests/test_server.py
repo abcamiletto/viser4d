@@ -14,10 +14,14 @@ import viser4d
 from viser4d import _server as server_module
 from viser4d import _runtime as runtime_module
 from viser4d._runtime_messages import (
+    RuntimeApplyMessageUpdateMessage,
     RuntimePlayMessage,
     RuntimeReadyMessage,
     RuntimeSetSpeedMessage,
 )
+from viser4d._types import StoredMessage
+from viser4d.timeline._checkpoint import step_patch_messages
+from viser4d.timeline._messages_util import TimelineStep
 from viser4d.timeline._playback import ClientPlaybackHandle
 
 
@@ -292,7 +296,13 @@ def test_client_playback_uses_current_server_config(
 
     server = cast(
         Any,
-        SimpleNamespace(loop=True, playback_speed=2.0, num_steps=2, fps=1.0),
+        SimpleNamespace(
+            loop=True,
+            playback_speed=2.0,
+            num_steps=2,
+            fps=1.0,
+            _timeline=SimpleNamespace(global_override_items=lambda: ()),
+        ),
     )
     client = cast(Any, SimpleNamespace(gui=None))
     messages: list[Any] = []
@@ -311,6 +321,138 @@ def test_client_playback_uses_current_server_config(
     assert isinstance(messages[-1], RuntimeSetSpeedMessage)
     assert messages[-1].speed == 0.5
     assert messages[-1].loop is False
+
+
+def test_client_playback_syncs_existing_global_overrides_on_init(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
+    monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_sync_loaded_blocks",
+        lambda self, timestep, force=False: None,
+    )
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_send_runtime_message",
+        lambda self, message: messages.append(message),
+    )
+
+    override = StoredMessage(
+        payload={
+            "type": "SetPositionMessage",
+            "name": "/frame",
+            "position": [1.0, 2.0, 3.0],
+        }
+    )
+    server = cast(
+        Any,
+        SimpleNamespace(
+            loop=True,
+            playback_speed=1.0,
+            num_steps=2,
+            fps=1.0,
+            _timeline=SimpleNamespace(
+                global_override_items=lambda: (
+                    ("scene.node:/frame:prop:position", override),
+                )
+            ),
+        ),
+    )
+    client = cast(Any, SimpleNamespace(gui=None))
+    messages: list[Any] = []
+
+    ClientPlaybackHandle(server, client)
+
+    override_messages = [
+        message
+        for message in messages
+        if isinstance(message, RuntimeApplyMessageUpdateMessage)
+    ]
+    assert len(override_messages) == 1
+    assert override_messages[0].key == "scene.node:/frame:prop:position"
+    assert override_messages[0].message["type"] == "SetPositionMessage"
+
+
+def test_live_scene_removals_are_forwarded_without_block_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = viser4d.Viser4dServer(num_steps=4, port=0, verbose=False)
+
+    class FakePlayback:
+        def __init__(self) -> None:
+            self.updates: list[tuple[str, object]] = []
+
+        def apply_message_update(self, key: str, message: object) -> None:
+            self.updates.append((key, message))
+
+    refresh_calls: list[int] = []
+    monkeypatch.setattr(
+        server._recorder,
+        "_queue_client_block_refresh",
+        lambda changed_block, **kwargs: refresh_calls.append(changed_block),
+    )
+
+    try:
+        with server.at(0) as timeline:
+            frame = timeline.scene.add_frame("/frame")
+
+        playback = FakePlayback()
+        with server._client_playbacks_lock:
+            server._client_playbacks[123] = cast(Any, playback)
+
+        refresh_calls.clear()
+        frame.remove()
+
+        assert refresh_calls == []
+        assert len(playback.updates) == 1
+        key, message = playback.updates[0]
+        assert key == "scene.node:/frame:delete"
+        assert getattr(message, "payload")["type"] == "RemoveSceneNodeMessage"
+    finally:
+        with server._client_playbacks_lock:
+            server._client_playbacks.pop(123, None)
+        server.stop()
+
+
+def test_step_patch_messages_materialize_in_runtime_order() -> None:
+    step = TimelineStep(
+        scene_puts={
+            "scene.node:/root/child:prop:position": StoredMessage(
+                payload={
+                    "type": "SetPositionMessage",
+                    "name": "/root/child",
+                    "position": [1.0, 2.0, 3.0],
+                }
+            ),
+            "scene.node:/root/child:create": StoredMessage(
+                payload={
+                    "type": "FrameMessage",
+                    "name": "/root/child",
+                    "props": {},
+                }
+            ),
+            "scene.node:/root:create": StoredMessage(
+                payload={
+                    "type": "FrameMessage",
+                    "name": "/root",
+                    "props": {},
+                }
+            ),
+        }
+    )
+
+    messages = step_patch_messages(step)
+
+    assert [
+        (str(message.payload["type"]), message.payload.get("name"))
+        for message in messages
+    ] == [
+        ("FrameMessage", "/root"),
+        ("FrameMessage", "/root/child"),
+        ("SetPositionMessage", "/root/child"),
+    ]
 
 
 def test_at_keeps_server_scene_live() -> None:

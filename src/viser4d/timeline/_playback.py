@@ -167,6 +167,7 @@ class ClientPlaybackHandle:
         self.sync_runtime_config()
         self._sync_loaded_blocks(self._current_timestep, force=True)
         self.seek(self._current_timestep)
+        self._sync_global_overrides()
 
     @property
     def loaded_blocks(self) -> set[int]:
@@ -249,6 +250,7 @@ class ClientPlaybackHandle:
         self._send_runtime_message(RuntimeClearMessage())
         self.sync_runtime_config()
         self.seek(0)
+        self._sync_global_overrides()
 
     def apply_message_update(self, key: str, message: StoredMessage) -> None:
         """Forward one keyed live stored message into the browser runtime."""
@@ -372,6 +374,10 @@ class ClientPlaybackHandle:
                 )
             ),
         )
+
+    def _sync_global_overrides(self) -> None:
+        for key, message in self._server._timeline.global_override_items():
+            self.apply_message_update(key, message)
 
     def _create_gui(self, brand_color: tuple[int, int, int] | None) -> None:
         max_step = self._server.num_steps - 1
