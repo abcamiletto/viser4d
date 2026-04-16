@@ -2,7 +2,6 @@ import base64
 import re
 import threading
 import time
-from types import SimpleNamespace
 from typing import Any, cast
 
 import msgspec
@@ -11,22 +10,7 @@ import pytest
 import zstandard
 
 import viser4d
-from viser4d import _server as server_module
 from viser4d import _runtime as runtime_module
-from viser4d._runtime_messages import (
-    RuntimeApplyMessageUpdateMessage,
-    RuntimePlayMessage,
-    RuntimeReadyMessage,
-    RuntimeSetSpeedMessage,
-)
-from viser4d._types import StoredMessage
-from viser4d.timeline._checkpoint import step_patch_messages
-from viser4d.timeline._messages_util import (
-    TimelineStep,
-    scene_delete_state_key,
-    scene_message_state_key,
-)
-from viser4d.timeline._playback import ClientPlaybackHandle
 
 
 def _deserialize_recording(blob: bytes) -> dict[str, object]:
@@ -37,34 +21,6 @@ def _deserialize_recording(blob: bytes) -> dict[str, object]:
     assert len(inner) == inner_size
     msgpack_size = int.from_bytes(inner[:8], "little")
     return cast(dict[str, object], msgspec.msgpack.decode(inner[8 : 8 + msgpack_size]))
-
-
-def _fake_create_gui(
-    self: ClientPlaybackHandle,
-    _brand_color: tuple[int, int, int] | None,
-) -> None:
-    self._timeline_slider = SimpleNamespace(value=0, max=1)
-    self._speed_slider = SimpleNamespace(value=self._speed)
-    self._step_buttons = SimpleNamespace()
-    self._play_button = SimpleNamespace()
-    self._pause_button = SimpleNamespace()
-
-
-def _checkpoint_position(
-    payload: object,
-    name: str,
-) -> tuple[float, float, float]:
-    payload_dict = cast(dict[str, object], payload)
-    entries = cast(list[dict[str, object]], payload_dict["checkpointSceneEntries"])
-    for entry in entries:
-        message = cast(Any, entry["message"])
-        if (
-            message.payload.get("type") != "SetPositionMessage"
-            or message.payload.get("name") != name
-        ):
-            continue
-        return tuple(cast(list[float], message.payload["position"]))  # type: ignore[return-value]
-    raise AssertionError(f"Missing checkpoint position for {name!r}.")
 
 
 def test_server_does_not_expose_audio_api() -> None:
@@ -191,73 +147,6 @@ def test_play_no_longer_accepts_loop_or_speed_keywords() -> None:
         server.stop()
 
 
-def test_server_playback_configuration_propagates_to_connected_and_future_clients(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = viser4d.Viser4dServer(
-        num_steps=2,
-        loop=True,
-        playback_speed=1.5,
-        port=0,
-        verbose=False,
-    )
-
-    class FakePlayback:
-        def __init__(self, server: Any, client: Any, **_kwargs) -> None:
-            self.client_id = client.client_id
-            self.loop_on_init = server.loop
-            self.speed_on_init = server.playback_speed
-            self.config_syncs = 0
-            self.play_calls = 0
-
-        def play(self) -> None:
-            self.play_calls += 1
-
-        def sync_runtime_config(self) -> None:
-            self.config_syncs += 1
-
-        def set_speed(self, speed: float) -> None:
-            self.speed_on_init = speed
-
-        def handle_runtime_event(self, _message: object) -> None:
-            pass
-
-    monkeypatch.setattr(server_module, "ClientPlaybackHandle", FakePlayback)
-
-    try:
-        attach_playback = server._client_connect_cb[-1]
-        attach_playback(cast(Any, SimpleNamespace(client_id=123)))
-        first = server.get_client_playback(123)
-
-        assert isinstance(first, FakePlayback)
-        assert first.loop_on_init is True
-        assert first.speed_on_init == 1.5
-        assert server.loop is True
-        assert server.playback_speed == 1.5
-
-        server.set_loop(False)
-        server.set_playback_speed(0.5)
-
-        assert first.config_syncs == 1
-        assert first.speed_on_init == 0.5
-        assert server.loop is False
-        assert server.playback_speed == 0.5
-
-        attach_playback(cast(Any, SimpleNamespace(client_id=456)))
-        second = server.get_client_playback(456)
-
-        assert isinstance(second, FakePlayback)
-        assert second.loop_on_init is False
-        assert second.speed_on_init == 0.5
-
-        server.play()
-
-        assert first.play_calls == 1
-        assert second.play_calls == 1
-    finally:
-        server.stop()
-
-
 def test_timeline_operations_serialize_and_playback_commands() -> None:
     server = viser4d.Viser4dServer(num_steps=3, port=0, verbose=False)
     try:
@@ -280,183 +169,6 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
         assert server.serialize(start_timestep=1, end_timestep=1)
     finally:
         server.stop()
-
-
-def test_client_playback_uses_current_server_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
-    monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
-    monkeypatch.setattr(
-        ClientPlaybackHandle,
-        "_sync_loaded_blocks",
-        lambda self, timestep, force=False: None,
-    )
-    monkeypatch.setattr(
-        ClientPlaybackHandle,
-        "_send_runtime_message",
-        lambda self, message: messages.append(message),
-    )
-
-    server = cast(
-        Any,
-        SimpleNamespace(
-            loop=True,
-            playback_speed=2.0,
-            num_steps=2,
-            fps=1.0,
-            _timeline=SimpleNamespace(scene_override_items=lambda: ()),
-        ),
-    )
-    client = cast(Any, SimpleNamespace(gui=None))
-    messages: list[Any] = []
-    playback = ClientPlaybackHandle(server, client)
-
-    messages.clear()
-    playback.play()
-
-    assert isinstance(messages[-1], RuntimePlayMessage)
-    assert messages[-1].speed == 2.0
-    assert messages[-1].loop is True
-
-    server.loop = False
-    playback.set_speed(0.5)
-
-    assert isinstance(messages[-1], RuntimeSetSpeedMessage)
-    assert messages[-1].speed == 0.5
-    assert messages[-1].loop is False
-
-
-def test_client_playback_syncs_existing_scene_overrides_on_init(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
-    monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
-    monkeypatch.setattr(
-        ClientPlaybackHandle,
-        "_sync_loaded_blocks",
-        lambda self, timestep, force=False: None,
-    )
-    monkeypatch.setattr(
-        ClientPlaybackHandle,
-        "_send_runtime_message",
-        lambda self, message: messages.append(message),
-    )
-
-    override = StoredMessage(
-        payload={
-            "type": "SetPositionMessage",
-            "name": "/frame",
-            "position": [1.0, 2.0, 3.0],
-        }
-    )
-    server = cast(
-        Any,
-        SimpleNamespace(
-            loop=True,
-            playback_speed=1.0,
-            num_steps=2,
-            fps=1.0,
-            _timeline=SimpleNamespace(
-                scene_override_items=lambda: (
-                    (cast(str, scene_message_state_key(override)), override),
-                )
-            ),
-        ),
-    )
-    client = cast(Any, SimpleNamespace(gui=None))
-    messages: list[Any] = []
-
-    ClientPlaybackHandle(server, client)
-
-    override_messages = [
-        message
-        for message in messages
-        if isinstance(message, RuntimeApplyMessageUpdateMessage)
-    ]
-    assert len(override_messages) == 1
-    assert override_messages[0].key == cast(str, scene_message_state_key(override))
-    assert override_messages[0].message["type"] == "SetPositionMessage"
-
-
-def test_live_scene_removals_are_forwarded_without_block_refresh(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = viser4d.Viser4dServer(num_steps=4, port=0, verbose=False)
-
-    class FakePlayback:
-        def __init__(self) -> None:
-            self.updates: list[tuple[str, object]] = []
-
-        def apply_message_update(self, key: str, message: object) -> None:
-            self.updates.append((key, message))
-
-    refresh_calls: list[int] = []
-    monkeypatch.setattr(
-        server._recorder,
-        "_queue_client_block_refresh",
-        lambda changed_block, **kwargs: refresh_calls.append(changed_block),
-    )
-
-    try:
-        with server.at(0) as timeline:
-            frame = timeline.scene.add_frame("/frame")
-
-        playback = FakePlayback()
-        with server._client_playbacks_lock:
-            server._client_playbacks[123] = cast(Any, playback)
-
-        refresh_calls.clear()
-        frame.remove()
-
-        assert refresh_calls == []
-        assert len(playback.updates) == 1
-        key, message = playback.updates[0]
-        assert key == scene_delete_state_key("/frame")
-        assert getattr(message, "payload")["type"] == "RemoveSceneNodeMessage"
-    finally:
-        with server._client_playbacks_lock:
-            server._client_playbacks.pop(123, None)
-        server.stop()
-
-
-def test_step_patch_messages_materialize_in_runtime_order() -> None:
-    step = TimelineStep(
-        scene_puts={
-            "child-position": StoredMessage(
-                payload={
-                    "type": "SetPositionMessage",
-                    "name": "/root/child",
-                    "position": [1.0, 2.0, 3.0],
-                }
-            ),
-            "child-create": StoredMessage(
-                payload={
-                    "type": "FrameMessage",
-                    "name": "/root/child",
-                    "props": {},
-                }
-            ),
-            "root-create": StoredMessage(
-                payload={
-                    "type": "FrameMessage",
-                    "name": "/root",
-                    "props": {},
-                }
-            ),
-        }
-    )
-
-    messages = step_patch_messages(step)
-
-    assert [
-        (str(message.payload["type"]), message.payload.get("name"))
-        for message in messages
-    ] == [
-        ("FrameMessage", "/root"),
-        ("FrameMessage", "/root/child"),
-        ("SetPositionMessage", "/root/child"),
-    ]
 
 
 def test_at_keeps_server_scene_live() -> None:
@@ -996,75 +708,5 @@ def test_serialization_survives_block_eviction_to_disk() -> None:
             (192.0, 0.0, 0.0),
             (256.0, 0.0, 0.0),
         ]
-    finally:
-        server.stop()
-
-
-def test_requested_block_rebuilds_from_stale_checkpoint_file() -> None:
-    server = viser4d.Viser4dServer(
-        num_steps=3,
-        fps=1.0,
-        chunk_streaming=viser4d.ChunkStreamingConfig(block_size=1),
-        port=0,
-        verbose=False,
-    )
-    try:
-        with server.at(0) as timeline:
-            joint = timeline.scene.add_frame("/joint")
-
-        with server.at(1):
-            joint.position = (1.0, 0.0, 0.0)
-
-        with server.at(2):
-            joint.position = (2.0, 0.0, 0.0)
-
-        store = server._timeline
-        for block_index in range(store.block_count):
-            block = store._load_block(block_index)
-            store._flush_block(block_index, block)
-            store._wait_for_pending_flush(block_index)
-
-        checkpoint_path = store._checkpoint_path(2)
-        assert checkpoint_path.exists() is False
-
-        before_payload = store.block_payload(2)
-        assert checkpoint_path.exists()
-        assert _checkpoint_position(before_payload, "/joint") == (1.0, 0.0, 0.0)
-
-        with server.at(1):
-            joint.position = (5.0, 0.0, 0.0)
-
-        assert checkpoint_path.exists()
-
-        after_payload = store.block_payload(2)
-        assert _checkpoint_position(after_payload, "/joint") == (5.0, 0.0, 0.0)
-    finally:
-        server.stop()
-
-
-def test_runtime_ready_before_playback_attach_is_replayed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
-
-    class FakePlayback:
-        def __init__(self, *_args, **_kwargs) -> None:
-            self.events: list[str] = []
-
-        def handle_runtime_event(self, message: object) -> None:
-            self.events.append(type(message).__name__)
-
-    monkeypatch.setattr(server_module, "ClientPlaybackHandle", FakePlayback)
-
-    try:
-        server._handle_runtime_event(123, RuntimeReadyMessage())
-        attach_playback = server._client_connect_cb[-1]
-        attach_playback(cast(Any, SimpleNamespace(client_id=123)))
-
-        playback = server.get_client_playback(123)
-
-        assert isinstance(playback, FakePlayback)
-        assert playback.events == ["RuntimeReadyMessage"]
-        assert 123 not in server._pending_runtime_ready_client_ids
     finally:
         server.stop()

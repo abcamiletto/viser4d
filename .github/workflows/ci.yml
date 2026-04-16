@@ -80,6 +80,7 @@ jobs:
           cache-dependency-path: src/viser4d/client/package-lock.json
       - run: npm ci --prefix src/viser4d/client
       - run: npm --prefix src/viser4d/client run build
+      - run: uv run --group dev playwright install --with-deps chromium
       - run: uv run --group dev pytest -q
 
   test-viser-latest:
@@ -97,4 +98,5 @@ jobs:
       - run: npm ci --prefix src/viser4d/client
       - run: npm --prefix src/viser4d/client run build
       - run: uv pip install --python .venv/bin/python --upgrade viser
+      - run: uv run --group dev playwright install --with-deps chromium
       - run: uv run --group dev pytest -q
