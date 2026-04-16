@@ -1,9 +1,12 @@
 import type { RuntimeMessage } from "../binary";
-
-export type LoadedBlock = {
-  checkpointMessages: RuntimeMessage[];
-  stepMessages: RuntimeMessage[][];
-};
+import {
+  makeLoadedBlock,
+  patchLoadedBlock,
+  type KeyedRuntimeMessage,
+  type LoadedBlock,
+  type RuntimeStatePatch,
+  type StepPatchUpdate,
+} from "./blockState";
 
 export class BlockCache {
   blockSize = 32;
@@ -25,9 +28,34 @@ export class BlockCache {
     return blockIndex * this.blockSize;
   }
 
-  loadBlock(blockIndex: number, block: LoadedBlock): void {
+  loadBlock(
+    blockIndex: number,
+    block: {
+      checkpointSceneEntries: KeyedRuntimeMessage[];
+      checkpointAudioMessages: RuntimeMessage[];
+      stepPatches: RuntimeStatePatch[];
+    },
+  ): void {
     this.requestedBlocks.delete(blockIndex);
-    this.blocks.set(blockIndex, block);
+    this.blocks.set(blockIndex, makeLoadedBlock(block));
+  }
+
+  patchBlock(
+    blockIndex: number,
+    patch: {
+      checkpointScenePuts: KeyedRuntimeMessage[];
+      checkpointSceneDeletes: string[];
+      checkpointAudioPuts: RuntimeMessage[];
+      checkpointAudioDeletes: string[];
+      stepPatchUpdates: StepPatchUpdate[];
+    },
+  ): boolean {
+    const block = this.blocks.get(blockIndex);
+    if (!block) {
+      return false;
+    }
+    patchLoadedBlock(block, patch);
+    return true;
   }
 
   evictBlock(blockIndex: number, appliedBlock: number): void {

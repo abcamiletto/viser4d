@@ -18,7 +18,7 @@ from viser4d._runtime_messages import (
     RuntimeReadyMessage,
     RuntimeSetSpeedMessage,
 )
-from viser4d.timeline._playback import ClientPlaybackHandle
+from viser4d.timeline._playback import ClientPlaybackHandle, _diff_block_payloads
 
 
 def _deserialize_recording(blob: bytes) -> dict[str, object]:
@@ -257,11 +257,114 @@ def test_timeline_operations_serialize_and_playback_commands() -> None:
         server.stop()
 
 
+def test_block_payload_excludes_live_overrides_but_step_export_keeps_them() -> None:
+    server = viser4d.Viser4dServer(num_steps=4, port=0, verbose=False)
+    try:
+        with server.at(0) as timeline:
+            frame = timeline.scene.add_frame("/frame")
+
+        frame.position = (1.0, 2.0, 3.0)
+
+        block_payload = server._timeline.block_payload(0)
+        block_types = {
+            entry["message"].payload["type"]
+            for step_patch in block_payload["stepPatches"]
+            for entry in step_patch["scenePuts"]
+        }
+        exported_types = {
+            message.payload["type"] for message in server._timeline.messages_for_step(0)
+        }
+
+        assert "SetPositionMessage" not in block_types
+        assert "SetPositionMessage" in exported_types
+    finally:
+        server.stop()
+
+
+def test_live_scene_updates_are_forwarded_without_block_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = viser4d.Viser4dServer(num_steps=4, port=0, verbose=False)
+
+    class FakePlayback:
+        def __init__(self) -> None:
+            self.updates: list[tuple[str, object]] = []
+
+        def apply_message_update(self, key: str, message: object) -> None:
+            self.updates.append((key, message))
+
+    playback = FakePlayback()
+    refresh_calls: list[int] = []
+
+    monkeypatch.setattr(
+        server._recorder,
+        "_queue_client_block_refresh",
+        lambda changed_block: refresh_calls.append(changed_block),
+    )
+
+    with server._client_playbacks_lock:
+        server._client_playbacks[123] = cast(Any, playback)
+
+    try:
+        with server.at(0) as timeline:
+            frame = timeline.scene.add_frame("/frame")
+
+        refresh_calls.clear()
+        frame.position = (1.0, 2.0, 3.0)
+
+        assert refresh_calls == []
+        assert len(playback.updates) == 1
+        key, message = playback.updates[0]
+        assert key == "scene.node:/frame:prop:position"
+        assert getattr(message, "payload")["type"] == "SetPositionMessage"
+    finally:
+        with server._client_playbacks_lock:
+            server._client_playbacks.pop(123, None)
+        server.stop()
+
+
+def test_step_edits_diff_into_step_and_checkpoint_patches() -> None:
+    server = viser4d.Viser4dServer(num_steps=65, port=0, verbose=False)
+    try:
+        with server.at(0) as timeline:
+            frame = timeline.scene.add_frame("/frame")
+
+        block0_before = server._timeline.block_payload(0)
+        block1_before = server._timeline.block_payload(1)
+
+        with server.at(0):
+            frame.position = (1.0, 2.0, 3.0)
+
+        block0_after = server._timeline.block_payload(0)
+        block1_after = server._timeline.block_payload(1)
+
+        patch0 = _diff_block_payloads(block0_before, block0_after)
+        patch1 = _diff_block_payloads(block1_before, block1_after)
+
+        assert patch0 is not None
+        assert patch1 is not None
+        assert patch0["checkpointScenePuts"] == []
+        assert patch0["checkpointSceneDeletes"] == []
+        assert patch0["stepPatchUpdates"] == [
+            {
+                "stepOffset": 0,
+                "patch": block0_after["stepPatches"][0],
+            }
+        ]
+        assert patch1["stepPatchUpdates"] == []
+        assert [
+            entry["message"].payload["type"] for entry in patch1["checkpointScenePuts"]
+        ] == ["SetPositionMessage"]
+    finally:
+        server.stop()
+
+
 def test_client_playback_uses_current_server_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
     monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
+    monkeypatch.setattr(ClientPlaybackHandle, "_sync_global_overrides", lambda self: None)
     monkeypatch.setattr(
         ClientPlaybackHandle,
         "_sync_loaded_blocks",

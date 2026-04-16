@@ -2,12 +2,14 @@ import type { RuntimeMessage } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { isAudioMessage, type AudioMessage } from "../audio/messages";
 import { BlockCache } from "./blockCache";
+import { materializeCheckpointMessages, materializeStatePatchMessages } from "./blockState";
 
 type RenderedTimelineNodes = Map<string, string>;
 
 export class SceneApplicator {
   appliedStep = -1;
   appliedBlock = -1;
+  private readonly liveSceneOverrides = new Map<string, RuntimeMessage>();
 
   constructor(
     private pushMessages: (messages: RuntimeMessage[]) => void,
@@ -46,8 +48,17 @@ export class SceneApplicator {
   resetState(): void {
     this.removeRenderedTimelineNodes();
     this.audio.resetTimeline();
+    this.liveSceneOverrides.clear();
     this.appliedStep = -1;
     this.appliedBlock = -1;
+  }
+
+  applyLiveMessage(step: number, key: string, message: RuntimeMessage): void {
+    this.updateLiveSceneOverride(key, message);
+    if (!this.shouldApplyLiveMessage(message)) {
+      return;
+    }
+    this.applyStepMessages(step, [message]);
   }
 
   rebuildThrough(step: number): void {
@@ -89,10 +100,11 @@ export class SceneApplicator {
         return;
       }
       const blockIndex = this.blocks.blockIndexOf(step);
-      if (block.checkpointMessages.length) {
+      const checkpointMessages = materializeCheckpointMessages(block.checkpoint);
+      if (checkpointMessages.length) {
         this.applyStepMessages(
           this.blocks.blockStartStep(blockIndex),
-          block.checkpointMessages,
+          checkpointMessages,
           preservedNodes,
         );
       }
@@ -112,13 +124,15 @@ export class SceneApplicator {
       const blockStart = this.blocks.blockStartStep(blockIndex);
       const blockEnd = Math.min(
         step,
-        blockStart + block.stepMessages.length - 1,
+        blockStart + block.stepPatches.length - 1,
       );
       for (let index = nextStep; index <= blockEnd; index += 1) {
-        const messages = block.stepMessages[index - blockStart] ?? [];
+        const patch = block.stepPatches[index - blockStart];
+        const messages = patch ? materializeStatePatchMessages(patch) : [];
         if (messages.length) {
           this.applyStepMessages(index, messages, preservedNodes);
         }
+        this.applyLiveSceneOverrides(index, preservedNodes);
       }
       this.appliedBlock = blockIndex;
       this.appliedStep = blockEnd;
@@ -153,7 +167,7 @@ export class SceneApplicator {
       return new Map<string, string>();
     }
     const targetNodes: RenderedTimelineNodes = new Map();
-    for (const message of block.checkpointMessages) {
+    for (const message of materializeCheckpointMessages(block.checkpoint)) {
       if (!isAudioMessage(message)) {
         this.trackTimelineNode(message, targetNodes);
       }
@@ -161,7 +175,8 @@ export class SceneApplicator {
     const blockIndex = this.blocks.blockIndexOf(step);
     const blockStart = this.blocks.blockStartStep(blockIndex);
     for (let index = blockStart; index <= step; index += 1) {
-      const messages = block.stepMessages[index - blockStart] ?? [];
+      const patch = block.stepPatches[index - blockStart];
+      const messages = patch ? materializeStatePatchMessages(patch) : [];
       for (const message of messages) {
         if (!isAudioMessage(message)) {
           this.trackTimelineNode(message, targetNodes);
@@ -189,6 +204,57 @@ export class SceneApplicator {
         this.renderedTimelineNodes.delete(name);
       }
     }
+  }
+
+  private applyLiveSceneOverrides(
+    step: number,
+    preservedNodes: ReadonlySet<string>,
+  ): void {
+    const messages = this.collectApplicableLiveSceneOverrides();
+    if (messages.length === 0) {
+      return;
+    }
+    this.applyStepMessages(step, messages, preservedNodes);
+  }
+
+  private collectApplicableLiveSceneOverrides(): RuntimeMessage[] {
+    const messages: RuntimeMessage[] = [];
+    for (const message of this.liveSceneOverrides.values()) {
+      if (this.shouldApplyLiveMessage(message)) {
+        messages.push(message);
+      }
+    }
+    return messages;
+  }
+
+  private shouldApplyLiveMessage(message: RuntimeMessage): boolean {
+    const name = typeof message.name === "string" ? message.name : null;
+    if (name === null) {
+      return true;
+    }
+    if (message.type === "RemoveSceneNodeMessage") {
+      return Array.from(this.renderedTimelineNodes.keys()).some(
+        (nodeName) => nodeName === name || nodeName.startsWith(`${name}/`),
+      );
+    }
+    return this.renderedTimelineNodes.has(name);
+  }
+
+  private updateLiveSceneOverride(key: string, message: RuntimeMessage): void {
+    const name = typeof message.name === "string" ? message.name : null;
+    if (message.type === "RemoveSceneNodeMessage" && name !== null) {
+      for (const [overrideKey, overrideMessage] of Array.from(this.liveSceneOverrides.entries())) {
+        const overrideName =
+          typeof overrideMessage.name === "string" ? overrideMessage.name : null;
+        if (
+          overrideName !== null &&
+          (overrideName === name || overrideName.startsWith(`${name}/`))
+        ) {
+          this.liveSceneOverrides.delete(overrideKey);
+        }
+      }
+    }
+    this.liveSceneOverrides.set(key, message);
   }
 
   private normalizeSceneMessage(

@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Any, Iterator
 import numpy as np
 
 from .. import _viser_private as impl
-from .._types import RuntimeBlockPayload
+from .._types import RuntimeBlockPayload, StoredMessage
 from ..audio._api import AudioApi, AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
-from ._messages_util import store_raw_message
+from ._messages_util import scene_delete_state_key, scene_entries_for_message, store_raw_message
 
 if TYPE_CHECKING:
     from .._server import Viser4dServer
@@ -115,13 +115,17 @@ class SceneRecorder:
         if session is not None:
             session.messages.append(message)
             return
+        stored_message = store_raw_message(message)
         with self._timeline_lock:
             if impl.is_create_scene_node_message(message):
                 raise RuntimeError(
                     "Timeline scene node creation is only valid inside server.at(t)."
                 )
             self._server._timeline.record_global_override(message)
-        self._queue_client_block_refresh(0)
+            scene_updates = _scene_override_updates(stored_message)
+        for playback in self._server.get_client_playbacks().values():
+            for key, override_message in scene_updates:
+                playback.apply_message_update(key, override_message)
 
     def dispatch_audio_update(self, message: impl.Message) -> None:
         """Route audio handle updates to the active session or live runtimes."""
@@ -130,8 +134,9 @@ class SceneRecorder:
             session.messages.append(message)
             return
         stored_message = store_raw_message(message)
+        redundancy_key = message.redundancy_key()
         for playback in self._server.get_client_playbacks().values():
-            playback.apply_message_update(stored_message)
+            playback.apply_message_update(redundancy_key, stored_message)
 
     def close(self) -> None:
         """Stop any deferred client refresh work."""
@@ -204,7 +209,7 @@ class SceneRecorder:
                     if payload is None:
                         payload = self._server._timeline.block_payload(block_index)
                         payloads[block_index] = payload
-                    playback.load_block(payload)
+                    playback.update_block(payload)
 
     def _validate_step_messages(self, messages: list[impl.Message]) -> None:
         for message in messages:
@@ -256,3 +261,15 @@ class _TimelineSceneOwner:
 
     def __init__(self, transport: _TimelineTransport) -> None:
         self._websock_connection = transport
+
+
+def _scene_override_updates(
+    stored_message: StoredMessage,
+) -> list[tuple[str, StoredMessage]]:
+    puts, delete_nodes = scene_entries_for_message(stored_message)
+    updates = [(entry["key"], entry["message"]) for entry in puts]
+    updates.extend(
+        (scene_delete_state_key(node_name), stored_message)
+        for node_name in delete_nodes
+    )
+    return updates

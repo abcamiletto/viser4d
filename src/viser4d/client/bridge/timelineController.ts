@@ -10,6 +10,7 @@ import {
   type RuntimeEventMessage,
   type RuntimeEvictBlockMessage,
   type RuntimeLoadBlockMessage,
+  type RuntimePatchBlockMessage,
   type RuntimePlayMessage,
   type RuntimeSeekMessage,
   type RuntimeSetSpeedMessage,
@@ -200,8 +201,9 @@ export class TimelineController {
   private loadBlock(message: RuntimeLoadBlockMessage): void {
     const currentStep = this.currentStep();
     this.blocks.loadBlock(message.block, {
-      checkpointMessages: message.checkpointMessages,
-      stepMessages: message.stepMessages,
+      checkpointSceneEntries: message.checkpointSceneEntries,
+      checkpointAudioMessages: message.checkpointAudioMessages,
+      stepPatches: message.stepPatches,
     });
     const activeBlock = this.blocks.blockIndexOf(currentStep);
     const shouldRebuildCurrentBlock =
@@ -220,6 +222,24 @@ export class TimelineController {
     }
     this.blocks.pendingStep = null;
     this.engine.seek({ step: pendingStep });
+  }
+
+  private patchBlock(message: RuntimePatchBlockMessage): void {
+    const currentStep = this.currentStep();
+    const patched = this.blocks.patchBlock(message.block, {
+      checkpointScenePuts: message.checkpointScenePuts,
+      checkpointSceneDeletes: message.checkpointSceneDeletes,
+      checkpointAudioPuts: message.checkpointAudioPuts,
+      checkpointAudioDeletes: message.checkpointAudioDeletes,
+      stepPatchUpdates: message.stepPatchUpdates,
+    });
+    if (!patched) {
+      return;
+    }
+    const activeBlock = this.blocks.blockIndexOf(currentStep);
+    if (message.block === activeBlock && this.scene.appliedBlock === activeBlock) {
+      this.scene.rebuildThrough(currentStep);
+    }
   }
 
   private evictBlock(message: RuntimeEvictBlockMessage): void {
@@ -251,6 +271,7 @@ export class TimelineController {
     const updatedMessage = message.message;
     const name = typeof updatedMessage.name === "string" ? updatedMessage.name : null;
     debugState.push("runtime.apply_message_update", {
+      key: message.key,
       type: updatedMessage.type,
       name,
       step: currentStep,
@@ -259,7 +280,7 @@ export class TimelineController {
       this.audio.applyLiveMessages(currentStep, [updatedMessage]);
       return;
     }
-    this.io.pushMessages([updatedMessage]);
+    this.scene.applyLiveMessage(currentStep, message.key, updatedMessage);
   }
 
   private handleRuntimeMessage(message: RuntimeControlMessage): void {
@@ -272,6 +293,9 @@ export class TimelineController {
         return;
       case "RuntimeLoadBlockMessage":
         this.loadBlock(message);
+        return;
+      case "RuntimePatchBlockMessage":
+        this.patchBlock(message);
         return;
       case "RuntimeEvictBlockMessage":
         this.evictBlock(message);
