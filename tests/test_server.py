@@ -830,6 +830,72 @@ def test_serialization_survives_block_eviction_to_disk() -> None:
         server.stop()
 
 
+def test_checkpoint_provenance_avoids_unnecessary_invalidation() -> None:
+    """Re-recording an early step should not invalidate a checkpoint whose
+    entries were all overwritten by later steps."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from viser._messages import FrameMessage, FrameProps, SetPositionMessage
+    from viser4d.timeline._store import TimelineStore
+
+    frame_props = FrameProps(
+        show_axes=False,
+        axes_length=0.0,
+        axes_radius=0.0,
+        origin_radius=0.0,
+        origin_color=(0, 0, 0),
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        store = TimelineStore(128, block_size=32, flush_executor=executor)
+        try:
+            # Step 0: create node and set position
+            store.record_step(
+                0,
+                [
+                    FrameMessage("/joint", frame_props),
+                    SetPositionMessage("/joint", (0.0, 0.0, 0.0)),
+                ],
+            )
+            # Step 31: overwrite position (last step in block 0)
+            store.record_step(
+                31,
+                [
+                    SetPositionMessage("/joint", (31.0, 0.0, 0.0)),
+                ],
+            )
+            # Step 32: write in block 1 to force checkpoint for block 1
+            store.record_step(
+                32,
+                [
+                    SetPositionMessage("/joint", (32.0, 0.0, 0.0)),
+                ],
+            )
+
+            # Build and cache checkpoint for block 1
+            payload_before = store.block_payload(1)
+
+            # Verify checkpoint is cached
+            assert 1 in store._checkpoint_cache
+
+            # Re-record step 0 with a different position.
+            # Step 31 overwrote position, so the checkpoint should be unaffected.
+            store.record_step(
+                0,
+                [
+                    SetPositionMessage("/joint", (999.0, 0.0, 0.0)),
+                ],
+            )
+
+            # The checkpoint for block 1 should still be cached
+            assert 1 in store._checkpoint_cache
+
+            # And the payload should be identical
+            payload_after = store.block_payload(1)
+            assert payload_before == payload_after
+        finally:
+            store.close()
+
+
 def test_runtime_ready_before_playback_attach_is_replayed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

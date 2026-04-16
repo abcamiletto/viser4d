@@ -123,6 +123,7 @@ class TimelineStore:
             block_index = step // self.block_size
             block = self._load_block(block_index)
             step_state = block.steps[step % self.block_size]
+            changed_keys: set[str] = set()
             for message in messages:
                 stored_message = store_raw_message(message)
                 key = message.redundancy_key()
@@ -132,11 +133,12 @@ class TimelineStore:
                         self._node_start_steps[name] = step
                     step_state.scene_updates.pop(key, None)
                     step_state.scene_updates[key] = stored_message
+                    changed_keys.add(key)
                     continue
                 if is_audio_message(message):
                     step_state.audio_updates.append(stored_message)
             block.dirty = True
-            self._invalidate_checkpoints_after_block(block_index)
+            self._invalidate_affected_checkpoints(step, changed_keys)
             self._invalidate_manifests_after_block(block_index)
 
     def record_global_override(self, message: impl.Message) -> None:
@@ -371,7 +373,11 @@ class TimelineStore:
         )
         manifest.dirty = False
         if block_index == self._eager_checkpoint_next_block:
-            apply_steps(self._eager_checkpoint, block.steps)
+            apply_steps(
+                self._eager_checkpoint,
+                block.steps,
+                block_start_step=block_index * self.block_size,
+            )
             self._eager_checkpoint_next_block = next_block
             if next_block < self.block_count:
                 ckpt = (
@@ -391,8 +397,17 @@ class TimelineStore:
         if future is not None:
             future.result()
 
-    def _invalidate_checkpoints_after_block(self, block_index: int) -> None:
-        stale = [i for i in self._checkpoint_cache if i > block_index]
+    def _invalidate_affected_checkpoints(
+        self, step: int, changed_keys: set[str]
+    ) -> None:
+        """Invalidate only cached checkpoints whose entries were sourced from ``step``."""
+        block_index = step // self.block_size
+        stale = [
+            i
+            for i, state in self._checkpoint_cache.items()
+            if i > block_index
+            and any(state.source_steps.get(k) == step for k in changed_keys)
+        ]
         for i in stale:
             del self._checkpoint_cache[i]
 
@@ -422,7 +437,7 @@ class TimelineStore:
         )
         for index in range(base_index, block_index):
             block = self._load_block(index)
-            apply_steps(state, block.steps)
+            apply_steps(state, block.steps, block_start_step=index * self.block_size)
             self._cache_checkpoint(index + 1, state)
         return copy_checkpoint(state)
 

@@ -38,12 +38,14 @@ class CheckpointState:
 
     scene_updates: dict[str, StoredMessage] = field(default_factory=dict)
     key_to_node: dict[str, str | None] = field(default_factory=dict)
+    source_steps: dict[str, int] = field(default_factory=dict)
     audio_tracks: dict[str, AudioTrackState] = field(default_factory=dict)
 
 
 class _CheckpointFilePayload(msgspec.Struct):
     sceneUpdates: list[tuple[str, StoredMessage]]
     keyToNode: list[tuple[str, str | None]]
+    sourceSteps: list[tuple[str, int]]
     audioTracks: list["_CheckpointAudioTrackPayload"]
 
 
@@ -57,7 +59,7 @@ class _CheckpointAudioTrackPayload(msgspec.Struct):
 
 
 def apply_scene_message(
-    state: CheckpointState, key: str, message: StoredMessage
+    state: CheckpointState, key: str, message: StoredMessage, source_step: int
 ) -> None:
     """Fold one stored scene message into a mutable checkpoint."""
     name = extract_message_name(message)
@@ -73,10 +75,12 @@ def apply_scene_message(
         for k in stale_keys:
             del state.scene_updates[k]
             del state.key_to_node[k]
+            del state.source_steps[k]
         return
     state.scene_updates.pop(key, None)
     state.scene_updates[key] = message
     state.key_to_node[key] = name
+    state.source_steps[key] = source_step
 
 
 def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
@@ -111,11 +115,14 @@ def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
         )
 
 
-def apply_steps(state: CheckpointState, steps: list[TimelineStep]) -> None:
+def apply_steps(
+    state: CheckpointState, steps: list[TimelineStep], block_start_step: int = 0
+) -> None:
     """Apply all scene and audio updates from a sequence of steps."""
-    for step in steps:
+    for offset, step in enumerate(steps):
+        source_step = block_start_step + offset
         for key, message in step.scene_updates.items():
-            apply_scene_message(state, key, message)
+            apply_scene_message(state, key, message, source_step)
         for message in step.audio_updates:
             apply_audio_message(state, message)
 
@@ -125,6 +132,7 @@ def copy_checkpoint(state: CheckpointState) -> CheckpointState:
     return CheckpointState(
         scene_updates=dict(state.scene_updates),
         key_to_node=dict(state.key_to_node),
+        source_steps=dict(state.source_steps),
         audio_tracks={
             name: AudioTrackState(
                 sample_rate=track.sample_rate,
@@ -185,6 +193,7 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
     payload = _CheckpointFilePayload(
         sceneUpdates=list(state.scene_updates.items()),
         keyToNode=list(state.key_to_node.items()),
+        sourceSteps=list(state.source_steps.items()),
         audioTracks=audio_tracks,
     )
     packed = msgspec.msgpack.encode(payload)
@@ -198,6 +207,7 @@ def load_checkpoint_file(path: Path) -> CheckpointState:
     payload = msgspec.msgpack.decode(raw, type=_CheckpointFilePayload)
     scene_updates = dict(payload.sceneUpdates)
     key_to_node = dict(payload.keyToNode)
+    source_steps = dict(payload.sourceSteps)
     audio_tracks: dict[str, AudioTrackState] = {}
     for td in payload.audioTracks:
         shape = tuple(td.shape)
@@ -210,6 +220,7 @@ def load_checkpoint_file(path: Path) -> CheckpointState:
     return CheckpointState(
         scene_updates=scene_updates,
         key_to_node=key_to_node,
+        source_steps=source_steps,
         audio_tracks=audio_tracks,
     )
 
