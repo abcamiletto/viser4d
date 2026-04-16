@@ -206,7 +206,9 @@ export class TimelineController {
       stepMessages: message.stepMessages,
     } satisfies LoadedBlock;
     this.applyLoadedBlock(message.block, block);
-    void this.persistentBlocks.storeBlock(message.block, block);
+    void this.persistentBlocks.storeBlock(message.block, block).catch((error) => {
+      console.warn("[viser4d] Failed to persist chunk block.", error);
+    });
   }
 
   private applyLoadedBlock(blockIndex: number, block: LoadedBlock): void {
@@ -232,20 +234,35 @@ export class TimelineController {
   }
 
   private requestBlock(blockIndex: number, step: number): void {
-    void this.persistentBlocks.loadBlock(blockIndex).then((block) => {
-      if (block) {
-        debugState.push("runtime.load_block.cache_hit", { block: blockIndex });
-        if (!this.blocks.hasBlockIndex(blockIndex)) {
-          this.applyLoadedBlock(blockIndex, block);
+    void this.persistentBlocks
+      .loadBlock(blockIndex)
+      .then((block) => {
+        if (block) {
+          debugState.push("runtime.load_block.cache_hit", { block: blockIndex });
+          if (!this.blocks.hasBlockIndex(blockIndex)) {
+            this.applyLoadedBlock(blockIndex, block);
+          }
+          return;
         }
-        return;
-      }
-      debugState.push("runtime.load_block.cache_miss", { block: blockIndex });
-      this.sendRuntimeEvent({
-        type: "RuntimeBlockRequestMessage",
-        step,
+        if (this.blocks.hasBlockIndex(blockIndex)) {
+          return;
+        }
+        debugState.push("runtime.load_block.cache_miss", { block: blockIndex });
+        this.sendRuntimeEvent({
+          type: "RuntimeBlockRequestMessage",
+          step,
+        });
+      })
+      .catch((error) => {
+        console.warn("[viser4d] Failed to read cached chunk block.", error);
+        if (this.blocks.hasBlockIndex(blockIndex)) {
+          return;
+        }
+        this.sendRuntimeEvent({
+          type: "RuntimeBlockRequestMessage",
+          step,
+        });
       });
-    });
   }
 
   private evictBlock(message: RuntimeEvictBlockMessage): void {

@@ -199,7 +199,6 @@ class Viser4dServer(viser.ViserServer):
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
         if num_steps == self.num_steps:
             return
-        self.bump_client_chunk_cache_version()
         old_timeline = self._recorder.resize_timeline(num_steps)
         try:
             for playback in self._client_playback_values():
@@ -209,7 +208,6 @@ class Viser4dServer(viser.ViserServer):
 
     def clear(self) -> None:
         """Reset the timeline, playback state, and shared scene content."""
-        self.bump_client_chunk_cache_version()
         old_timeline = self._recorder.clear_timeline()
         try:
             self.scene.reset()
