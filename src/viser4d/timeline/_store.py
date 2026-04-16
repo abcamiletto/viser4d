@@ -18,6 +18,7 @@ from ..audio._messages import is_audio_message
 from .._types import RuntimeBlockPayload, StoredMessage
 from ._checkpoint import (
     CheckpointState,
+    apply_scene_message,
     apply_steps,
     checkpoint_messages,
     copy_checkpoint,
@@ -138,7 +139,7 @@ class TimelineStore:
                 if is_audio_message(message):
                     step_state.audio_updates.append(stored_message)
             block.dirty = True
-            self._invalidate_affected_checkpoints(step, changed_keys)
+            self._patch_cached_checkpoints(step, changed_keys, step_state)
             self._invalidate_manifests_after_block(block_index)
 
     def record_global_override(self, message: impl.Message) -> None:
@@ -397,19 +398,18 @@ class TimelineStore:
         if future is not None:
             future.result()
 
-    def _invalidate_affected_checkpoints(
-        self, step: int, changed_keys: set[str]
+    def _patch_cached_checkpoints(
+        self, step: int, changed_keys: set[str], step_state: TimelineStep
     ) -> None:
-        """Invalidate only cached checkpoints whose entries were sourced from ``step``."""
+        """Patch cached checkpoints in place with the changed messages."""
         block_index = step // self.block_size
-        stale = [
-            i
-            for i, state in self._checkpoint_cache.items()
-            if i > block_index
-            and any(state.source_steps.get(k) == step for k in changed_keys)
-        ]
-        for i in stale:
-            del self._checkpoint_cache[i]
+        for cache_index, cached in self._checkpoint_cache.items():
+            if cache_index <= block_index:
+                continue
+            for key in changed_keys:
+                message = step_state.scene_updates.get(key)
+                if message is not None:
+                    apply_scene_message(cached, key, message, step)
 
     def _invalidate_manifests_after_block(self, block_index: int) -> None:
         for manifest in self._manifest_states[block_index:]:

@@ -61,7 +61,12 @@ class _CheckpointAudioTrackPayload(msgspec.Struct):
 def apply_scene_message(
     state: CheckpointState, key: str, message: StoredMessage, source_step: int
 ) -> None:
-    """Fold one stored scene message into a mutable checkpoint."""
+    """Fold one stored scene message into a mutable checkpoint.
+
+    Source-step ordering is respected: a message from an earlier step never
+    overwrites a newer entry.  This makes the function correct for both
+    sequential checkpoint building *and* out-of-order patching.
+    """
     name = extract_message_name(message)
     if message.payload.get("type") == "RemoveSceneNodeMessage" and isinstance(
         name, str
@@ -70,12 +75,15 @@ def apply_scene_message(
         stale_keys = [
             k
             for k, node in state.key_to_node.items()
-            if node == name or (isinstance(node, str) and node.startswith(prefix))
+            if (node == name or (isinstance(node, str) and node.startswith(prefix)))
+            and state.source_steps.get(k, -1) <= source_step
         ]
         for k in stale_keys:
             del state.scene_updates[k]
             del state.key_to_node[k]
             del state.source_steps[k]
+        return
+    if state.source_steps.get(key, -1) > source_step:
         return
     state.scene_updates.pop(key, None)
     state.scene_updates[key] = message
