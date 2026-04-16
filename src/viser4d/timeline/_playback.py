@@ -65,6 +65,9 @@ class ClientPlaybackHandle:
         self._sync_loaded_blocks(self._current_timestep, force=True)
         # New clients need the initial timeline scene state before playback starts.
         self.seek(self._current_timestep)
+        # Send all existing overrides so the client has the full live scene state.
+        for override in server._timeline.global_overrides():
+            self.apply_message_update(override)
 
     @property
     def loaded_blocks(self) -> set[int]:

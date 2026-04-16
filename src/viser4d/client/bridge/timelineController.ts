@@ -259,7 +259,7 @@ export class TimelineController {
       this.audio.applyLiveMessages(currentStep, [updatedMessage]);
       return;
     }
-    this.io.pushMessages([updatedMessage]);
+    this.scene.applyOverride(updatedMessage);
   }
 
   private handleRuntimeMessage(message: RuntimeControlMessage): void {

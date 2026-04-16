@@ -203,7 +203,13 @@ def test_client_playback_uses_current_server_config(
 
     server = cast(
         Any,
-        SimpleNamespace(loop=True, playback_speed=2.0, num_steps=2, fps=1.0),
+        SimpleNamespace(
+            loop=True,
+            playback_speed=2.0,
+            num_steps=2,
+            fps=1.0,
+            _timeline=SimpleNamespace(global_overrides=lambda: []),
+        ),
     )
     client = cast(Any, SimpleNamespace(gui=None))
     messages: list[Any] = []

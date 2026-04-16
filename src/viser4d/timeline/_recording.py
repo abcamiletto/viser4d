@@ -122,7 +122,9 @@ class SceneRecorder:
                     "Timeline scene node creation is only valid inside server.at(t)."
                 )
             self._server._timeline.record_global_override(message)
-        self._queue_client_block_refresh(0)
+        stored_message = store_raw_message(message)
+        for playback in self._server.get_client_playbacks().values():
+            playback.apply_message_update(stored_message)
 
     def dispatch_audio_update(self, message: impl.Message) -> None:
         """Route audio handle updates to the active session or live runtimes."""

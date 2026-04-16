@@ -8,6 +8,7 @@ type RenderedTimelineNodes = Map<string, string>;
 export class SceneApplicator {
   appliedStep = -1;
   appliedBlock = -1;
+  private overrides = new Map<string, RuntimeMessage>();
 
   constructor(
     private pushMessages: (messages: RuntimeMessage[]) => void,
@@ -43,9 +44,19 @@ export class SceneApplicator {
     }
   }
 
+  applyOverride(message: RuntimeMessage): void {
+    const key = overrideKey(message);
+    if (message.type === "RemoveSceneNodeMessage") {
+      this.removeOverridesForSubtree(typeof message.name === "string" ? message.name : "");
+    }
+    this.overrides.set(key, message);
+    this.pushMessages([message]);
+  }
+
   resetState(): void {
     this.removeRenderedTimelineNodes();
     this.audio.resetTimeline();
+    this.overrides.clear();
     this.appliedStep = -1;
     this.appliedBlock = -1;
   }
@@ -123,6 +134,30 @@ export class SceneApplicator {
       this.appliedBlock = blockIndex;
       this.appliedStep = blockEnd;
       nextStep = blockEnd + 1;
+    }
+    this.reapplyOverrides();
+  }
+
+  private reapplyOverrides(): void {
+    if (!this.overrides.size) {
+      return;
+    }
+    this.pushMessages(Array.from(this.overrides.values()));
+  }
+
+  private removeOverridesForSubtree(name: string): void {
+    if (!name) {
+      return;
+    }
+    const prefix = `${name}/`;
+    for (const key of Array.from(this.overrides.keys())) {
+      const existingName = this.overrides.get(key)?.name;
+      if (
+        typeof existingName === "string" &&
+        (existingName === name || existingName.startsWith(prefix))
+      ) {
+        this.overrides.delete(key);
+      }
     }
   }
 
@@ -258,4 +293,9 @@ function hasAncestorInSet(name: string, names: ReadonlySet<string>): boolean {
 
 function isCreateSceneNodeMessage(message: RuntimeMessage): boolean {
   return "props" in message;
+}
+
+function overrideKey(message: RuntimeMessage): string {
+  const name = typeof message.name === "string" ? message.name : "";
+  return `${message.type}_${name}`;
 }

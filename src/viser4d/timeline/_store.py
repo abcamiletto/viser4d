@@ -213,43 +213,20 @@ class TimelineStore:
         return overrides
 
     def messages_for_step(self, step: int) -> list[StoredMessage]:
-        """Return all messages visible at ``step``, including global overrides."""
+        """Return all messages visible at ``step``, including global overrides.
+
+        Used for serialization/export where overrides must be baked in.
+        """
         with self._lock:
             step = self.validate_step(step)
             block = self._load_block(step // self.block_size)
-            return self._merged_step_messages(step, block.steps[step % self.block_size])
-
-    def block_index_for_step(self, step: int) -> int:
-        return self.validate_step(step) // self.block_size
-
-    def block_payload(self, block_index: int) -> RuntimeBlockPayload:
-        """Build the checkpoint-plus-step payload consumed by the browser runtime."""
-        with self._lock:
-            block_index = self._validate_block_index(block_index)
-            ckpt = self._checkpoint_for_block(block_index)
-            block = self._load_block(block_index)
-            block_start = block_index * self.block_size
-            step_messages = [
-                self._merged_step_messages(block_start + offset, step_state)
-                for offset, step_state in enumerate(block.steps)
+            step_state = block.steps[step % self.block_size]
+            overrides = self._global_override_messages_for_step(step)
+            return [
+                *step_state.scene_updates.values(),
+                *step_state.audio_updates,
+                *overrides,
             ]
-        ckpt_messages = checkpoint_messages(ckpt)
-        return {
-            "block": block_index,
-            "checkpointMessages": ckpt_messages,
-            "stepMessages": step_messages,
-        }
-
-    def _merged_step_messages(
-        self,
-        step: int,
-        step_state: TimelineStep,
-    ) -> list[StoredMessage]:
-        return [
-            *step_state.scene_updates.values(),
-            *step_state.audio_updates,
-            *self._global_override_messages_for_step(step),
-        ]
 
     def _global_override_messages_for_step(self, step: int) -> list[StoredMessage]:
         messages: list[StoredMessage] = []
@@ -263,6 +240,31 @@ class TimelineStore:
                 continue
             messages.append(message)
         return messages
+
+    def block_index_for_step(self, step: int) -> int:
+        return self.validate_step(step) // self.block_size
+
+    def global_overrides(self) -> list[StoredMessage]:
+        """Return all current global overrides for direct client delivery."""
+        with self._lock:
+            return list(self._global_overrides.values())
+
+    def block_payload(self, block_index: int) -> RuntimeBlockPayload:
+        """Build the checkpoint-plus-step payload consumed by the browser runtime."""
+        with self._lock:
+            block_index = self._validate_block_index(block_index)
+            ckpt = self._checkpoint_for_block(block_index)
+            block = self._load_block(block_index)
+            step_messages = [
+                [*step_state.scene_updates.values(), *step_state.audio_updates]
+                for step_state in block.steps
+            ]
+        ckpt_messages = checkpoint_messages(ckpt)
+        return {
+            "block": block_index,
+            "checkpointMessages": ckpt_messages,
+            "stepMessages": step_messages,
+        }
 
     def close(self) -> None:
         """Flush any dirty blocks and release temporary on-disk storage."""
