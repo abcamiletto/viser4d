@@ -12,7 +12,7 @@ from .. import _viser_private as impl
 from .._types import RuntimeBlockPayload
 from ..audio._api import AudioApi, AudioHandle, AudioState, audio_array_payload
 from ..audio._messages import AddAudioMessage
-from ._messages_util import store_raw_message
+from ._messages_util import scene_entries_for_message, store_raw_message
 
 if TYPE_CHECKING:
     from .._server import Viser4dServer
@@ -138,8 +138,14 @@ class SceneRecorder:
                     "Timeline scene node creation is only valid inside server.at(t)."
                 )
             self._server._timeline.record_global_override(message)
-        # Global overrides affect all blocks — use the full refresh path.
-        self._queue_client_block_refresh(0, is_structural=True)
+        # Forward the keyed override directly to connected clients instead of
+        # triggering a full block refresh.  Global overrides are applied as a
+        # client-side overlay, independent of stored block state.
+        stored_message = store_raw_message(message)
+        entries, _delete_nodes = scene_entries_for_message(stored_message)
+        for entry in entries:
+            for playback in self._server.get_client_playbacks().values():
+                playback.apply_message_update(entry["key"], entry["message"])
 
     def dispatch_audio_update(self, message: impl.Message) -> None:
         """Route audio handle updates to the active session or live runtimes."""
@@ -149,7 +155,7 @@ class SceneRecorder:
             return
         stored_message = store_raw_message(message)
         for playback in self._server.get_client_playbacks().values():
-            playback.apply_message_update(stored_message)
+            playback.apply_message_update("audio", stored_message)
 
     def close(self) -> None:
         """Stop any deferred client refresh work."""

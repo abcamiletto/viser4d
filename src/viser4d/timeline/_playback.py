@@ -23,16 +23,26 @@ from .._runtime_messages import (
     RuntimePlayMessage,
     RuntimeReadyMessage,
     RuntimeRefreshMessage,
+    RuntimeSceneEntry,
     RuntimeSeekMessage,
     RuntimeSetSpeedMessage,
     RuntimeSpeedMessage,
+    RuntimeStatePatch,
+    RuntimeStepPatchUpdate,
     RuntimeTimestepMessage,
     runtime_scene_message,
     runtime_scene_messages,
 )
-from .._types import ClientRuntimeConfig, RuntimeBlockPayload, StoredMessage
+from .._types import (
+    ClientRuntimeConfig,
+    RuntimeBlockPatchPayload,
+    RuntimeBlockPayload,
+    StoredMessage,
+    StoredMessageEntry,
+    StoredStatePatch,
+)
 from .._validation import require_positive_float
-from ._checkpoint import checkpoint_messages
+from ._checkpoint import checkpoint_audio_messages, checkpoint_scene_entries
 from ._streaming import PreloadPlanner
 
 if TYPE_CHECKING:
@@ -41,12 +51,92 @@ if TYPE_CHECKING:
     from ._store import TimelineStore
 
 
-class ClientPlaybackHandle:
-    """Per-client playback controls backed by the injected browser runtime.
+# ---------------------------------------------------------------------------
+# Payload helpers
+# ---------------------------------------------------------------------------
 
-    The visible playback widgets stay client-local in the browser. Python only
-    mirrors runtime state changes and sends explicit server-side commands.
+
+def _inflate_scene_entries(
+    entries: list[StoredMessageEntry],
+) -> list[RuntimeSceneEntry]:
+    return [
+        {"key": e["key"], "message": runtime_scene_message(inflate_stored_message(e["message"]))}
+        for e in entries
+    ]
+
+
+def _inflate_state_patch(patch: StoredStatePatch) -> RuntimeStatePatch:
+    return {
+        "scenePuts": _inflate_scene_entries(patch["scenePuts"]),
+        "sceneDeleteNodes": patch["sceneDeleteNodes"],
+        "audioMessages": runtime_scene_messages(
+            inflate_stored_messages(patch["audioMessages"])
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Block payload diffing
+# ---------------------------------------------------------------------------
+
+
+def _diff_block_payloads(
+    before: RuntimeBlockPayload,
+    after: RuntimeBlockPayload,
+) -> RuntimeBlockPatchPayload | None:
+    """Compute a minimal patch between two block payloads.
+
+    Returns ``None`` when the payloads are identical.
     """
+    before_scene = {e["key"]: e for e in before["checkpointSceneEntries"]}
+    after_scene = {e["key"]: e for e in after["checkpointSceneEntries"]}
+
+    scene_puts: list[StoredMessageEntry] = []
+    scene_deletes: list[str] = []
+    for key, entry in after_scene.items():
+        old = before_scene.get(key)
+        if old is None or old["message"] != entry["message"]:
+            scene_puts.append(entry)
+    for key in before_scene:
+        if key not in after_scene:
+            scene_deletes.append(key)
+
+    before_audio = {
+        m.payload.get("name", ""): m for m in before["checkpointAudioMessages"]
+    }
+    after_audio = {
+        m.payload.get("name", ""): m for m in after["checkpointAudioMessages"]
+    }
+    audio_puts = [m for k, m in after_audio.items() if before_audio.get(k) != m]
+    audio_deletes = [str(k) for k in before_audio if k not in after_audio]
+
+    step_updates: list[dict[str, object]] = []
+    for i, (bp, ap) in enumerate(
+        zip(before["stepPatches"], after["stepPatches"], strict=True)
+    ):
+        if bp != ap:
+            step_updates.append({"stepOffset": i, "patch": ap})
+
+    if not scene_puts and not scene_deletes and not audio_puts and not audio_deletes and not step_updates:
+        return None
+
+    return {
+        "block": after["block"],
+        "checkpointScenePuts": scene_puts,
+        "checkpointSceneDeletes": scene_deletes,
+        "checkpointAudioPuts": audio_puts,
+        "checkpointAudioDeletes": audio_deletes,
+        "stepPatchUpdates": step_updates,  # type: ignore[typeddict-item]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Per-client playback handle
+# ---------------------------------------------------------------------------
+
+
+class ClientPlaybackHandle:
+    """Per-client playback controls backed by the injected browser runtime."""
 
     def __init__(
         self,
@@ -67,12 +157,10 @@ class ClientPlaybackHandle:
         self._create_gui(brand_color)
         self.sync_runtime_config()
         self._sync_loaded_blocks(self._current_timestep, force=True)
-        # New clients need the initial timeline scene state before playback starts.
         self.seek(self._current_timestep)
 
     @property
     def loaded_blocks(self) -> set[int]:
-        """Return a snapshot of the currently loaded block indices."""
         with self._lock:
             return set(self._loaded_blocks)
 
@@ -89,18 +177,15 @@ class ClientPlaybackHandle:
         return self._current_timestep
 
     def play(self) -> None:
-        """Start playback on this client."""
         with self._lock:
             next_speed = self._speed
         next_loop = self._server.loop
         self._send_runtime_message(RuntimePlayMessage(speed=next_speed, loop=next_loop))
 
     def pause(self) -> None:
-        """Pause playback on this client."""
         self._send_runtime_message(RuntimePauseMessage())
 
     def seek(self, t: int) -> None:
-        """Seek this client to timestep ``t``."""
         t = self._require_timestep(t)
         with self._lock:
             self._current_timestep = t
@@ -109,12 +194,10 @@ class ClientPlaybackHandle:
         self._send_runtime_message(RuntimeSeekMessage(step=t))
 
     def refresh(self) -> None:
-        """Redraw this client's current timestep from recorded timeline state."""
         self._sync_loaded_blocks(self.current_timestep)
         self._send_runtime_message(RuntimeRefreshMessage())
 
     def set_speed(self, speed: float) -> None:
-        """Update playback speed on this client relative to timeline cadence."""
         next_speed = require_positive_float("speed", speed)
         with self._lock:
             self._speed = next_speed
@@ -125,7 +208,6 @@ class ClientPlaybackHandle:
         )
 
     def sync_steps(self) -> None:
-        """Resync this client after the server timeline length changes."""
         max_step = self._server.num_steps - 1
         with self._lock:
             current_timestep = min(self._current_timestep, max_step)
@@ -142,7 +224,6 @@ class ClientPlaybackHandle:
         self.seek(current_timestep)
 
     def clear(self) -> None:
-        """Reset client playback state and clear the browser runtime."""
         with self._lock:
             stale_futures = list(self._pending_block_loads.values())
             self._speed = 1.0
@@ -158,11 +239,12 @@ class ClientPlaybackHandle:
         self.sync_runtime_config()
         self.seek(0)
 
-    def apply_message_update(self, message: StoredMessage) -> None:
-        """Forward one live stored message into the browser runtime."""
+    def apply_message_update(self, key: str, message: StoredMessage) -> None:
+        """Forward one keyed live stored message into the browser runtime."""
         self._send_runtime_message(
             RuntimeApplyMessageUpdateMessage(
-                message=runtime_scene_message(inflate_stored_message(message))
+                key=key,
+                message=runtime_scene_message(inflate_stored_message(message)),
             )
         )
 
@@ -171,12 +253,14 @@ class ClientPlaybackHandle:
         self._send_runtime_message(
             RuntimeLoadBlockMessage(
                 block=payload["block"],
-                checkpointMessages=runtime_scene_messages(
-                    inflate_stored_messages(payload["checkpointMessages"])
+                checkpointSceneEntries=_inflate_scene_entries(
+                    payload["checkpointSceneEntries"]
                 ),
-                stepMessages=[
-                    runtime_scene_messages(inflate_stored_messages(step_messages))
-                    for step_messages in payload["stepMessages"]
+                checkpointAudioMessages=runtime_scene_messages(
+                    inflate_stored_messages(payload["checkpointAudioMessages"])
+                ),
+                stepPatches=[
+                    _inflate_state_patch(p) for p in payload["stepPatches"]
                 ],
             )
         )
@@ -187,18 +271,22 @@ class ClientPlaybackHandle:
         block_index: int,
         step_offsets: set[int],
     ) -> None:
-        """Send a delta patch with only the changed step messages."""
+        """Send a delta patch with only the changed step patches."""
         sorted_offsets = sorted(step_offsets)
-        step_msgs = timeline.step_messages_for_offsets(block_index, sorted_offsets)
+        patches = timeline.step_patches_for_offsets(block_index, sorted_offsets)
         self._send_runtime_message(
             RuntimePatchBlockMessage(
                 block=block_index,
-                replaceCheckpoint=False,
-                checkpointMessages=[],
-                stepOffsets=sorted_offsets,
-                stepMessages=[
-                    runtime_scene_messages(inflate_stored_messages(msgs))
-                    for msgs in step_msgs
+                checkpointScenePuts=[],
+                checkpointSceneDeletes=[],
+                checkpointAudioPuts=[],
+                checkpointAudioDeletes=[],
+                stepPatchUpdates=[
+                    RuntimeStepPatchUpdate(
+                        stepOffset=offset,
+                        patch=_inflate_state_patch(patch),
+                    )
+                    for offset, patch in zip(sorted_offsets, patches, strict=True)
                 ],
             )
         )
@@ -213,12 +301,15 @@ class ClientPlaybackHandle:
         self._send_runtime_message(
             RuntimePatchBlockMessage(
                 block=block_index,
-                replaceCheckpoint=True,
-                checkpointMessages=runtime_scene_messages(
-                    inflate_stored_messages(checkpoint_messages(ckpt))
+                checkpointScenePuts=_inflate_scene_entries(
+                    checkpoint_scene_entries(ckpt)
                 ),
-                stepOffsets=[],
-                stepMessages=[],
+                checkpointSceneDeletes=[],
+                checkpointAudioPuts=runtime_scene_messages(
+                    inflate_stored_messages(checkpoint_audio_messages(ckpt))
+                ),
+                checkpointAudioDeletes=[],
+                stepPatchUpdates=[],
             )
         )
 
@@ -229,7 +320,6 @@ class ClientPlaybackHandle:
         self._send_runtime_message(RuntimeEvictBlockMessage(block=block_index))
 
     def handle_runtime_event(self, message: RuntimeEventMessage) -> None:
-        """Mirror browser runtime events back into the Python playback state."""
         if isinstance(message, RuntimeReadyMessage):
             with self._lock:
                 if self._runtime_ready:
@@ -266,7 +356,6 @@ class ClientPlaybackHandle:
             self._server._dispatch_playback_change(self._client, message.isPlaying)
 
     def sync_runtime_config(self) -> None:
-        """Send the current playback config and GUI ids to the browser runtime."""
         with self._lock:
             speed = self._speed
         loop = self._server.loop
@@ -288,10 +377,8 @@ class ClientPlaybackHandle:
         )
 
     def _create_gui(self, brand_color: tuple[int, int, int] | None) -> None:
-        """Create the per-client playback controls."""
         max_step = self._server.num_steps - 1
         gui = self._client.gui
-        # High order so the playback folder always sorts below user-added GUI.
         with gui.add_folder("Playback", order=_PLAYBACK_ORDER):
             self._timeline_slider = gui.add_slider(
                 "Timestep", min=0, max=max_step, step=1, initial_value=0
@@ -328,7 +415,6 @@ class ClientPlaybackHandle:
         return True
 
     def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
-        """Load the current block first, then previous, then budgeted forward blocks."""
         timeline = self._server._timeline
         current_block = timeline.block_index_for_step(timestep)
         manifests = timeline.block_manifests()

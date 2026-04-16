@@ -13,11 +13,12 @@ import zstandard
 from .. import _viser_private as impl
 from ..audio._api import audio_array_payload
 from ..audio._messages import AddAudioMessage, is_audio_message
-from .._types import StoredMessage, StoredPayload
+from .._types import StoredMessage, StoredMessageEntry, StoredPayload
 from ._messages_util import (
     TimelineStep,
     extract_message_name,
     is_scene_message,
+    scene_entries_for_message,
     store_raw_message,
     stored_dict,
     stored_float,
@@ -66,19 +67,25 @@ def apply_scene_message(
     if message.payload.get("type") == "RemoveSceneNodeMessage" and isinstance(
         name, str
     ):
-        prefix = f"{name}/"
-        stale_keys = [
-            k
-            for k, node in state.key_to_node.items()
-            if node == name or (isinstance(node, str) and node.startswith(prefix))
-        ]
-        for k in stale_keys:
-            del state.scene_updates[k]
-            del state.key_to_node[k]
+        remove_scene_node_subtree(state, name)
         return
     state.scene_updates.pop(key, None)
     state.scene_updates[key] = message
     state.key_to_node[key] = name
+
+
+def remove_scene_node_subtree(state: CheckpointState, node_name: str) -> None:
+    """Remove a scene node and all its descendants from the checkpoint."""
+    prefix = f"{node_name}/"
+    stale_keys = [
+        key
+        for key, scene_node in state.key_to_node.items()
+        if scene_node == node_name
+        or (isinstance(scene_node, str) and scene_node.startswith(prefix))
+    ]
+    for key in stale_keys:
+        del state.scene_updates[key]
+        del state.key_to_node[key]
 
 
 def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
@@ -116,9 +123,11 @@ def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
 def apply_steps(state: CheckpointState, steps: list[TimelineStep]) -> None:
     """Apply all scene and audio updates from a sequence of steps."""
     for step in steps:
-        for key, message in step.scene_updates.items():
+        for node_name in step.scene_delete_nodes:
+            remove_scene_node_subtree(state, node_name)
+        for key, message in step.scene_puts.items():
             apply_scene_message(state, key, message)
-        for message in step.audio_updates:
+        for message in step.audio_messages:
             apply_audio_message(state, message)
 
 
@@ -138,37 +147,63 @@ def copy_checkpoint(state: CheckpointState) -> CheckpointState:
     )
 
 
-def checkpoint_messages(state: CheckpointState) -> list[StoredMessage]:
-    """Build the ordered message list that reconstructs this checkpoint's state."""
-    unnamed_messages = [
-        message
+def checkpoint_scene_entries(state: CheckpointState) -> list[StoredMessageEntry]:
+    """Build the keyed scene entries for one checkpoint."""
+    return [
+        {"key": key, "message": message}
         for key, message in state.scene_updates.items()
-        if state.key_to_node.get(key) is None
     ]
-    node_messages: dict[str, list[StoredMessage]] = {}
-    for key, message in state.scene_updates.items():
-        name = state.key_to_node.get(key)
-        if name is None:
-            continue
-        node_messages.setdefault(name, []).append(message)
-    scene_messages = list(unnamed_messages)
-    for name in sorted(node_messages, key=_scene_node_sort_key):
-        messages = node_messages[name]
-        create = [m for m in messages if _is_create_scene_message(m)]
-        scene_messages.extend(create)
-        scene_messages.extend(m for m in messages if not _is_create_scene_message(m))
-    audio_messages = [
-        store_raw_message(
-            AddAudioMessage(
-                name=name,
-                sampleRate=track.sample_rate,
-                waveform=audio_array_payload(track.waveform),
-                volume=track.volume,
-            )
-        )
+
+
+def checkpoint_audio_messages(state: CheckpointState) -> list[StoredMessage]:
+    """Build checkpoint audio tracks as add-audio messages."""
+    return [
+        _audio_track_message(name, track)
         for name, track in sorted(state.audio_tracks.items())
     ]
-    return scene_messages + audio_messages
+
+
+def step_patch_messages(step: TimelineStep) -> list[StoredMessage]:
+    """Materialize one step patch back into ordered viewer messages."""
+    scene_messages = [
+        StoredMessage(
+            payload={"type": "RemoveSceneNodeMessage", "name": node_name}
+        )
+        for node_name in step.scene_delete_nodes
+    ]
+    scene_messages.extend(step.scene_puts.values())
+    return scene_messages + list(step.audio_messages)
+
+
+def classify_step_change(
+    messages: list[impl.Message],
+) -> tuple[set[str], bool]:
+    """Classify recorded messages into changed scene keys and structural flag.
+
+    Returns:
+        changed_keys: Canonical state keys of scene messages that were added
+            or replaced.
+        is_structural: ``True`` when any message creates/removes a scene node or
+            touches audio (cases that may cascade through the checkpoint and
+            therefore require full invalidation instead of incremental patching).
+    """
+    changed_keys: set[str] = set()
+    is_structural = False
+    for message in messages:
+        stored = store_raw_message(message)
+        if is_audio_message(message):
+            is_structural = True
+            continue
+        if not is_scene_message(stored):
+            continue
+        entries, delete_nodes = scene_entries_for_message(stored)
+        for entry in entries:
+            changed_keys.add(entry["key"])
+        if impl.is_create_scene_node_message(message):
+            is_structural = True
+        if delete_nodes:
+            is_structural = True
+    return changed_keys, is_structural
 
 
 def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
@@ -216,40 +251,15 @@ def load_checkpoint_file(path: Path) -> CheckpointState:
     )
 
 
-def classify_step_change(
-    messages: list[impl.Message],
-) -> tuple[set[str], bool]:
-    """Classify recorded messages into changed scene keys and structural flag.
-
-    Returns:
-        changed_keys: Redundancy keys of scene messages that were added or replaced.
-        is_structural: ``True`` when any message creates/removes a scene node or
-            touches audio (cases that may cascade through the checkpoint and
-            therefore require full invalidation instead of incremental patching).
-    """
-    changed_keys: set[str] = set()
-    is_structural = False
-    for message in messages:
-        stored = store_raw_message(message)
-        if is_audio_message(message):
-            is_structural = True
-            continue
-        if not is_scene_message(stored):
-            continue
-        changed_keys.add(message.redundancy_key())
-        if impl.is_create_scene_node_message(message):
-            is_structural = True
-        if stored.payload.get("type") == "RemoveSceneNodeMessage":
-            is_structural = True
-    return changed_keys, is_structural
-
-
-def _scene_node_sort_key(name: str) -> tuple[int, str]:
-    return (name.count("/"), name)
-
-
-def _is_create_scene_message(message: StoredMessage) -> bool:
-    return "props" in message.payload
+def _audio_track_message(name: str, track: AudioTrackState) -> StoredMessage:
+    return store_raw_message(
+        AddAudioMessage(
+            name=name,
+            sampleRate=track.sample_rate,
+            waveform=audio_array_payload(track.waveform),
+            volume=track.volume,
+        )
+    )
 
 
 def _decode_audio_payload(payload: StoredPayload) -> np.ndarray:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import uuid
-from typing import ClassVar, NewType
+from typing import ClassVar, NewType, TypedDict
 
 from typing_extensions import override
 
@@ -20,6 +20,22 @@ def runtime_scene_messages(
     messages: list[RuntimePayload],
 ) -> list[RuntimeSceneMessage]:
     return [runtime_scene_message(message) for message in messages]
+
+
+class RuntimeSceneEntry(TypedDict):
+    key: str
+    message: RuntimeSceneMessage
+
+
+class RuntimeStatePatch(TypedDict):
+    scenePuts: list[RuntimeSceneEntry]
+    sceneDeleteNodes: list[str]
+    audioMessages: list[RuntimeSceneMessage]
+
+
+class RuntimeStepPatchUpdate(TypedDict):
+    stepOffset: int
+    patch: RuntimeStatePatch
 
 
 class _RuntimeMessageBase(impl.Message):
@@ -65,8 +81,9 @@ class RuntimeConfigureMessage(_RuntimeControlMessage):
 @dataclasses.dataclass
 class RuntimeLoadBlockMessage(_RuntimeControlMessage):
     block: int
-    checkpointMessages: list[RuntimeSceneMessage]
-    stepMessages: list[list[RuntimeSceneMessage]]
+    checkpointSceneEntries: list[RuntimeSceneEntry]
+    checkpointAudioMessages: list[RuntimeSceneMessage]
+    stepPatches: list[RuntimeStatePatch]
 
 
 @dataclasses.dataclass
@@ -104,14 +121,16 @@ class RuntimeSetSpeedMessage(_RuntimeControlMessage):
 @dataclasses.dataclass
 class RuntimePatchBlockMessage(_RuntimeControlMessage):
     block: int
-    replaceCheckpoint: bool
-    checkpointMessages: list[RuntimeSceneMessage]
-    stepOffsets: list[int]
-    stepMessages: list[list[RuntimeSceneMessage]]
+    checkpointScenePuts: list[RuntimeSceneEntry]
+    checkpointSceneDeletes: list[str]
+    checkpointAudioPuts: list[RuntimeSceneMessage]
+    checkpointAudioDeletes: list[str]
+    stepPatchUpdates: list[RuntimeStepPatchUpdate]
 
 
 @dataclasses.dataclass
 class RuntimeApplyMessageUpdateMessage(_RuntimeControlMessage):
+    key: str
     message: RuntimeSceneMessage
 
 

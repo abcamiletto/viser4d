@@ -1,9 +1,12 @@
 import type { RuntimeMessage } from "../binary";
-
-export type LoadedBlock = {
-  checkpointMessages: RuntimeMessage[];
-  stepMessages: RuntimeMessage[][];
-};
+import {
+  makeLoadedBlock,
+  patchLoadedBlock,
+  type KeyedRuntimeMessage,
+  type LoadedBlock,
+  type RuntimeStatePatch,
+  type StepPatchUpdate,
+} from "./blockState";
 
 export class BlockCache {
   blockSize = 32;
@@ -25,35 +28,33 @@ export class BlockCache {
     return blockIndex * this.blockSize;
   }
 
-  loadBlock(blockIndex: number, block: LoadedBlock): void {
+  loadBlock(
+    blockIndex: number,
+    block: {
+      checkpointSceneEntries: KeyedRuntimeMessage[];
+      checkpointAudioMessages: RuntimeMessage[];
+      stepPatches: RuntimeStatePatch[];
+    },
+  ): void {
     this.requestedBlocks.delete(blockIndex);
-    this.blocks.set(blockIndex, block);
+    this.blocks.set(blockIndex, makeLoadedBlock(block));
   }
 
-  /**
-   * Apply an incremental patch to a cached block.  Returns true when the block
-   * was found and patched, false when the block was not loaded.
-   */
   patchBlock(
     blockIndex: number,
-    replaceCheckpoint: boolean,
-    checkpointMessages: RuntimeMessage[],
-    stepOffsets: number[],
-    stepMessages: RuntimeMessage[][],
+    patch: {
+      checkpointScenePuts: KeyedRuntimeMessage[];
+      checkpointSceneDeletes: string[];
+      checkpointAudioPuts: RuntimeMessage[];
+      checkpointAudioDeletes: string[];
+      stepPatchUpdates: StepPatchUpdate[];
+    },
   ): boolean {
     const block = this.blocks.get(blockIndex);
     if (!block) {
       return false;
     }
-    if (replaceCheckpoint) {
-      block.checkpointMessages = checkpointMessages;
-    }
-    for (let i = 0; i < stepOffsets.length; i++) {
-      const offset = stepOffsets[i];
-      if (offset >= 0 && offset < block.stepMessages.length) {
-        block.stepMessages[offset] = stepMessages[i];
-      }
-    }
+    patchLoadedBlock(block, patch);
     return true;
   }
 
@@ -71,10 +72,6 @@ export class BlockCache {
     this.requestedBlocks.clear();
   }
 
-  /**
-   * Returns true if the step's block is loaded. If not, records it as pending
-   * and sends a request to the server.
-   */
   ensureStepLoaded(step: number): boolean {
     if (this.getBlock(step)) {
       return true;

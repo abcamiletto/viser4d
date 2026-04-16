@@ -1,4 +1,4 @@
-"""Pure message conversion utilities for timeline storage and transport."""
+"""Pure message conversion and canonical state-key utilities for timeline storage."""
 
 from __future__ import annotations
 
@@ -6,16 +6,17 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from .. import _viser_private as impl
-from .._types import StoredMessage, StoredPayload
+from .._types import StoredMessage, StoredMessageEntry, StoredPayload, StoredStatePatch
 from ..audio._messages import is_audio_message_type
 
 
 @dataclass
 class TimelineStep:
-    """Recorded scene and audio updates for one timestep."""
+    """Canonical per-step patch against the prior timeline state."""
 
-    scene_updates: dict[str, StoredMessage] = field(default_factory=dict)
-    audio_updates: list[StoredMessage] = field(default_factory=list)
+    scene_puts: dict[str, StoredMessage] = field(default_factory=dict)
+    scene_delete_nodes: list[str] = field(default_factory=list)
+    audio_messages: list[StoredMessage] = field(default_factory=list)
 
 
 def store_raw_message(message: impl.Message) -> StoredMessage:
@@ -59,4 +60,120 @@ def is_scene_message(message: StoredMessage) -> bool:
         isinstance(message_type, str)
         and not message_type.startswith("Gui")
         and not is_audio_message_type(message_type)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Canonical state keys
+# ---------------------------------------------------------------------------
+
+
+def _scene_node_prefix(name: str) -> str:
+    return f"scene.node:{name}" if name else "scene.root:"
+
+
+def scene_message_state_key(message: StoredMessage) -> str | None:
+    """Return the canonical viser4d-owned key for one scene message.
+
+    Returns ``None`` for ``RemoveSceneNodeMessage`` (handled as a delete,
+    not a put) and for unrecognised message types.
+    """
+    message_type = message.payload.get("type")
+    if not isinstance(message_type, str) or message_type == "RemoveSceneNodeMessage":
+        return None
+
+    name_field = message.payload.get("name")
+    prefix = _scene_node_prefix(name_field) if isinstance(name_field, str) else "scene.global"
+
+    if "props" in message.payload:
+        return f"{prefix}:create"
+
+    if message_type == "SceneNodeUpdateMessage":
+        return f"{prefix}:update"
+    if message_type == "SetOrientationMessage":
+        return f"{prefix}:prop:orientation"
+    if message_type == "SetPositionMessage":
+        return f"{prefix}:prop:position"
+    if message_type == "SetSceneNodeVisibilityMessage":
+        return f"{prefix}:prop:visible"
+    if message_type == "SetSceneNodeClickableMessage":
+        return f"{prefix}:prop:clickable"
+    if message_type == "SetBoneOrientationMessage":
+        bone_index = message.payload.get("bone_index")
+        return f"{prefix}:bone:{bone_index}:orientation"
+    if message_type == "SetBonePositionMessage":
+        bone_index = message.payload.get("bone_index")
+        return f"{prefix}:bone:{bone_index}:position"
+
+    # Generic fallback based on non-standard payload fields.
+    payload_keys = tuple(
+        str(key)
+        for key in message.payload
+        if key not in {"type", "name", "props"}
+    )
+    if len(payload_keys) == 1:
+        return f"{prefix}:prop:{payload_keys[0]}"
+    return f"{prefix}:{message_type}"
+
+
+def scene_delete_state_key(node_name: str) -> str:
+    """Canonical key for a ``RemoveSceneNodeMessage`` override."""
+    return f"scene.node:{node_name}:delete"
+
+
+def scene_entries_for_message(
+    message: StoredMessage,
+) -> tuple[list[StoredMessageEntry], list[str]]:
+    """Convert one raw scene message into canonical keyed puts and deletes."""
+    message_type = message.payload.get("type")
+    if not isinstance(message_type, str):
+        return [], []
+
+    if message_type == "RemoveSceneNodeMessage":
+        name = extract_message_name(message)
+        return ([], [name]) if name is not None else ([], [])
+
+    if message_type == "SceneNodeUpdateMessage":
+        name = extract_message_name(message)
+        if name is None:
+            return [], []
+        updates = stored_dict(message.payload.get("updates", {}))
+        entries: list[StoredMessageEntry] = []
+        for prop, value in updates.items():
+            entries.append(
+                {
+                    "key": f"{_scene_node_prefix(name)}:prop:{prop}",
+                    "message": StoredMessage(
+                        payload={
+                            **message.payload,
+                            "updates": {str(prop): value},
+                        },
+                        buffers=message.buffers,
+                    ),
+                }
+            )
+        return entries, []
+
+    key = scene_message_state_key(message)
+    return ([{"key": key, "message": message}], []) if key is not None else ([], [])
+
+
+def step_patch_payload(step: TimelineStep) -> StoredStatePatch:
+    """Serialize one ``TimelineStep`` into a ``StoredStatePatch`` dict."""
+    return {
+        "scenePuts": [
+            {"key": key, "message": message}
+            for key, message in step.scene_puts.items()
+        ],
+        "sceneDeleteNodes": list(step.scene_delete_nodes),
+        "audioMessages": list(step.audio_messages),
+    }
+
+
+def timeline_step_from_patch_payload(patch: StoredStatePatch) -> TimelineStep:
+    """Reconstruct a ``TimelineStep`` from a serialised patch dict."""
+    return TimelineStep(
+        scene_puts={entry["key"]: entry["message"] for entry in patch["scenePuts"]},
+        scene_delete_nodes=list(patch["sceneDeleteNodes"]),
+        audio_messages=list(patch["audioMessages"]),
     )
