@@ -58,8 +58,7 @@ class _FakeLoadedPlayback:
 
 def _stored_message_types(messages: object) -> list[str]:
     return [
-        str(message.payload["type"])
-        for message in cast(list[StoredMessage], messages)
+        str(message.payload["type"]) for message in cast(list[StoredMessage], messages)
     ]
 
 

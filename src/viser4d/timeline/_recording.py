@@ -193,12 +193,14 @@ class SceneRecorder:
     def _queue_client_full_refresh(self, changed_block: int) -> None:
         with self._refresh_lock:
             pending_block = self._pending_full_refresh_from_block
-            if pending_block is None or changed_block < pending_block:
-                self._pending_full_refresh_from_block = changed_block
+            next_full_refresh_from_block = changed_block
+            if pending_block is not None and pending_block < changed_block:
+                next_full_refresh_from_block = pending_block
+            self._pending_full_refresh_from_block = next_full_refresh_from_block
             self._pending_step_refreshes = {
                 block_index: offsets
                 for block_index, offsets in self._pending_step_refreshes.items()
-                if block_index < self._pending_full_refresh_from_block
+                if block_index < next_full_refresh_from_block
             }
             self._schedule_client_refresh_locked()
 
