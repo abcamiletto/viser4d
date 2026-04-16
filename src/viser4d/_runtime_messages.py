@@ -102,6 +102,15 @@ class RuntimeSetSpeedMessage(_RuntimeControlMessage):
 
 
 @dataclasses.dataclass
+class RuntimePatchBlockMessage(_RuntimeControlMessage):
+    block: int
+    replaceCheckpoint: bool
+    checkpointMessages: list[RuntimeSceneMessage]
+    stepOffsets: list[int]
+    stepMessages: list[list[RuntimeSceneMessage]]
+
+
+@dataclasses.dataclass
 class RuntimeApplyMessageUpdateMessage(_RuntimeControlMessage):
     message: RuntimeSceneMessage
 

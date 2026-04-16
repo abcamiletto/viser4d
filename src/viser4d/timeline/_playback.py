@@ -17,6 +17,7 @@ from .._runtime_messages import (
     RuntimeEvictBlockMessage,
     RuntimeEventMessage,
     RuntimeLoadBlockMessage,
+    RuntimePatchBlockMessage,
     RuntimePauseMessage,
     RuntimePlaybackStateMessage,
     RuntimePlayMessage,
@@ -31,11 +32,13 @@ from .._runtime_messages import (
 )
 from .._types import ClientRuntimeConfig, RuntimeBlockPayload, StoredMessage
 from .._validation import require_positive_float
+from ._checkpoint import checkpoint_messages
 from ._streaming import PreloadPlanner
 
 if TYPE_CHECKING:
     from .._viser_private import ClientHandle
     from .._server import Viser4dServer
+    from ._store import TimelineStore
 
 
 class ClientPlaybackHandle:
@@ -175,6 +178,47 @@ class ClientPlaybackHandle:
                     runtime_scene_messages(inflate_stored_messages(step_messages))
                     for step_messages in payload["stepMessages"]
                 ],
+            )
+        )
+
+    def patch_block(
+        self,
+        timeline: TimelineStore,
+        block_index: int,
+        step_offsets: set[int],
+    ) -> None:
+        """Send a delta patch with only the changed step messages."""
+        sorted_offsets = sorted(step_offsets)
+        step_msgs = timeline.step_messages_for_offsets(block_index, sorted_offsets)
+        self._send_runtime_message(
+            RuntimePatchBlockMessage(
+                block=block_index,
+                replaceCheckpoint=False,
+                checkpointMessages=[],
+                stepOffsets=sorted_offsets,
+                stepMessages=[
+                    runtime_scene_messages(inflate_stored_messages(msgs))
+                    for msgs in step_msgs
+                ],
+            )
+        )
+
+    def patch_block_checkpoint(
+        self,
+        timeline: TimelineStore,
+        block_index: int,
+    ) -> None:
+        """Replace only the checkpoint for a downstream block."""
+        ckpt = timeline._checkpoint_for_block(block_index)
+        self._send_runtime_message(
+            RuntimePatchBlockMessage(
+                block=block_index,
+                replaceCheckpoint=True,
+                checkpointMessages=runtime_scene_messages(
+                    inflate_stored_messages(checkpoint_messages(ckpt))
+                ),
+                stepOffsets=[],
+                stepMessages=[],
             )
         )
 

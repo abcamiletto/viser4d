@@ -18,8 +18,10 @@ from ..audio._messages import is_audio_message
 from .._types import RuntimeBlockPayload, StoredMessage
 from ._checkpoint import (
     CheckpointState,
+    apply_scene_message,
     apply_steps,
     checkpoint_messages,
+    classify_step_change,
     copy_checkpoint,
     load_checkpoint_file,
     write_checkpoint_file,
@@ -116,8 +118,18 @@ class TimelineStore:
             block = self._load_block(step // self.block_size)
             return block.steps[step % self.block_size]
 
-    def record_step(self, step: int, messages: list[impl.Message]) -> None:
-        """Store one timestep's scene and audio updates."""
+    def record_step(
+        self, step: int, messages: list[impl.Message]
+    ) -> tuple[set[str], bool]:
+        """Store one timestep's scene and audio updates.
+
+        Returns:
+            A ``(changed_keys, is_structural)`` tuple.  *changed_keys* lists the
+            redundancy keys of scene messages that were added or replaced;
+            *is_structural* is ``True`` when any message creates/removes a scene
+            node or touches audio (requiring full checkpoint invalidation).
+        """
+        changed_keys, is_structural = classify_step_change(messages)
         with self._lock:
             step = self.validate_step(step)
             block_index = step // self.block_size
@@ -136,8 +148,13 @@ class TimelineStore:
                 if is_audio_message(message):
                     step_state.audio_updates.append(stored_message)
             block.dirty = True
-            self._invalidate_checkpoints_after_block(block_index)
-            self._invalidate_manifests_after_block(block_index)
+            if is_structural:
+                self._invalidate_checkpoints_after_block(block_index)
+                self._invalidate_manifests_after_block(block_index)
+            else:
+                self._patch_checkpoints_after_block(block_index, changed_keys)
+                self._invalidate_manifest_for_block(block_index)
+        return changed_keys, is_structural
 
     def record_global_override(self, message: impl.Message) -> None:
         """Store a live scene override that should replay for all future steps."""
@@ -253,6 +270,21 @@ class TimelineStore:
             "checkpointMessages": ckpt_messages,
             "stepMessages": step_messages,
         }
+
+    def step_messages_for_offsets(
+        self,
+        block_index: int,
+        offsets: list[int],
+    ) -> list[list[StoredMessage]]:
+        """Return merged step messages for specific offsets within a block."""
+        with self._lock:
+            block_index = self._validate_block_index(block_index)
+            block = self._load_block(block_index)
+            block_start = block_index * self.block_size
+            return [
+                self._merged_step_messages(block_start + offset, block.steps[offset])
+                for offset in offsets
+            ]
 
     def _merged_step_messages(
         self,
@@ -396,6 +428,80 @@ class TimelineStore:
         stale = [i for i in self._checkpoint_cache if i > block_index]
         for i in stale:
             del self._checkpoint_cache[i]
+
+    def _patch_checkpoints_after_block(
+        self, block_index: int, changed_keys: set[str]
+    ) -> None:
+        """Incrementally patch cached checkpoints after a property-only edit.
+
+        For each cached checkpoint covering the edited block, recompute only
+        the changed keys by scanning blocks forward from *block_index*.
+        """
+        if not changed_keys:
+            return
+        for ckpt_index in list(self._checkpoint_cache):
+            if ckpt_index <= block_index:
+                continue
+            checkpoint = self._checkpoint_cache[ckpt_index]
+            self._patch_one_checkpoint(
+                checkpoint, block_index, ckpt_index, changed_keys
+            )
+            # Delete the stale disk file; it will be re-written on next flush.
+            disk_path = self._checkpoint_path(ckpt_index)
+            if disk_path.exists():
+                disk_path.unlink()
+        # Also patch the eager checkpoint if it already covers the edited block.
+        if self._eager_checkpoint_next_block > block_index:
+            self._patch_one_checkpoint(
+                self._eager_checkpoint,
+                block_index,
+                self._eager_checkpoint_next_block,
+                changed_keys,
+            )
+
+    def _patch_one_checkpoint(
+        self,
+        checkpoint: CheckpointState,
+        from_block: int,
+        to_block_exclusive: int,
+        changed_keys: set[str],
+    ) -> None:
+        """Update specific keys in *checkpoint* by scanning the block range."""
+        for key in changed_keys:
+            latest = self._find_latest_value_for_key(
+                key, from_block, to_block_exclusive
+            )
+            if latest is not None:
+                apply_scene_message(checkpoint, key, latest)
+            # If *latest* is ``None`` the key does not appear in the scanned
+            # range.  The checkpoint's existing value (from earlier blocks)
+            # is still correct — leave it untouched.
+
+    def _find_latest_value_for_key(
+        self,
+        key: str,
+        from_block: int,
+        to_block_exclusive: int,
+    ) -> StoredMessage | None:
+        """Return the latest ``StoredMessage`` for *key* across the block range.
+
+        Returns ``None`` when *key* does not appear in any step within the
+        range ``[from_block, to_block_exclusive)``.
+        """
+        latest: StoredMessage | None = None
+        for block_idx in range(from_block, to_block_exclusive):
+            block = self._load_block(block_idx)
+            for step_state in block.steps:
+                value = step_state.scene_updates.get(key)
+                if value is not None:
+                    latest = value
+        return latest
+
+    def _invalidate_manifest_for_block(self, block_index: int) -> None:
+        """Mark only the edited block's manifest as needing a size update."""
+        manifest = self._manifest_states[block_index]
+        manifest.payload_byte_size = None
+        manifest.dirty = True
 
     def _invalidate_manifests_after_block(self, block_index: int) -> None:
         for manifest in self._manifest_states[block_index:]:

@@ -10,12 +10,14 @@ import msgspec
 import numpy as np
 import zstandard
 
+from .. import _viser_private as impl
 from ..audio._api import audio_array_payload
-from ..audio._messages import AddAudioMessage
+from ..audio._messages import AddAudioMessage, is_audio_message
 from .._types import StoredMessage, StoredPayload
 from ._messages_util import (
     TimelineStep,
     extract_message_name,
+    is_scene_message,
     store_raw_message,
     stored_dict,
     stored_float,
@@ -212,6 +214,34 @@ def load_checkpoint_file(path: Path) -> CheckpointState:
         key_to_node=key_to_node,
         audio_tracks=audio_tracks,
     )
+
+
+def classify_step_change(
+    messages: list[impl.Message],
+) -> tuple[set[str], bool]:
+    """Classify recorded messages into changed scene keys and structural flag.
+
+    Returns:
+        changed_keys: Redundancy keys of scene messages that were added or replaced.
+        is_structural: ``True`` when any message creates/removes a scene node or
+            touches audio (cases that may cascade through the checkpoint and
+            therefore require full invalidation instead of incremental patching).
+    """
+    changed_keys: set[str] = set()
+    is_structural = False
+    for message in messages:
+        stored = store_raw_message(message)
+        if is_audio_message(message):
+            is_structural = True
+            continue
+        if not is_scene_message(stored):
+            continue
+        changed_keys.add(message.redundancy_key())
+        if impl.is_create_scene_node_message(message):
+            is_structural = True
+        if stored.payload.get("type") == "RemoveSceneNodeMessage":
+            is_structural = True
+    return changed_keys, is_structural
 
 
 def _scene_node_sort_key(name: str) -> tuple[int, str]:

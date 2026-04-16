@@ -10,6 +10,7 @@ import {
   type RuntimeEventMessage,
   type RuntimeEvictBlockMessage,
   type RuntimeLoadBlockMessage,
+  type RuntimePatchBlockMessage,
   type RuntimePlayMessage,
   type RuntimeSeekMessage,
   type RuntimeSetSpeedMessage,
@@ -226,6 +227,33 @@ export class TimelineController {
     this.blocks.evictBlock(message.block, this.scene.appliedBlock);
   }
 
+  private patchBlock(message: RuntimePatchBlockMessage): void {
+    const patched = this.blocks.patchBlock(
+      message.block,
+      message.replaceCheckpoint,
+      message.checkpointMessages,
+      message.stepOffsets,
+      message.stepMessages,
+    );
+    if (!patched) {
+      return;
+    }
+    debugState.push("runtime.patch_block", {
+      block: message.block,
+      replaceCheckpoint: message.replaceCheckpoint,
+      stepOffsets: message.stepOffsets,
+    });
+    // If we patched the currently active block, rebuild the scene.
+    const currentStep = this.currentStep();
+    const activeBlock = this.blocks.blockIndexOf(currentStep);
+    if (
+      message.block === activeBlock &&
+      this.scene.appliedBlock === activeBlock
+    ) {
+      this.scene.rebuildThrough(currentStep);
+    }
+  }
+
   private seek(message: RuntimeSeekMessage): void {
     this.engine.seek({ step: message.step });
   }
@@ -290,6 +318,9 @@ export class TimelineController {
         return;
       case "RuntimeSetSpeedMessage":
         this.setSpeed(message);
+        return;
+      case "RuntimePatchBlockMessage":
+        this.patchBlock(message);
         return;
       case "RuntimeApplyMessageUpdateMessage":
         this.applyMessageUpdate(message);

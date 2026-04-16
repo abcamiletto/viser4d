@@ -30,6 +30,33 @@ export class BlockCache {
     this.blocks.set(blockIndex, block);
   }
 
+  /**
+   * Apply an incremental patch to a cached block.  Returns true when the block
+   * was found and patched, false when the block was not loaded.
+   */
+  patchBlock(
+    blockIndex: number,
+    replaceCheckpoint: boolean,
+    checkpointMessages: RuntimeMessage[],
+    stepOffsets: number[],
+    stepMessages: RuntimeMessage[][],
+  ): boolean {
+    const block = this.blocks.get(blockIndex);
+    if (!block) {
+      return false;
+    }
+    if (replaceCheckpoint) {
+      block.checkpointMessages = checkpointMessages;
+    }
+    for (let i = 0; i < stepOffsets.length; i++) {
+      const offset = stepOffsets[i];
+      if (offset >= 0 && offset < block.stepMessages.length) {
+        block.stepMessages[offset] = stepMessages[i];
+      }
+    }
+    return true;
+  }
+
   evictBlock(blockIndex: number, appliedBlock: number): void {
     if (blockIndex === appliedBlock) {
       return;
