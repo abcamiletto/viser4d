@@ -42,7 +42,6 @@ class BlockManifest:
     block_index: int
     step_start: int
     step_stop: int
-    checkpoint_block_index: int | None
     payload_byte_size: int | None
     dirty: bool
 

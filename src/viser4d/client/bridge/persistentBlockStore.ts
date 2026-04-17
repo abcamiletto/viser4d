@@ -1,4 +1,4 @@
-import type { LoadedBlock } from "./blockCache";
+import type { LoadedBlock } from "./blockState";
 import { getWindow } from "./protocol";
 
 const DB_NAME = "viser4d-runtime";

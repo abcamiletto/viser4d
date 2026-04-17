@@ -12,7 +12,7 @@ import zstandard
 
 from ..audio._api import audio_array_payload
 from ..audio._messages import AddAudioMessage
-from .._types import StoredMessage, StoredPayload
+from .._types import StoredMessage, StoredMessageEntry, StoredPayload
 from ._messages_util import (
     TimelineStep,
     extract_message_name,
@@ -41,7 +41,16 @@ class CheckpointState:
     audio_tracks: dict[str, AudioTrackState] = field(default_factory=dict)
 
 
+@dataclass
+class CheckpointSnapshot:
+    """Checkpoint state plus the source revision it was derived from."""
+
+    state: CheckpointState
+    source_revision: int
+
+
 class _CheckpointFilePayload(msgspec.Struct):
+    sourceRevision: int
     sceneUpdates: list[tuple[str, StoredMessage]]
     keyToNode: list[tuple[str, str | None]]
     audioTracks: list["_CheckpointAudioTrackPayload"]
@@ -64,19 +73,25 @@ def apply_scene_message(
     if message.payload.get("type") == "RemoveSceneNodeMessage" and isinstance(
         name, str
     ):
-        prefix = f"{name}/"
-        stale_keys = [
-            k
-            for k, node in state.key_to_node.items()
-            if node == name or (isinstance(node, str) and node.startswith(prefix))
-        ]
-        for k in stale_keys:
-            del state.scene_updates[k]
-            del state.key_to_node[k]
+        remove_scene_node_subtree(state, name)
         return
     state.scene_updates.pop(key, None)
     state.scene_updates[key] = message
     state.key_to_node[key] = name
+
+
+def remove_scene_node_subtree(state: CheckpointState, node_name: str) -> None:
+    """Remove a scene node and all its descendants from the checkpoint."""
+    prefix = f"{node_name}/"
+    stale_keys = [
+        key
+        for key, scene_node in state.key_to_node.items()
+        if scene_node == node_name
+        or (isinstance(scene_node, str) and scene_node.startswith(prefix))
+    ]
+    for key in stale_keys:
+        del state.scene_updates[key]
+        del state.key_to_node[key]
 
 
 def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
@@ -114,9 +129,11 @@ def apply_audio_message(state: CheckpointState, message: StoredMessage) -> None:
 def apply_steps(state: CheckpointState, steps: list[TimelineStep]) -> None:
     """Apply all scene and audio updates from a sequence of steps."""
     for step in steps:
-        for key, message in step.scene_updates.items():
+        for node_name in step.scene_delete_nodes:
+            remove_scene_node_subtree(state, node_name)
+        for key, message in step.scene_puts.items():
             apply_scene_message(state, key, message)
-        for message in step.audio_updates:
+        for message in step.audio_messages:
             apply_audio_message(state, message)
 
 
@@ -136,40 +153,36 @@ def copy_checkpoint(state: CheckpointState) -> CheckpointState:
     )
 
 
-def checkpoint_messages(state: CheckpointState) -> list[StoredMessage]:
-    """Build the ordered message list that reconstructs this checkpoint's state."""
-    unnamed_messages = [
-        message
-        for key, message in state.scene_updates.items()
-        if state.key_to_node.get(key) is None
+def checkpoint_scene_entries(state: CheckpointState) -> list[StoredMessageEntry]:
+    """Build the keyed scene entries for one checkpoint."""
+    return [
+        {"key": key, "message": message} for key, message in state.scene_updates.items()
     ]
-    node_messages: dict[str, list[StoredMessage]] = {}
-    for key, message in state.scene_updates.items():
-        name = state.key_to_node.get(key)
-        if name is None:
-            continue
-        node_messages.setdefault(name, []).append(message)
-    scene_messages = list(unnamed_messages)
-    for name in sorted(node_messages, key=_scene_node_sort_key):
-        messages = node_messages[name]
-        create = [m for m in messages if _is_create_scene_message(m)]
-        scene_messages.extend(create)
-        scene_messages.extend(m for m in messages if not _is_create_scene_message(m))
-    audio_messages = [
-        store_raw_message(
-            AddAudioMessage(
-                name=name,
-                sampleRate=track.sample_rate,
-                waveform=audio_array_payload(track.waveform),
-                volume=track.volume,
-            )
-        )
+
+
+def checkpoint_audio_messages(state: CheckpointState) -> list[StoredMessage]:
+    """Build checkpoint audio tracks as add-audio messages."""
+    return [
+        _audio_track_message(name, track)
         for name, track in sorted(state.audio_tracks.items())
     ]
-    return scene_messages + audio_messages
 
 
-def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
+def step_patch_messages(step: TimelineStep) -> list[StoredMessage]:
+    """Materialize one step patch back into ordered viewer messages."""
+    scene_messages = [
+        StoredMessage(payload={"type": "RemoveSceneNodeMessage", "name": node_name})
+        for node_name in step.scene_delete_nodes
+    ]
+    scene_messages.extend(materialize_scene_puts(step.scene_puts))
+    return scene_messages + list(step.audio_messages)
+
+
+def write_checkpoint_file(
+    path: Path,
+    state: CheckpointState,
+    source_revision: int,
+) -> None:
     """Persist a checkpoint snapshot to disk."""
     audio_tracks = [
         _CheckpointAudioTrackPayload(
@@ -183,6 +196,7 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
         for name, track in sorted(state.audio_tracks.items())
     ]
     payload = _CheckpointFilePayload(
+        sourceRevision=source_revision,
         sceneUpdates=list(state.scene_updates.items()),
         keyToNode=list(state.key_to_node.items()),
         audioTracks=audio_tracks,
@@ -192,7 +206,7 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
     path.write_bytes(compressed)
 
 
-def load_checkpoint_file(path: Path) -> CheckpointState:
+def load_checkpoint_file(path: Path) -> CheckpointSnapshot:
     """Load a checkpoint snapshot written by :func:`write_checkpoint_file`."""
     raw = zstandard.ZstdDecompressor().decompress(path.read_bytes())
     payload = msgspec.msgpack.decode(raw, type=_CheckpointFilePayload)
@@ -207,19 +221,25 @@ def load_checkpoint_file(path: Path) -> CheckpointState:
             waveform=np.ascontiguousarray(arr.reshape(shape)),
             volume=td.volume,
         )
-    return CheckpointState(
-        scene_updates=scene_updates,
-        key_to_node=key_to_node,
-        audio_tracks=audio_tracks,
+    return CheckpointSnapshot(
+        state=CheckpointState(
+            scene_updates=scene_updates,
+            key_to_node=key_to_node,
+            audio_tracks=audio_tracks,
+        ),
+        source_revision=payload.sourceRevision,
     )
 
 
-def _scene_node_sort_key(name: str) -> tuple[int, str]:
-    return (name.count("/"), name)
-
-
-def _is_create_scene_message(message: StoredMessage) -> bool:
-    return "props" in message.payload
+def _audio_track_message(name: str, track: AudioTrackState) -> StoredMessage:
+    return store_raw_message(
+        AddAudioMessage(
+            name=name,
+            sampleRate=track.sample_rate,
+            waveform=audio_array_payload(track.waveform),
+            volume=track.volume,
+        )
+    )
 
 
 def _decode_audio_payload(payload: StoredPayload) -> np.ndarray:
@@ -236,3 +256,28 @@ def _append_audio_waveform(head: np.ndarray, tail: np.ndarray) -> np.ndarray:
     if head.ndim != tail.ndim:
         raise ValueError("Audio append must preserve waveform dimensionality.")
     return np.ascontiguousarray(np.concatenate((head, tail), axis=0))
+
+
+def materialize_scene_puts(scene_puts: dict[str, StoredMessage]) -> list[StoredMessage]:
+    scene_messages: list[StoredMessage] = []
+    node_messages: dict[str, list[StoredMessage]] = {}
+    for message in scene_puts.values():
+        node_name = extract_message_name(message)
+        if node_name is None:
+            scene_messages.append(message)
+            continue
+        node_messages.setdefault(node_name, []).append(message)
+
+    for name in sorted(node_messages, key=_scene_node_sort_key):
+        messages = node_messages[name]
+        scene_messages.extend(
+            message for message in messages if "props" in message.payload
+        )
+        scene_messages.extend(
+            message for message in messages if "props" not in message.payload
+        )
+    return scene_messages
+
+
+def _scene_node_sort_key(name: str) -> tuple[int, str]:
+    return (name.count("/"), name)

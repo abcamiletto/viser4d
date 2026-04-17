@@ -25,6 +25,22 @@ class StoredMessage:
     buffers: tuple[bytes, ...] = ()
 
 
+class StoredMessageEntry(TypedDict):
+    key: str
+    message: StoredMessage
+
+
+class StoredStatePatch(TypedDict):
+    scenePuts: list[StoredMessageEntry]
+    sceneDeleteNodes: list[str]
+    audioMessages: list[StoredMessage]
+
+
+class StepPatchUpdate(TypedDict):
+    stepOffset: int
+    patch: StoredStatePatch
+
+
 class AudioArrayPayload(TypedDict):
     dtype: str
     numChannels: int
@@ -51,5 +67,15 @@ class ClientRuntimeConfig(RuntimeConfig):
 
 class RuntimeBlockPayload(TypedDict):
     block: int
-    checkpointMessages: list[StoredMessage]
-    stepMessages: list[list[StoredMessage]]
+    checkpointSceneEntries: list[StoredMessageEntry]
+    checkpointAudioMessages: list[StoredMessage]
+    stepPatches: list[StoredStatePatch]
+
+
+class RuntimeBlockPatchPayload(TypedDict):
+    block: int
+    checkpointScenePuts: list[StoredMessageEntry]
+    checkpointSceneDeletes: list[str]
+    checkpointAudioPuts: list[StoredMessage]
+    checkpointAudioDeletes: list[str]
+    stepPatchUpdates: list[StepPatchUpdate]

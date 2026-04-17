@@ -1,9 +1,12 @@
 import type { RuntimeMessage } from "../binary";
-
-export type LoadedBlock = {
-  checkpointMessages: RuntimeMessage[];
-  stepMessages: RuntimeMessage[][];
-};
+import {
+  makeLoadedBlock,
+  patchLoadedBlock,
+  type KeyedRuntimeMessage,
+  type LoadedBlock,
+  type RuntimeStatePatch,
+  type StepPatchUpdate,
+} from "./blockState";
 
 export class BlockCache {
   blockSize = 32;
@@ -11,10 +14,14 @@ export class BlockCache {
   private blocks = new Map<number, LoadedBlock>();
   private requestedBlocks = new Set<number>();
 
-  constructor(private requestBlock: (blockIndex: number, step: number) => void) {}
+  constructor(private requestStep: (step: number) => void) {}
 
   getBlock(step: number): LoadedBlock | null {
     return this.blocks.get(Math.floor(step / this.blockSize)) ?? null;
+  }
+
+  getBlockByIndex(blockIndex: number): LoadedBlock | null {
+    return this.blocks.get(blockIndex) ?? null;
   }
 
   hasBlockIndex(blockIndex: number): boolean {
@@ -29,9 +36,39 @@ export class BlockCache {
     return blockIndex * this.blockSize;
   }
 
-  loadBlock(blockIndex: number, block: LoadedBlock): void {
+  loadBlock(
+    blockIndex: number,
+    block: {
+      checkpointSceneEntries: KeyedRuntimeMessage[];
+      checkpointAudioMessages: RuntimeMessage[];
+      stepPatches: RuntimeStatePatch[];
+    },
+  ): void {
+    this.requestedBlocks.delete(blockIndex);
+    this.blocks.set(blockIndex, makeLoadedBlock(block));
+  }
+
+  restoreBlock(blockIndex: number, block: LoadedBlock): void {
     this.requestedBlocks.delete(blockIndex);
     this.blocks.set(blockIndex, block);
+  }
+
+  patchBlock(
+    blockIndex: number,
+    patch: {
+      checkpointScenePuts: KeyedRuntimeMessage[];
+      checkpointSceneDeletes: string[];
+      checkpointAudioPuts: RuntimeMessage[];
+      checkpointAudioDeletes: string[];
+      stepPatchUpdates: StepPatchUpdate[];
+    },
+  ): boolean {
+    const block = this.blocks.get(blockIndex);
+    if (!block) {
+      return false;
+    }
+    patchLoadedBlock(block, patch);
+    return true;
   }
 
   evictBlock(blockIndex: number, appliedBlock: number): void {
@@ -48,10 +85,6 @@ export class BlockCache {
     this.requestedBlocks.clear();
   }
 
-  /**
-   * Returns true if the step's block is loaded. If not, records it as pending
-   * and sends a request to the server.
-   */
   ensureStepLoaded(step: number): boolean {
     if (this.getBlock(step)) {
       return true;
@@ -60,7 +93,7 @@ export class BlockCache {
     const blockIndex = this.blockIndexOf(step);
     if (!this.requestedBlocks.has(blockIndex)) {
       this.requestedBlocks.add(blockIndex);
-      this.requestBlock(blockIndex, step);
+      this.requestStep(step);
     }
     return false;
   }
