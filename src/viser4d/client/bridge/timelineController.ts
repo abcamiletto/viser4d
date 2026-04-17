@@ -290,9 +290,8 @@ export class TimelineController {
           debugState.push("runtime.load_block.cache_hit", { block: blockIndex });
           if (!this.blocks.hasBlockIndex(blockIndex)) {
             this.blocks.restoreBlock(blockIndex, block);
-            // Tell the server we now hold this block so it can patch it on
-            // live recording mutations. Without this, server-side
-            // update_block would skip restored blocks and they'd go stale.
+            // Register residency so recording mutations patch this block
+            // instead of skipping it.
             this.sendRuntimeEvent({
               type: "RuntimeBlockCachedMessage",
               blockIndex,

@@ -203,14 +203,12 @@ class ClientPlaybackHandle:
         self._speed = server.playback_speed
         self._is_playing = False
         self._current_timestep = 0
-        # Maps block index → last payload the server sent (for patch diffing),
-        # or None if the client restored the block from its persistent cache
-        # and the server has never serialized it. Key presence means "client
-        # holds this block."
+        # Block index → last payload sent (for diffing), or None when the
+        # client restored from its persistent cache and we have no snapshot.
+        # Key presence means "client holds this block."
         self._loaded_block_payloads: dict[int, RuntimeBlockPayload | None] = {}
-        # Blocks whose serialization is in flight. An entry here means a
-        # RuntimeLoadBlockMessage should be sent when the future completes;
-        # removing the entry before completion cancels the send.
+        # In-flight serializations. Removing an entry before completion
+        # cancels the send.
         self._pending_requests: set[int] = set()
         self._pending_runtime_messages: list[impl.Message] = []
         self._runtime_ready = False
@@ -267,7 +265,6 @@ class ClientPlaybackHandle:
         )
 
     def sync_steps(self) -> None:
-        """Tell the client the timeline has been resized."""
         max_step = self._server.num_steps - 1
         with self._lock:
             current_timestep = min(self._current_timestep, max_step)
@@ -286,9 +283,8 @@ class ClientPlaybackHandle:
         self._reset_client(0)
 
     def _reset_client(self, target_step: int) -> None:
-        # Hold the lock across the reset and the initial sends so that a
-        # late _finish_block_request for a retired session cannot interleave
-        # its load message between our clear and configure.
+        # Hold the lock across reset-and-sends so a late block completion
+        # can't interleave its load between our clear and configure.
         with self._lock:
             self._loaded_block_payloads = {}
             self._pending_requests.clear()
@@ -298,7 +294,6 @@ class ClientPlaybackHandle:
             self._sync_scene_overrides()
 
     def apply_message_update(self, key: str, message: StoredMessage) -> None:
-        """Forward one keyed live stored message into the browser runtime."""
         self._send_runtime_message(
             RuntimeApplyMessageUpdateMessage(
                 key=key,
@@ -334,14 +329,10 @@ class ClientPlaybackHandle:
             return
         patch = _diff_block_payloads(previous_payload, payload)
         if patch is None:
-            with self._lock:
-                if block_index in self._loaded_block_payloads:
-                    self._loaded_block_payloads[block_index] = payload
             return
         message = _build_patch_block_message(patch)
         with self._lock:
             if block_index not in self._loaded_block_payloads:
-                # Reset raced us; drop the patch.
                 return
             self._loaded_block_payloads[block_index] = payload
             self._send_runtime_message(message)
@@ -493,7 +484,6 @@ class ClientPlaybackHandle:
         future: Future[RuntimeBlockPayload],
     ) -> None:
         if future.exception() is not None:
-            # Timeline was replaced mid-serialization.
             with self._lock:
                 self._pending_requests.discard(block_index)
             return
@@ -501,18 +491,14 @@ class ClientPlaybackHandle:
         message = _build_load_block_message(payload)
         with self._lock:
             if block_index not in self._pending_requests:
-                # Cancelled by a discard or a clear/set_steps reset.
                 return
             self._pending_requests.discard(block_index)
             self._loaded_block_payloads[block_index] = payload
             self._send_runtime_message(message)
 
     def _send_runtime_message(self, message: impl.Message) -> None:
-        # Callers hold self._lock when they need enqueue ordering to be
-        # serialized with other state mutations (e.g. _reset_client). The
-        # RLock is reentrant for the same thread, and we deliberately keep
-        # the enqueue inside that held lock so the on-wire order matches the
-        # state transitions we committed to.
+        # Enqueue happens inside the lock so callers that hold it get
+        # on-wire ordering matching the state transitions they committed.
         with self._lock:
             if not self._runtime_ready:
                 self._pending_runtime_messages.append(message)

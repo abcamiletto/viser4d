@@ -150,11 +150,7 @@ class RuntimeBlockDiscardMessage(RuntimeEventMessage):
 
 @dataclasses.dataclass
 class RuntimeBlockCachedMessage(RuntimeEventMessage):
-    """Client-side notification that a block was restored from persistent cache.
-
-    The server uses this to track residency so live recording patches can reach
-    blocks the server itself never sent.
-    """
+    """Client restored this block from persistent cache; register residency."""
 
     blockIndex: int
 

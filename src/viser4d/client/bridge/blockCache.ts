@@ -108,9 +108,8 @@ export class BlockCache {
     );
     const desired = new Set<number>([...plan.required, ...plan.speculative]);
 
-    // Cancel pending requests that have drifted out of the desired window —
-    // otherwise rapid scrubbing across blocks would leave a growing trail of
-    // in-flight block loads piling up on the socket.
+    // Cancel pending requests that drifted out of the window, so rapid
+    // scrubbing doesn't leave obsolete block loads piling up on the socket.
     for (const blockIndex of [...this.pendingRequests]) {
       if (desired.has(blockIndex)) {
         continue;
@@ -136,9 +135,9 @@ export class BlockCache {
       }
     }
 
-    // At most one speculative request in flight, and never ahead of a required
-    // one. syncCurrentBlock re-fires when a block arrives, so the next
-    // speculative request issues naturally once the previous completes.
+    // One speculative request at a time, never ahead of a required one.
+    // syncCurrentBlock re-fires on block arrival, so the next speculative
+    // issues once the previous completes.
     if (requiredInFlight) {
       return;
     }
