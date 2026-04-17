@@ -21,7 +21,11 @@ from viser4d._runtime_messages import (
 )
 from viser4d._types import StoredMessage
 from viser4d.timeline._checkpoint import step_patch_messages
-from viser4d.timeline._messages_util import TimelineStep
+from viser4d.timeline._messages_util import (
+    TimelineStep,
+    scene_delete_state_key,
+    scene_message_state_key,
+)
 from viser4d.timeline._playback import ClientPlaybackHandle
 
 
@@ -355,7 +359,7 @@ def test_client_playback_syncs_existing_scene_overrides_on_init(
             fps=1.0,
             _timeline=SimpleNamespace(
                 scene_override_items=lambda: (
-                    ("scene.node:/frame:prop:position", override),
+                    (cast(str, scene_message_state_key(override)), override),
                 )
             ),
         ),
@@ -371,7 +375,7 @@ def test_client_playback_syncs_existing_scene_overrides_on_init(
         if isinstance(message, RuntimeApplyMessageUpdateMessage)
     ]
     assert len(override_messages) == 1
-    assert override_messages[0].key == "scene.node:/frame:prop:position"
+    assert override_messages[0].key == cast(str, scene_message_state_key(override))
     assert override_messages[0].message["type"] == "SetPositionMessage"
 
 
@@ -408,7 +412,7 @@ def test_live_scene_removals_are_forwarded_without_block_refresh(
         assert refresh_calls == []
         assert len(playback.updates) == 1
         key, message = playback.updates[0]
-        assert key == "scene.node:/frame:delete"
+        assert key == scene_delete_state_key("/frame")
         assert getattr(message, "payload")["type"] == "RemoveSceneNodeMessage"
     finally:
         with server._client_playbacks_lock:
@@ -419,21 +423,21 @@ def test_live_scene_removals_are_forwarded_without_block_refresh(
 def test_step_patch_messages_materialize_in_runtime_order() -> None:
     step = TimelineStep(
         scene_puts={
-            "scene.node:/root/child:prop:position": StoredMessage(
+            "child-position": StoredMessage(
                 payload={
                     "type": "SetPositionMessage",
                     "name": "/root/child",
                     "position": [1.0, 2.0, 3.0],
                 }
             ),
-            "scene.node:/root/child:create": StoredMessage(
+            "child-create": StoredMessage(
                 payload={
                     "type": "FrameMessage",
                     "name": "/root/child",
                     "props": {},
                 }
             ),
-            "scene.node:/root:create": StoredMessage(
+            "root-create": StoredMessage(
                 payload={
                     "type": "FrameMessage",
                     "name": "/root",
