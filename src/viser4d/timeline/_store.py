@@ -144,10 +144,10 @@ class TimelineStore:
             self._next_revision += 1
             self._invalidate_manifests_after_block(block_index)
 
-    def record_scene_override(self, message: impl.Message) -> None:
+    def record_scene_override(self, message: StoredMessage) -> None:
         """Store one live scene override for playback replay and export."""
         with self._lock:
-            record_scene_message(self._scene_overrides, store_raw_message(message))
+            record_scene_message(self._scene_overrides, message)
 
     def scene_override_items(self) -> tuple[tuple[str, StoredMessage], ...]:
         """Return keyed live scene overrides in client replay order."""
