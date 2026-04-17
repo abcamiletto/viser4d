@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import uuid
 from collections.abc import Coroutine
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any, Callable
@@ -65,7 +64,6 @@ class Viser4dServer(viser.ViserServer):
         self._playback_config_lock = threading.Lock()
         self._loop = loop
         self._playback_speed = default_playback_speed
-        self._client_chunk_cache_version = uuid.uuid4().hex
         self._timeline = TimelineStore(
             num_steps,
             block_size=streaming.block_size,
@@ -144,12 +142,6 @@ class Viser4dServer(viser.ViserServer):
     def client_chunk_cache_bytes(self) -> int:
         """Per-client chunk cache budget used by the preload planner."""
         return self._chunk_streaming.client_chunk_cache_bytes
-
-    @property
-    def client_chunk_cache_version(self) -> str:
-        """Version token for client-side persistent chunk caching."""
-        with self._playback_config_lock:
-            return self._client_chunk_cache_version
 
     @property
     def loop(self) -> bool:
@@ -244,12 +236,6 @@ class Viser4dServer(viser.ViserServer):
         """Block until the server is stopped."""
         while not self._stop_event.wait(3600):
             pass
-
-    def bump_client_chunk_cache_version(self) -> str:
-        """Invalidate any persistent client-side chunk cache for this timeline."""
-        with self._playback_config_lock:
-            self._client_chunk_cache_version = uuid.uuid4().hex
-            return self._client_chunk_cache_version
 
     def serialize(
         self,

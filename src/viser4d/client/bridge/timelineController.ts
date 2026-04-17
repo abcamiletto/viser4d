@@ -2,24 +2,23 @@ import type { RuntimeMessage, RuntimeValue } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { isAudioMessage } from "../audio/messages";
 import { BlockCache } from "./blockCache";
-import type { LoadedBlock } from "./blockState";
 import {
   isRuntimeControlMessage,
   type RuntimeApplyMessageUpdateMessage,
   type RuntimeConfigureMessage,
   type RuntimeControlMessage,
   type RuntimeEventMessage,
-  type RuntimeEvictBlockMessage,
   type RuntimeLoadBlockMessage,
+  type RuntimeManifestsMessage,
   type RuntimePatchBlockMessage,
   type RuntimePlayMessage,
   type RuntimeSeekMessage,
   type RuntimeSetSpeedMessage,
 } from "./generatedRuntimeMessages";
 import { PlaybackEngine } from "./playbackEngine";
-import { PersistentBlockStore } from "./persistentBlockStore";
 import { SceneApplicator } from "./sceneApplicator";
 import { type GuiUpdateMessage, type RuntimeConfig } from "./protocol";
+import type { BlockManifest } from "./preloadPlanner";
 
 type TimelineControllerIO = {
   pushMessages(messages: RuntimeMessage[]): void;
@@ -61,7 +60,8 @@ export class TimelineController {
     timelineFps: 30,
     speed: 1,
     loop: false,
-    chunkCacheVersion: "",
+    clientChunkCacheBytes: 0,
+    blockManifests: [],
     timelineSliderUuid: null,
     speedSliderUuid: null,
     stepButtonsUuid: null,
@@ -70,15 +70,16 @@ export class TimelineController {
   };
   private lastLocalSliderStep = -1;
   private lastSyncedStep = -1;
-  private readonly persistentBlocks = new PersistentBlockStore();
+  private lastFocusBlock = -1;
 
   private readonly audio: AudioRuntime = new AudioRuntime(
     () => this.engine.getTransportStep(),
     (event, payload) => debugState.push(event, payload),
   );
-  private readonly blocks: BlockCache = new BlockCache((step) =>
-    this.requestBlock(step),
-  );
+  private readonly blocks: BlockCache = new BlockCache({
+    requestBlock: (blockIndex) => this.requestBlockFromServer(blockIndex),
+    discardBlock: (blockIndex) => this.reportBlockDiscard(blockIndex),
+  });
   private readonly scene: SceneApplicator = new SceneApplicator(
     (messages) => this.io.pushMessages(messages),
     this.audio,
@@ -175,7 +176,8 @@ export class TimelineController {
       timelineFps: message.timelineFps,
       speed: message.speed,
       loop: message.loop,
-      chunkCacheVersion: message.chunkCacheVersion,
+      clientChunkCacheBytes: message.clientChunkCacheBytes,
+      blockManifests: message.blockManifests,
       timelineSliderUuid: message.timelineSliderUuid,
       speedSliderUuid: message.speedSliderUuid,
       stepButtonsUuid: message.stepButtonsUuid,
@@ -183,12 +185,29 @@ export class TimelineController {
       pauseButtonUuid: message.pauseButtonUuid,
     };
     this.blocks.blockSize = this.config.blockSize;
-    this.persistentBlocks.configure(this.config.chunkCacheVersion);
+    this.blocks.setBudgetBytes(this.config.clientChunkCacheBytes);
+    this.blocks.setManifests(this.config.blockManifests as BlockManifest[]);
     this.engine.updateConfig(this.config);
     this.audio.setStepRate(this.config.timelineFps);
-    debugState.push("runtime.configure", this.config);
+    debugState.push("runtime.configure", {
+      ...this.config,
+      blockManifests: this.config.blockManifests.length,
+    });
     this.engine.syncAudioTransport();
     this.syncPlaybackButtons();
+    this.refocusPreload(this.currentStep(), true);
+  }
+
+  private applyManifests(message: RuntimeManifestsMessage): void {
+    this.config = {
+      ...this.config,
+      blockManifests: message.blockManifests,
+    };
+    this.blocks.setManifests(message.blockManifests as BlockManifest[]);
+    debugState.push("runtime.manifests", {
+      count: message.blockManifests.length,
+    });
+    this.refocusPreload(this.currentStep(), true);
   }
 
   private clear(): void {
@@ -198,6 +217,7 @@ export class TimelineController {
     this.audio.reset();
     this.lastLocalSliderStep = -1;
     this.lastSyncedStep = -1;
+    this.lastFocusBlock = -1;
     debugState.push("runtime.clear", null);
   }
 
@@ -207,12 +227,6 @@ export class TimelineController {
       checkpointAudioMessages: message.checkpointAudioMessages,
       stepPatches: message.stepPatches,
     });
-    const block = this.blocks.getBlockByIndex(message.block);
-    if (block) {
-      void this.persistentBlocks.storeBlock(message.block, block).catch((error) => {
-        console.warn("[viser4d] Failed to persist chunk block.", error);
-      });
-    }
     this.afterBlockLoad(message.block);
   }
 
@@ -243,52 +257,30 @@ export class TimelineController {
     const activeBlock = this.blocks.blockIndexOf(currentStep);
     if (blockIndex === activeBlock && this.scene.appliedBlock === activeBlock) {
       this.scene.rebuildThrough(currentStep);
-      return;
+    } else {
+      const pendingStep = this.blocks.pendingStep;
+      if (pendingStep !== null && this.blocks.getBlock(pendingStep)) {
+        this.blocks.pendingStep = null;
+        this.engine.seek({ step: pendingStep });
+      }
     }
-    const pendingStep = this.blocks.pendingStep;
-    if (pendingStep === null || !this.blocks.getBlock(pendingStep)) {
-      return;
-    }
-    this.blocks.pendingStep = null;
-    this.engine.seek({ step: pendingStep });
+    this.refocusPreload(currentStep, true);
   }
 
-  private requestBlock(step: number): void {
-    const blockIndex = this.blocks.blockIndexOf(step);
-    void this.persistentBlocks
-      .loadBlock(blockIndex)
-      .then((block: LoadedBlock | null) => {
-        if (block) {
-          debugState.push("runtime.load_block.cache_hit", { block: blockIndex });
-          if (!this.blocks.hasBlockIndex(blockIndex)) {
-            this.blocks.restoreBlock(blockIndex, block);
-            this.afterBlockLoad(blockIndex);
-          }
-          return;
-        }
-        if (this.blocks.hasBlockIndex(blockIndex)) {
-          return;
-        }
-        debugState.push("runtime.load_block.cache_miss", { block: blockIndex });
-        this.sendRuntimeEvent({
-          type: "RuntimeBlockRequestMessage",
-          step,
-        });
-      })
-      .catch((error) => {
-        console.warn("[viser4d] Failed to read cached chunk block.", error);
-        if (this.blocks.hasBlockIndex(blockIndex)) {
-          return;
-        }
-        this.sendRuntimeEvent({
-          type: "RuntimeBlockRequestMessage",
-          step,
-        });
-      });
+  private requestBlockFromServer(blockIndex: number): void {
+    debugState.push("runtime.load_block.request", { block: blockIndex });
+    this.sendRuntimeEvent({
+      type: "RuntimeBlockRequestMessage",
+      blockIndex,
+    });
   }
 
-  private evictBlock(message: RuntimeEvictBlockMessage): void {
-    this.blocks.evictBlock(message.block, this.scene.appliedBlock);
+  private reportBlockDiscard(blockIndex: number): void {
+    debugState.push("runtime.block_discard", { block: blockIndex });
+    this.sendRuntimeEvent({
+      type: "RuntimeBlockDiscardMessage",
+      blockIndex,
+    });
   }
 
   private seek(message: RuntimeSeekMessage): void {
@@ -333,6 +325,9 @@ export class TimelineController {
       case "RuntimeConfigureMessage":
         this.configure(message);
         return;
+      case "RuntimeManifestsMessage":
+        this.applyManifests(message);
+        return;
       case "RuntimeClearMessage":
         this.clear();
         return;
@@ -341,9 +336,6 @@ export class TimelineController {
         return;
       case "RuntimePatchBlockMessage":
         this.patchBlock(message);
-        return;
-      case "RuntimeEvictBlockMessage":
-        this.evictBlock(message);
         return;
       case "RuntimeSeekMessage":
         this.seek(message);
@@ -416,6 +408,16 @@ export class TimelineController {
   private syncTimestepToServer(step: number, force = false): void {
     this.syncTimelineSlider(step, force);
     this.sendTimestepToServer(step, force);
+    this.refocusPreload(step);
+  }
+
+  private refocusPreload(step: number, force = false): void {
+    const blockIndex = this.blocks.blockIndexOf(this.clampStep(step));
+    if (!force && blockIndex === this.lastFocusBlock) {
+      return;
+    }
+    this.lastFocusBlock = blockIndex;
+    this.blocks.syncCurrentBlock(blockIndex);
   }
 
   private syncAdvancedTimesteps(
@@ -427,6 +429,7 @@ export class TimelineController {
     const nextDiscrete = Math.floor(nextStep);
     const numSteps = this.config.numSteps;
     this.syncTimelineSlider(nextDiscrete, forceFinal);
+    this.refocusPreload(nextDiscrete);
     if (nextDiscrete === previousDiscrete) {
       if (forceFinal) {
         this.sendTimestepToServer(nextDiscrete, true);

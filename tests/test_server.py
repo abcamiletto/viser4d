@@ -289,11 +289,6 @@ def test_client_playback_uses_current_server_config(
     monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
     monkeypatch.setattr(
         ClientPlaybackHandle,
-        "_sync_loaded_blocks",
-        lambda self, timestep, force=False: None,
-    )
-    monkeypatch.setattr(
-        ClientPlaybackHandle,
         "_send_runtime_message",
         lambda self, message: messages.append(message),
     )
@@ -332,11 +327,6 @@ def test_client_playback_syncs_existing_scene_overrides_on_init(
 ) -> None:
     monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
     monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
-    monkeypatch.setattr(
-        ClientPlaybackHandle,
-        "_sync_loaded_blocks",
-        lambda self, timestep, force=False: None,
-    )
     monkeypatch.setattr(
         ClientPlaybackHandle,
         "_send_runtime_message",

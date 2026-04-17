@@ -1,4 +1,5 @@
 import type { RuntimeMessage, RuntimeValue } from "../binary";
+import type { BlockManifest } from "./preloadPlanner";
 
 export type RuntimeConfig = {
   numSteps: number;
@@ -6,7 +7,8 @@ export type RuntimeConfig = {
   timelineFps: number;
   speed: number;
   loop: boolean;
-  chunkCacheVersion: string;
+  clientChunkCacheBytes: number;
+  blockManifests: BlockManifest[];
   timelineSliderUuid: string | null;
   speedSliderUuid: string | null;
   stepButtonsUuid: string | null;

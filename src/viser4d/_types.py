@@ -48,13 +48,21 @@ class AudioArrayPayload(TypedDict):
     data: str
 
 
+class BlockManifestPayload(TypedDict):
+    blockIndex: int
+    stepStart: int
+    stepStop: int
+    payloadByteSize: int | None
+
+
 class RuntimeConfig(TypedDict):
     numSteps: int
     blockSize: int
     timelineFps: float
     speed: float
     loop: bool
-    chunkCacheVersion: str
+    clientChunkCacheBytes: int
+    blockManifests: list[BlockManifestPayload]
 
 
 class ClientRuntimeConfig(RuntimeConfig):

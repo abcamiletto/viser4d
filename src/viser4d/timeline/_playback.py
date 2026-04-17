@@ -11,12 +11,13 @@ from .. import _viser_private as impl
 from .._hybrid import inflate_stored_message, inflate_stored_messages
 from .._runtime_messages import (
     RuntimeApplyMessageUpdateMessage,
+    RuntimeBlockDiscardMessage,
     RuntimeBlockRequestMessage,
     RuntimeClearMessage,
     RuntimeConfigureMessage,
-    RuntimeEvictBlockMessage,
     RuntimeEventMessage,
     RuntimeLoadBlockMessage,
+    RuntimeManifestsMessage,
     RuntimePatchBlockMessage,
     RuntimePauseMessage,
     RuntimePlaybackStateMessage,
@@ -33,6 +34,7 @@ from .._runtime_messages import (
     runtime_scene_messages,
 )
 from .._types import (
+    BlockManifestPayload,
     ClientRuntimeConfig,
     RuntimeBlockPatchPayload,
     RuntimeBlockPayload,
@@ -43,7 +45,7 @@ from .._types import (
 )
 from .._validation import require_positive_float
 from ._messages_util import extract_message_name
-from ._streaming import PreloadPlanner
+from ._streaming import BlockManifest
 
 if TYPE_CHECKING:
     from .._viser_private import ClientHandle
@@ -77,9 +79,52 @@ def _inflate_state_patch(patch: StoredStatePatch) -> RuntimeStatePatch:
     }
 
 
+def manifest_payload(manifest: BlockManifest) -> BlockManifestPayload:
+    return {
+        "blockIndex": manifest.block_index,
+        "stepStart": manifest.step_start,
+        "stepStop": manifest.step_stop,
+        "payloadByteSize": manifest.payload_byte_size,
+    }
+
+
 # ---------------------------------------------------------------------------
-# Block payload diffing
+# Block payload diffing and message building
 # ---------------------------------------------------------------------------
+
+
+def _build_load_block_message(payload: RuntimeBlockPayload) -> RuntimeLoadBlockMessage:
+    return RuntimeLoadBlockMessage(
+        block=payload["block"],
+        checkpointSceneEntries=_inflate_scene_entries(
+            payload["checkpointSceneEntries"]
+        ),
+        checkpointAudioMessages=runtime_scene_messages(
+            inflate_stored_messages(payload["checkpointAudioMessages"])
+        ),
+        stepPatches=[_inflate_state_patch(p) for p in payload["stepPatches"]],
+    )
+
+
+def _build_patch_block_message(
+    patch: RuntimeBlockPatchPayload,
+) -> RuntimePatchBlockMessage:
+    return RuntimePatchBlockMessage(
+        block=patch["block"],
+        checkpointScenePuts=_inflate_scene_entries(patch["checkpointScenePuts"]),
+        checkpointSceneDeletes=patch["checkpointSceneDeletes"],
+        checkpointAudioPuts=runtime_scene_messages(
+            inflate_stored_messages(patch["checkpointAudioPuts"])
+        ),
+        checkpointAudioDeletes=patch["checkpointAudioDeletes"],
+        stepPatchUpdates=[
+            {
+                "stepOffset": update["stepOffset"],
+                "patch": _inflate_state_patch(update["patch"]),
+            }
+            for update in patch["stepPatchUpdates"]
+        ],
+    )
 
 
 def _diff_block_payloads(
@@ -157,22 +202,23 @@ class ClientPlaybackHandle:
         self._speed = server.playback_speed
         self._is_playing = False
         self._current_timestep = 0
-        self._loaded_blocks: set[int] = set()
+        # Block index → last payload sent to the client (for patch diffing).
         self._loaded_block_payloads: dict[int, RuntimeBlockPayload] = {}
-        self._pending_block_loads: dict[int, Future[RuntimeBlockPayload]] = {}
+        # In-flight serializations. Removing an entry before completion
+        # cancels the send.
+        self._pending_requests: set[int] = set()
         self._pending_runtime_messages: list[impl.Message] = []
         self._runtime_ready = False
         self._lock = threading.RLock()
         self._create_gui(brand_color)
         self.sync_runtime_config()
-        self._sync_loaded_blocks(self._current_timestep, force=True)
-        self.seek(self._current_timestep)
+        self._send_runtime_message(RuntimeSeekMessage(step=self._current_timestep))
         self._sync_scene_overrides()
 
     @property
     def loaded_blocks(self) -> set[int]:
         with self._lock:
-            return set(self._loaded_blocks)
+            return set(self._loaded_block_payloads)
 
     @property
     def speed(self) -> float:
@@ -199,12 +245,10 @@ class ClientPlaybackHandle:
         t = self._require_timestep(t)
         with self._lock:
             self._current_timestep = t
-        self._sync_loaded_blocks(t)
         self._timeline_slider.value = t
         self._send_runtime_message(RuntimeSeekMessage(step=t))
 
     def refresh(self) -> None:
-        self._sync_loaded_blocks(self.current_timestep)
         self._send_runtime_message(RuntimeRefreshMessage())
 
     def set_speed(self, speed: float) -> None:
@@ -221,39 +265,32 @@ class ClientPlaybackHandle:
         max_step = self._server.num_steps - 1
         with self._lock:
             current_timestep = min(self._current_timestep, max_step)
-            previous_blocks = set(self._loaded_blocks)
-            stale_futures = list(self._pending_block_loads.values())
-            self._loaded_blocks = set()
-            self._loaded_block_payloads = {}
-            self._pending_block_loads = {}
-        for future in stale_futures:
-            future.result()
-        for block_index in sorted(previous_blocks):
-            self._send_runtime_message(RuntimeEvictBlockMessage(block=block_index))
+            self._current_timestep = current_timestep
         self._timeline_slider.max = max_step
-        self.sync_runtime_config()
-        self.seek(current_timestep)
+        self._reset_client(current_timestep)
 
     def clear(self) -> None:
         with self._lock:
-            stale_futures = list(self._pending_block_loads.values())
             self._speed = 1.0
             self._is_playing = False
-            self._loaded_blocks = set()
-            self._loaded_block_payloads = {}
-            self._pending_block_loads = {}
+            self._current_timestep = 0
             if not self._runtime_ready:
                 self._pending_runtime_messages = []
-        for future in stale_futures:
-            future.result()
         self._speed_slider.value = self._speed
-        self._send_runtime_message(RuntimeClearMessage())
-        self.sync_runtime_config()
-        self.seek(0)
-        self._sync_scene_overrides()
+        self._reset_client(0)
+
+    def _reset_client(self, target_step: int) -> None:
+        # Hold the lock across reset-and-sends so a late block completion
+        # can't interleave its load between our clear and configure.
+        with self._lock:
+            self._loaded_block_payloads = {}
+            self._pending_requests.clear()
+            self._send_runtime_message(RuntimeClearMessage())
+            self.sync_runtime_config()
+            self._send_runtime_message(RuntimeSeekMessage(step=target_step))
+            self._sync_scene_overrides()
 
     def apply_message_update(self, key: str, message: StoredMessage) -> None:
-        """Forward one keyed live stored message into the browser runtime."""
         self._send_runtime_message(
             RuntimeApplyMessageUpdateMessage(
                 key=key,
@@ -262,61 +299,31 @@ class ClientPlaybackHandle:
         )
 
     def load_block(self, payload: RuntimeBlockPayload) -> None:
-        """Inflate and send one timeline block payload to the browser runtime."""
+        """Record residency and send a full block payload to the client."""
+        message = _build_load_block_message(payload)
         with self._lock:
             self._loaded_block_payloads[payload["block"]] = payload
-        self._send_runtime_message(
-            RuntimeLoadBlockMessage(
-                block=payload["block"],
-                checkpointSceneEntries=_inflate_scene_entries(
-                    payload["checkpointSceneEntries"]
-                ),
-                checkpointAudioMessages=runtime_scene_messages(
-                    inflate_stored_messages(payload["checkpointAudioMessages"])
-                ),
-                stepPatches=[_inflate_state_patch(p) for p in payload["stepPatches"]],
-            )
-        )
+            self._send_runtime_message(message)
 
     def update_block(self, payload: RuntimeBlockPayload) -> None:
-        """Patch a previously sent block payload in place when possible."""
+        """Push a patch to a client-held block; no-op if the client has evicted."""
+        block_index = payload["block"]
         with self._lock:
-            previous_payload = self._loaded_block_payloads.get(payload["block"])
-        if previous_payload is None:
-            self.load_block(payload)
-            return
+            if block_index not in self._loaded_block_payloads:
+                return
+            previous_payload = self._loaded_block_payloads[block_index]
         patch = _diff_block_payloads(previous_payload, payload)
-        with self._lock:
-            self._loaded_block_payloads[payload["block"]] = payload
         if patch is None:
             return
-        self._send_runtime_message(
-            RuntimePatchBlockMessage(
-                block=patch["block"],
-                checkpointScenePuts=_inflate_scene_entries(
-                    patch["checkpointScenePuts"]
-                ),
-                checkpointSceneDeletes=patch["checkpointSceneDeletes"],
-                checkpointAudioPuts=runtime_scene_messages(
-                    inflate_stored_messages(patch["checkpointAudioPuts"])
-                ),
-                checkpointAudioDeletes=patch["checkpointAudioDeletes"],
-                stepPatchUpdates=[
-                    {
-                        "stepOffset": update["stepOffset"],
-                        "patch": _inflate_state_patch(update["patch"]),
-                    }
-                    for update in patch["stepPatchUpdates"]
-                ],
-            )
-        )
-
-    def evict_block(self, block_index: int) -> None:
-        """Evict one block from this client's cache."""
+        message = _build_patch_block_message(patch)
         with self._lock:
-            self._loaded_blocks.discard(block_index)
-            self._loaded_block_payloads.pop(block_index, None)
-        self._send_runtime_message(RuntimeEvictBlockMessage(block=block_index))
+            if block_index not in self._loaded_block_payloads:
+                return
+            self._loaded_block_payloads[block_index] = payload
+            self._send_runtime_message(message)
+
+    def send_manifests(self, manifests: list[BlockManifestPayload]) -> None:
+        self._send_runtime_message(RuntimeManifestsMessage(blockManifests=manifests))
 
     def handle_runtime_event(self, message: RuntimeEventMessage) -> None:
         if isinstance(message, RuntimeReadyMessage):
@@ -330,9 +337,14 @@ class ClientPlaybackHandle:
                 impl.queue_client_message(self._client, pending_message)
             return
         if isinstance(message, RuntimeBlockRequestMessage):
-            if self._ignore_invalid_runtime_step(message.step):
+            self._handle_block_request(message.blockIndex)
+            return
+        if isinstance(message, RuntimeBlockDiscardMessage):
+            if not self._valid_block_index(message.blockIndex):
                 return
-            self._sync_loaded_blocks(message.step, force=True)
+            with self._lock:
+                self._loaded_block_payloads.pop(message.blockIndex, None)
+                self._pending_requests.discard(message.blockIndex)
             return
         if isinstance(message, RuntimeTimestepMessage):
             if self._ignore_invalid_runtime_step(message.step):
@@ -340,7 +352,6 @@ class ClientPlaybackHandle:
             timestep = message.step
             with self._lock:
                 self._current_timestep = timestep
-            self._sync_loaded_blocks(timestep)
             self._server._dispatch_timestep_change(self._client, timestep)
             return
         if isinstance(message, RuntimeSpeedMessage):
@@ -358,6 +369,10 @@ class ClientPlaybackHandle:
         with self._lock:
             speed = self._speed
         loop = self._server.loop
+        manifests = [
+            manifest_payload(manifest)
+            for manifest in self._server._timeline.block_manifests()
+        ]
         self._send_runtime_message(
             RuntimeConfigureMessage(
                 **ClientRuntimeConfig(
@@ -366,7 +381,8 @@ class ClientPlaybackHandle:
                     timelineFps=self._server.fps,
                     speed=speed,
                     loop=loop,
-                    chunkCacheVersion=self._server.client_chunk_cache_version,
+                    clientChunkCacheBytes=self._server.client_chunk_cache_bytes,
+                    blockManifests=manifests,
                     timelineSliderUuid=impl.gui_uuid(self._timeline_slider),
                     speedSliderUuid=impl.gui_uuid(self._speed_slider),
                     stepButtonsUuid=impl.gui_uuid(self._step_buttons),
@@ -418,69 +434,56 @@ class ClientPlaybackHandle:
         )
         return True
 
-    def _sync_loaded_blocks(self, timestep: int, *, force: bool = False) -> None:
-        timeline = self._server._timeline
-        current_block = timeline.block_index_for_step(timestep)
-        manifests = timeline.block_manifests()
-        with self._lock:
-            previous = set(self._loaded_blocks)
-            pending = set(self._pending_block_loads)
-        plan = PreloadPlanner.plan(
-            current_block,
-            manifests,
-            self._server.client_chunk_cache_bytes,
-            loaded_blocks=previous,
-            pending_blocks=pending,
-            force=force,
-        )
-        with self._lock:
-            self._loaded_blocks = set(plan.desired_blocks)
-            for block_index in plan.evictions:
-                self._loaded_block_payloads.pop(block_index, None)
-        for block_index in plan.required_loads:
-            self._queue_block_load(block_index)
-        for block_index in plan.speculative_loads:
-            self._queue_block_load(block_index)
-        for block_index in plan.evictions:
-            self._send_runtime_message(RuntimeEvictBlockMessage(block=block_index))
+    def _valid_block_index(self, block_index: int) -> bool:
+        return 0 <= block_index < self._server._timeline.block_count
 
-    def _queue_block_load(self, block_index: int) -> None:
-        with self._lock:
-            if block_index in self._pending_block_loads:
-                return
-            future = impl.server_thread_executor(self._server).submit(
-                self._server._timeline.block_payload, block_index
+    def _handle_block_request(self, block_index: int) -> None:
+        if not self._valid_block_index(block_index):
+            warnings.warn(
+                f"Ignoring runtime block request with invalid "
+                f"blockIndex={block_index}.",
+                RuntimeWarning,
+                stacklevel=3,
             )
-            self._pending_block_loads[block_index] = future
+            return
+        with self._lock:
+            if block_index in self._pending_requests:
+                return
+            self._pending_requests.add(block_index)
+        executor = impl.server_thread_executor(self._server)
+        future = executor.submit(self._server._timeline.block_payload, block_index)
         future.add_done_callback(
             lambda f: self._server.get_event_loop().call_soon_threadsafe(
-                self._finish_block_load, block_index, f
+                self._finish_block_request, block_index, f
             )
         )
 
-    def _finish_block_load(
+    def _finish_block_request(
         self,
         block_index: int,
         future: Future[RuntimeBlockPayload],
     ) -> None:
-        with self._lock:
-            if self._pending_block_loads.get(block_index) is not future:
-                return
-            self._pending_block_loads.pop(block_index)
+        if future.exception() is not None:
+            with self._lock:
+                self._pending_requests.discard(block_index)
+            return
         payload = future.result()
+        message = _build_load_block_message(payload)
         with self._lock:
-            should_send = block_index in self._loaded_blocks
-            current_timestep = self._current_timestep
-        if should_send:
-            self.load_block(payload)
-        self._sync_loaded_blocks(current_timestep)
+            if block_index not in self._pending_requests:
+                return
+            self._pending_requests.discard(block_index)
+            self._loaded_block_payloads[block_index] = payload
+            self._send_runtime_message(message)
 
     def _send_runtime_message(self, message: impl.Message) -> None:
+        # Enqueue happens inside the lock so callers that hold it get
+        # on-wire ordering matching the state transitions they committed.
         with self._lock:
             if not self._runtime_ready:
                 self._pending_runtime_messages.append(message)
                 return
-        impl.queue_client_message(self._client, message)
+            impl.queue_client_message(self._client, message)
 
 
 _PLAYBACK_ORDER = -1e9
