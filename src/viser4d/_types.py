@@ -38,6 +38,7 @@ class RuntimeConfig(TypedDict):
     timelineFps: float
     speed: float
     loop: bool
+    chunkCacheVersion: str
 
 
 class ClientRuntimeConfig(RuntimeConfig):

@@ -228,6 +228,7 @@ class ClientPlaybackHandle:
                     timelineFps=self._server.fps,
                     speed=speed,
                     loop=loop,
+                    chunkCacheVersion=self._server.client_chunk_cache_version,
                     timelineSliderUuid=impl.gui_uuid(self._timeline_slider),
                     speedSliderUuid=impl.gui_uuid(self._speed_slider),
                     stepButtonsUuid=impl.gui_uuid(self._step_buttons),

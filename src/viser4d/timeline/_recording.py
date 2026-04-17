@@ -169,6 +169,7 @@ class SceneRecorder:
             raise RuntimeError(active_session_error)
         with self._timeline_lock:
             old_timeline = self._server._timeline
+            self._server.bump_client_chunk_cache_version()
             self._server._timeline = replace(old_timeline)
         return old_timeline
 
@@ -194,9 +195,11 @@ class SceneRecorder:
             self._refresh_timer = None
         if changed_block is None:
             return
+        self._server.bump_client_chunk_cache_version()
         payloads: dict[int, RuntimeBlockPayload] = {}
         with self._timeline_lock:
             for playback in self._server.get_client_playbacks().values():
+                playback.sync_runtime_config()
                 for block_index in sorted(playback.loaded_blocks):
                     if block_index < changed_block:
                         continue

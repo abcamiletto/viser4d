@@ -55,6 +55,7 @@ class RuntimeConfigureMessage(_RuntimeControlMessage):
     timelineFps: float
     speed: float
     loop: bool
+    chunkCacheVersion: str
     timelineSliderUuid: str
     speedSliderUuid: str
     stepButtonsUuid: str
