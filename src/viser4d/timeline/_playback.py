@@ -12,7 +12,6 @@ from .._hybrid import inflate_stored_message, inflate_stored_messages
 from .._runtime_messages import (
     RuntimeApplyMessageUpdateMessage,
     RuntimeBlockDiscardMessage,
-    RuntimeBlockManifest,
     RuntimeBlockRequestMessage,
     RuntimeClearMessage,
     RuntimeConfigureMessage,
@@ -35,6 +34,7 @@ from .._runtime_messages import (
     runtime_scene_messages,
 )
 from .._types import (
+    BlockManifestPayload,
     ClientRuntimeConfig,
     RuntimeBlockPatchPayload,
     RuntimeBlockPayload,
@@ -79,7 +79,7 @@ def _inflate_state_patch(patch: StoredStatePatch) -> RuntimeStatePatch:
     }
 
 
-def manifest_payload(manifest: BlockManifest) -> RuntimeBlockManifest:
+def manifest_payload(manifest: BlockManifest) -> BlockManifestPayload:
     return {
         "blockIndex": manifest.block_index,
         "stepStart": manifest.step_start,
@@ -312,19 +312,8 @@ class ClientPlaybackHandle:
             )
         )
 
-    def send_manifests(
-        self,
-        manifests: list[RuntimeBlockManifest] | None = None,
-    ) -> None:
-        """Push block manifests to the client."""
-        if manifests is None:
-            manifests = [
-                manifest_payload(manifest)
-                for manifest in self._server._timeline.block_manifests()
-            ]
-        self._send_runtime_message(
-            RuntimeManifestsMessage(blockManifests=manifests)
-        )
+    def send_manifests(self, manifests: list[BlockManifestPayload]) -> None:
+        self._send_runtime_message(RuntimeManifestsMessage(blockManifests=manifests))
 
     def handle_runtime_event(self, message: RuntimeEventMessage) -> None:
         if isinstance(message, RuntimeReadyMessage):

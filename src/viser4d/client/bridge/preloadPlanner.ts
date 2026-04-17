@@ -6,15 +6,9 @@ export type BlockManifest = {
 };
 
 export type PreloadPlan = {
-  desired: number[];
   required: number[];
   speculative: number[];
   evictions: number[];
-};
-
-type LoadedBlocks = {
-  has(block: number): boolean;
-  keys(): Iterable<number>;
 };
 
 /**
@@ -23,21 +17,21 @@ type LoadedBlocks = {
  * Required blocks are the current block plus its predecessor; speculative
  * blocks are filled forward up to the byte budget. Unknown-size manifests
  * claim one speculative slot so the first fetch can populate their size.
- * Anything outside the desired set is an eviction candidate.
+ * Anything outside the required ∪ speculative set is an eviction candidate.
  */
 export function planPreload(
   currentBlock: number,
   manifests: readonly BlockManifest[],
   budgetBytes: number,
-  loaded: LoadedBlocks,
+  loaded: ReadonlyMap<number, unknown> | ReadonlySet<number>,
 ): PreloadPlan {
   const blockCount = manifests.length;
   if (blockCount === 0) {
-    return { desired: [], required: [], speculative: [], evictions: [] };
+    return { required: [], speculative: [], evictions: [] };
   }
 
   const focus = Math.max(0, Math.min(blockCount - 1, currentBlock));
-  const required: number[] = [focus];
+  const required = [focus];
   let used = manifests[focus].payloadByteSize ?? 0;
 
   const previous = (focus - 1 + blockCount) % blockCount;
@@ -78,10 +72,5 @@ export function planPreload(
   }
   evictions.sort((a, b) => a - b);
 
-  return {
-    desired: [...required, ...speculative],
-    required,
-    speculative,
-    evictions,
-  };
+  return { required, speculative, evictions };
 }

@@ -10,7 +10,6 @@ from . import _viser_private as impl
 from ._types import BlockManifestPayload, RuntimePayload
 
 RuntimeSceneMessage = NewType("RuntimeSceneMessage", RuntimePayload)
-RuntimeBlockManifest = BlockManifestPayload
 
 
 def runtime_scene_message(message: RuntimePayload) -> RuntimeSceneMessage:
@@ -74,7 +73,7 @@ class RuntimeConfigureMessage(_RuntimeControlMessage):
     loop: bool
     chunkCacheVersion: str
     clientChunkCacheBytes: int
-    blockManifests: list[RuntimeBlockManifest]
+    blockManifests: list[BlockManifestPayload]
     timelineSliderUuid: str
     speedSliderUuid: str
     stepButtonsUuid: str
@@ -84,7 +83,7 @@ class RuntimeConfigureMessage(_RuntimeControlMessage):
 
 @dataclasses.dataclass
 class RuntimeManifestsMessage(_RuntimeControlMessage):
-    blockManifests: list[RuntimeBlockManifest]
+    blockManifests: list[BlockManifestPayload]
 
 
 @dataclasses.dataclass

@@ -21,7 +21,7 @@ export class BlockCache {
   blockSize = 32;
   pendingStep: number | null = null;
   private budgetBytes = 0;
-  private manifests: BlockManifest[] = [];
+  private manifests: readonly BlockManifest[] = [];
   private blocks = new Map<number, LoadedBlock>();
   private pendingRequests = new Set<number>();
 
@@ -89,7 +89,7 @@ export class BlockCache {
   }
 
   setManifests(manifests: readonly BlockManifest[]): void {
-    this.manifests = manifests.map((manifest) => ({ ...manifest }));
+    this.manifests = manifests;
   }
 
   setBudgetBytes(bytes: number): void {
