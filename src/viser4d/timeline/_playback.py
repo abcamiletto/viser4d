@@ -302,23 +302,14 @@ class ClientPlaybackHandle:
         )
 
     def load_block(self, payload: RuntimeBlockPayload) -> None:
-        """Record residency and send a full block payload to the client.
-
-        Used by the recorder's update_block fallback when the client restored
-        a block from persistent cache and the server has no snapshot to diff.
-        """
+        """Record residency and send a full block payload to the client."""
         message = _build_load_block_message(payload)
         with self._lock:
             self._loaded_block_payloads[payload["block"]] = payload
             self._send_runtime_message(message)
 
     def update_block(self, payload: RuntimeBlockPayload) -> None:
-        """Push a recording mutation to a block the client is already holding.
-
-        No-op for blocks the client has evicted. Falls back to a full load
-        when the server has no prior snapshot for the block (the client
-        restored it from persistent cache).
-        """
+        """Push a mutation to a client-held block; full load if no snapshot."""
         block_index = payload["block"]
         with self._lock:
             if block_index not in self._loaded_block_payloads:
