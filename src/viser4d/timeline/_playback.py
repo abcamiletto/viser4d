@@ -90,8 +90,42 @@ def manifest_payload(manifest: BlockManifest) -> BlockManifestPayload:
 
 
 # ---------------------------------------------------------------------------
-# Block payload diffing
+# Block payload diffing and message building
 # ---------------------------------------------------------------------------
+
+
+def _build_load_block_message(payload: RuntimeBlockPayload) -> RuntimeLoadBlockMessage:
+    return RuntimeLoadBlockMessage(
+        block=payload["block"],
+        checkpointSceneEntries=_inflate_scene_entries(
+            payload["checkpointSceneEntries"]
+        ),
+        checkpointAudioMessages=runtime_scene_messages(
+            inflate_stored_messages(payload["checkpointAudioMessages"])
+        ),
+        stepPatches=[_inflate_state_patch(p) for p in payload["stepPatches"]],
+    )
+
+
+def _build_patch_block_message(
+    patch: RuntimeBlockPatchPayload,
+) -> RuntimePatchBlockMessage:
+    return RuntimePatchBlockMessage(
+        block=patch["block"],
+        checkpointScenePuts=_inflate_scene_entries(patch["checkpointScenePuts"]),
+        checkpointSceneDeletes=patch["checkpointSceneDeletes"],
+        checkpointAudioPuts=runtime_scene_messages(
+            inflate_stored_messages(patch["checkpointAudioPuts"])
+        ),
+        checkpointAudioDeletes=patch["checkpointAudioDeletes"],
+        stepPatchUpdates=[
+            {
+                "stepOffset": update["stepOffset"],
+                "patch": _inflate_state_patch(update["patch"]),
+            }
+            for update in patch["stepPatchUpdates"]
+        ],
+    )
 
 
 def _diff_block_payloads(
@@ -273,61 +307,44 @@ class ClientPlaybackHandle:
         )
 
     def load_block(self, payload: RuntimeBlockPayload) -> None:
-        """Inflate and send one timeline block payload to the browser runtime."""
+        """Record residency and send a full block payload to the client.
+
+        Used by the recorder's update_block fallback when the client restored
+        a block from persistent cache and the server has no snapshot to diff.
+        """
+        message = _build_load_block_message(payload)
         with self._lock:
             self._loaded_block_payloads[payload["block"]] = payload
-        self._send_runtime_message(
-            RuntimeLoadBlockMessage(
-                block=payload["block"],
-                checkpointSceneEntries=_inflate_scene_entries(
-                    payload["checkpointSceneEntries"]
-                ),
-                checkpointAudioMessages=runtime_scene_messages(
-                    inflate_stored_messages(payload["checkpointAudioMessages"])
-                ),
-                stepPatches=[_inflate_state_patch(p) for p in payload["stepPatches"]],
-            )
-        )
+            self._send_runtime_message(message)
 
     def update_block(self, payload: RuntimeBlockPayload) -> None:
-        """Push a patch for a block the client is already holding.
+        """Push a recording mutation to a block the client is already holding.
 
-        Skips blocks the client has evicted. If the client restored the block
-        from its persistent cache (so the server has no previous payload to
-        diff), send a full load instead.
+        No-op for blocks the client has evicted. Falls back to a full load
+        when the server has no prior snapshot for the block (the client
+        restored it from persistent cache).
         """
         block_index = payload["block"]
         with self._lock:
             if block_index not in self._loaded_block_payloads:
                 return
             previous_payload = self._loaded_block_payloads[block_index]
-            self._loaded_block_payloads[block_index] = payload
         if previous_payload is None:
             self.load_block(payload)
             return
         patch = _diff_block_payloads(previous_payload, payload)
         if patch is None:
+            with self._lock:
+                if block_index in self._loaded_block_payloads:
+                    self._loaded_block_payloads[block_index] = payload
             return
-        self._send_runtime_message(
-            RuntimePatchBlockMessage(
-                block=patch["block"],
-                checkpointScenePuts=_inflate_scene_entries(
-                    patch["checkpointScenePuts"]
-                ),
-                checkpointSceneDeletes=patch["checkpointSceneDeletes"],
-                checkpointAudioPuts=runtime_scene_messages(
-                    inflate_stored_messages(patch["checkpointAudioPuts"])
-                ),
-                checkpointAudioDeletes=patch["checkpointAudioDeletes"],
-                stepPatchUpdates=[
-                    {
-                        "stepOffset": update["stepOffset"],
-                        "patch": _inflate_state_patch(update["patch"]),
-                    }
-                    for update in patch["stepPatchUpdates"]
-                ],
-            )
-        )
+        message = _build_patch_block_message(patch)
+        with self._lock:
+            if block_index not in self._loaded_block_payloads:
+                # Reset raced us; drop the patch.
+                return
+            self._loaded_block_payloads[block_index] = payload
+            self._send_runtime_message(message)
 
     def send_manifests(self, manifests: list[BlockManifestPayload]) -> None:
         self._send_runtime_message(
@@ -475,22 +492,32 @@ class ClientPlaybackHandle:
         block_index: int,
         future: Future[RuntimeBlockPayload],
     ) -> None:
+        if future.exception() is not None:
+            # Timeline was replaced mid-serialization.
+            with self._lock:
+                self._pending_requests.discard(block_index)
+            return
+        payload = future.result()
+        message = _build_load_block_message(payload)
         with self._lock:
             if block_index not in self._pending_requests:
                 # Cancelled by a discard or a clear/set_steps reset.
                 return
             self._pending_requests.discard(block_index)
-            if future.exception() is not None:
-                # Timeline was replaced mid-serialization; drop the result.
-                return
-            self.load_block(future.result())
+            self._loaded_block_payloads[block_index] = payload
+            self._send_runtime_message(message)
 
     def _send_runtime_message(self, message: impl.Message) -> None:
+        # Callers hold self._lock when they need enqueue ordering to be
+        # serialized with other state mutations (e.g. _reset_client). The
+        # RLock is reentrant for the same thread, and we deliberately keep
+        # the enqueue inside that held lock so the on-wire order matches the
+        # state transitions we committed to.
         with self._lock:
             if not self._runtime_ready:
                 self._pending_runtime_messages.append(message)
                 return
-        impl.queue_client_message(self._client, message)
+            impl.queue_client_message(self._client, message)
 
 
 _PLAYBACK_ORDER = -1e9
