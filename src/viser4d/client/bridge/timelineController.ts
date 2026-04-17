@@ -2,6 +2,7 @@ import type { RuntimeMessage, RuntimeValue } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { isAudioMessage } from "../audio/messages";
 import { BlockCache } from "./blockCache";
+import type { LoadedBlock } from "./blockState";
 import {
   isRuntimeControlMessage,
   type RuntimeApplyMessageUpdateMessage,
@@ -10,14 +11,14 @@ import {
   type RuntimeEventMessage,
   type RuntimeEvictBlockMessage,
   type RuntimeLoadBlockMessage,
+  type RuntimePatchBlockMessage,
   type RuntimePlayMessage,
   type RuntimeSeekMessage,
   type RuntimeSetSpeedMessage,
 } from "./generatedRuntimeMessages";
-import { PersistentBlockStore } from "./persistentBlockStore";
 import { PlaybackEngine } from "./playbackEngine";
+import { PersistentBlockStore } from "./persistentBlockStore";
 import { SceneApplicator } from "./sceneApplicator";
-import type { LoadedBlock } from "./blockCache";
 import { type GuiUpdateMessage, type RuntimeConfig } from "./protocol";
 
 type TimelineControllerIO = {
@@ -75,8 +76,8 @@ export class TimelineController {
     () => this.engine.getTransportStep(),
     (event, payload) => debugState.push(event, payload),
   );
-  private readonly blocks: BlockCache = new BlockCache((blockIndex, step) =>
-    this.requestBlock(blockIndex, step),
+  private readonly blocks: BlockCache = new BlockCache((step) =>
+    this.requestBlock(step),
   );
   private readonly scene: SceneApplicator = new SceneApplicator(
     (messages) => this.io.pushMessages(messages),
@@ -201,46 +202,67 @@ export class TimelineController {
   }
 
   private loadBlock(message: RuntimeLoadBlockMessage): void {
-    const block = {
-      checkpointMessages: message.checkpointMessages,
-      stepMessages: message.stepMessages,
-    } satisfies LoadedBlock;
-    this.applyLoadedBlock(message.block, block);
-    void this.persistentBlocks.storeBlock(message.block, block).catch((error) => {
-      console.warn("[viser4d] Failed to persist chunk block.", error);
+    this.blocks.loadBlock(message.block, {
+      checkpointSceneEntries: message.checkpointSceneEntries,
+      checkpointAudioMessages: message.checkpointAudioMessages,
+      stepPatches: message.stepPatches,
     });
+    const block = this.blocks.getBlockByIndex(message.block);
+    if (block) {
+      void this.persistentBlocks.storeBlock(message.block, block).catch((error) => {
+        console.warn("[viser4d] Failed to persist chunk block.", error);
+      });
+    }
+    this.afterBlockLoad(message.block);
   }
 
-  private applyLoadedBlock(blockIndex: number, block: LoadedBlock): void {
+  private patchBlock(message: RuntimePatchBlockMessage): void {
     const currentStep = this.currentStep();
-    this.blocks.loadBlock(blockIndex, block);
+    const patched = this.blocks.patchBlock(message.block, {
+      checkpointScenePuts: message.checkpointScenePuts,
+      checkpointSceneDeletes: message.checkpointSceneDeletes,
+      checkpointAudioPuts: message.checkpointAudioPuts,
+      checkpointAudioDeletes: message.checkpointAudioDeletes,
+      stepPatchUpdates: message.stepPatchUpdates,
+    });
+    if (!patched) {
+      return;
+    }
+    debugState.push("runtime.patch_block", {
+      block: message.block,
+      stepPatchUpdates: message.stepPatchUpdates.length,
+    });
     const activeBlock = this.blocks.blockIndexOf(currentStep);
-    const shouldRebuildCurrentBlock =
-      blockIndex === activeBlock && this.scene.appliedBlock === activeBlock;
-    if (shouldRebuildCurrentBlock) {
+    if (message.block === activeBlock && this.scene.appliedBlock === activeBlock) {
+      this.scene.rebuildThrough(currentStep);
+    }
+  }
+
+  private afterBlockLoad(blockIndex: number): void {
+    const currentStep = this.currentStep();
+    const activeBlock = this.blocks.blockIndexOf(currentStep);
+    if (blockIndex === activeBlock && this.scene.appliedBlock === activeBlock) {
       this.scene.rebuildThrough(currentStep);
       return;
     }
     const pendingStep = this.blocks.pendingStep;
-    if (pendingStep === null) {
-      return;
-    }
-    const pendingBlock = this.blocks.getBlock(pendingStep);
-    if (!pendingBlock) {
+    if (pendingStep === null || !this.blocks.getBlock(pendingStep)) {
       return;
     }
     this.blocks.pendingStep = null;
     this.engine.seek({ step: pendingStep });
   }
 
-  private requestBlock(blockIndex: number, step: number): void {
+  private requestBlock(step: number): void {
+    const blockIndex = this.blocks.blockIndexOf(step);
     void this.persistentBlocks
       .loadBlock(blockIndex)
-      .then((block) => {
+      .then((block: LoadedBlock | null) => {
         if (block) {
           debugState.push("runtime.load_block.cache_hit", { block: blockIndex });
           if (!this.blocks.hasBlockIndex(blockIndex)) {
-            this.applyLoadedBlock(blockIndex, block);
+            this.blocks.restoreBlock(blockIndex, block);
+            this.afterBlockLoad(blockIndex);
           }
           return;
         }
@@ -294,6 +316,7 @@ export class TimelineController {
     const updatedMessage = message.message;
     const name = typeof updatedMessage.name === "string" ? updatedMessage.name : null;
     debugState.push("runtime.apply_message_update", {
+      key: message.key,
       type: updatedMessage.type,
       name,
       step: currentStep,
@@ -302,7 +325,7 @@ export class TimelineController {
       this.audio.applyLiveMessages(currentStep, [updatedMessage]);
       return;
     }
-    this.io.pushMessages([updatedMessage]);
+    this.scene.applyLiveMessage(currentStep, message.key, updatedMessage);
   }
 
   private handleRuntimeMessage(message: RuntimeControlMessage): void {
@@ -315,6 +338,9 @@ export class TimelineController {
         return;
       case "RuntimeLoadBlockMessage":
         this.loadBlock(message);
+        return;
+      case "RuntimePatchBlockMessage":
+        this.patchBlock(message);
         return;
       case "RuntimeEvictBlockMessage":
         this.evictBlock(message);

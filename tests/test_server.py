@@ -14,9 +14,17 @@ import viser4d
 from viser4d import _server as server_module
 from viser4d import _runtime as runtime_module
 from viser4d._runtime_messages import (
+    RuntimeApplyMessageUpdateMessage,
     RuntimePlayMessage,
     RuntimeReadyMessage,
     RuntimeSetSpeedMessage,
+)
+from viser4d._types import StoredMessage
+from viser4d.timeline._checkpoint import step_patch_messages
+from viser4d.timeline._messages_util import (
+    TimelineStep,
+    scene_delete_state_key,
+    scene_entries_for_message,
 )
 from viser4d.timeline._playback import ClientPlaybackHandle
 
@@ -40,6 +48,23 @@ def _fake_create_gui(
     self._step_buttons = SimpleNamespace()
     self._play_button = SimpleNamespace()
     self._pause_button = SimpleNamespace()
+
+
+def _checkpoint_position(
+    payload: object,
+    name: str,
+) -> tuple[float, float, float]:
+    payload_dict = cast(dict[str, object], payload)
+    entries = cast(list[dict[str, object]], payload_dict["checkpointSceneEntries"])
+    for entry in entries:
+        message = cast(Any, entry["message"])
+        if (
+            message.payload.get("type") != "SetPositionMessage"
+            or message.payload.get("name") != name
+        ):
+            continue
+        return tuple(cast(list[float], message.payload["position"]))  # type: ignore[return-value]
+    raise AssertionError(f"Missing checkpoint position for {name!r}.")
 
 
 def test_server_does_not_expose_audio_api() -> None:
@@ -275,7 +300,13 @@ def test_client_playback_uses_current_server_config(
 
     server = cast(
         Any,
-        SimpleNamespace(loop=True, playback_speed=2.0, num_steps=2, fps=1.0),
+        SimpleNamespace(
+            loop=True,
+            playback_speed=2.0,
+            num_steps=2,
+            fps=1.0,
+            _timeline=SimpleNamespace(scene_override_items=lambda: ()),
+        ),
     )
     client = cast(Any, SimpleNamespace(gui=None))
     messages: list[Any] = []
@@ -294,6 +325,137 @@ def test_client_playback_uses_current_server_config(
     assert isinstance(messages[-1], RuntimeSetSpeedMessage)
     assert messages[-1].speed == 0.5
     assert messages[-1].loop is False
+
+
+def test_client_playback_syncs_existing_scene_overrides_on_init(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ClientPlaybackHandle, "_create_gui", _fake_create_gui)
+    monkeypatch.setattr(ClientPlaybackHandle, "sync_runtime_config", lambda self: None)
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_sync_loaded_blocks",
+        lambda self, timestep, force=False: None,
+    )
+    monkeypatch.setattr(
+        ClientPlaybackHandle,
+        "_send_runtime_message",
+        lambda self, message: messages.append(message),
+    )
+
+    override = StoredMessage(
+        payload={
+            "type": "SetPositionMessage",
+            "name": "/frame",
+            "position": [1.0, 2.0, 3.0],
+        }
+    )
+    [override_entry], _ = scene_entries_for_message(override)
+    server = cast(
+        Any,
+        SimpleNamespace(
+            loop=True,
+            playback_speed=1.0,
+            num_steps=2,
+            fps=1.0,
+            _timeline=SimpleNamespace(
+                scene_override_items=lambda: ((override_entry["key"], override),)
+            ),
+        ),
+    )
+    client = cast(Any, SimpleNamespace(gui=None))
+    messages: list[Any] = []
+
+    ClientPlaybackHandle(server, client)
+
+    override_messages = [
+        message
+        for message in messages
+        if isinstance(message, RuntimeApplyMessageUpdateMessage)
+    ]
+    assert len(override_messages) == 1
+    assert override_messages[0].key == override_entry["key"]
+    assert override_messages[0].message["type"] == "SetPositionMessage"
+
+
+def test_live_scene_removals_are_forwarded_without_block_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = viser4d.Viser4dServer(num_steps=4, port=0, verbose=False)
+
+    class FakePlayback:
+        def __init__(self) -> None:
+            self.updates: list[tuple[str, object]] = []
+
+        def apply_message_update(self, key: str, message: object) -> None:
+            self.updates.append((key, message))
+
+    refresh_calls: list[int] = []
+    monkeypatch.setattr(
+        server._recorder,
+        "_queue_client_block_refresh",
+        lambda changed_block, **kwargs: refresh_calls.append(changed_block),
+    )
+
+    try:
+        with server.at(0) as timeline:
+            frame = timeline.scene.add_frame("/frame")
+
+        playback = FakePlayback()
+        with server._client_playbacks_lock:
+            server._client_playbacks[123] = cast(Any, playback)
+
+        refresh_calls.clear()
+        frame.remove()
+
+        assert refresh_calls == []
+        assert len(playback.updates) == 1
+        key, message = playback.updates[0]
+        assert key == scene_delete_state_key("/frame")
+        assert getattr(message, "payload")["type"] == "RemoveSceneNodeMessage"
+    finally:
+        with server._client_playbacks_lock:
+            server._client_playbacks.pop(123, None)
+        server.stop()
+
+
+def test_step_patch_messages_materialize_in_runtime_order() -> None:
+    step = TimelineStep(
+        scene_puts={
+            "child-position": StoredMessage(
+                payload={
+                    "type": "SetPositionMessage",
+                    "name": "/root/child",
+                    "position": [1.0, 2.0, 3.0],
+                }
+            ),
+            "child-create": StoredMessage(
+                payload={
+                    "type": "FrameMessage",
+                    "name": "/root/child",
+                    "props": {},
+                }
+            ),
+            "root-create": StoredMessage(
+                payload={
+                    "type": "FrameMessage",
+                    "name": "/root",
+                    "props": {},
+                }
+            ),
+        }
+    )
+
+    messages = step_patch_messages(step)
+
+    assert [
+        (str(message.payload["type"]), message.payload.get("name"))
+        for message in messages
+    ] == [
+        ("FrameMessage", "/root"),
+        ("FrameMessage", "/root/child"),
+        ("SetPositionMessage", "/root/child"),
+    ]
 
 
 def test_at_keeps_server_scene_live() -> None:
@@ -679,7 +841,7 @@ def test_same_step_audio_events_serialize_without_deduping() -> None:
         server.stop()
 
 
-def test_timeline_handle_updates_become_global_overrides() -> None:
+def test_timeline_handle_updates_become_scene_overrides() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
@@ -704,7 +866,7 @@ def test_timeline_handle_updates_become_global_overrides() -> None:
         server.stop()
 
 
-def test_timeline_global_overrides_reapply_after_recorded_updates() -> None:
+def test_timeline_scene_overrides_reapply_after_recorded_updates() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         with server.at(0) as timeline:
@@ -728,6 +890,31 @@ def test_timeline_global_overrides_reapply_after_recorded_updates() -> None:
             (0.0, (2.0, 0.0, 0.0)),
             (1.0 / server.fps, (1.0, 0.0, 0.0)),
             (1.0 / server.fps, (2.0, 0.0, 0.0)),
+        ]
+    finally:
+        server.stop()
+
+
+def test_live_scene_overrides_wait_for_late_created_nodes_in_export() -> None:
+    server = viser4d.Viser4dServer(num_steps=3, fps=2.0, port=0, verbose=False)
+    try:
+        with server.at(1) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+
+        joint.position = (2.0, 0.0, 0.0)
+
+        recording = _deserialize_recording(server.serialize())
+        messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
+        positions = [
+            (time, tuple(cast(list[float], message["position"])))
+            for time, message in messages
+            if message.get("type") == "SetPositionMessage"
+            and message.get("name") == "/joint"
+        ]
+
+        assert positions == [
+            (1.0 / server.fps, (2.0, 0.0, 0.0)),
+            (2.0 / server.fps, (2.0, 0.0, 0.0)),
         ]
     finally:
         server.stop()
@@ -808,6 +995,48 @@ def test_serialization_survives_block_eviction_to_disk() -> None:
             (192.0, 0.0, 0.0),
             (256.0, 0.0, 0.0),
         ]
+    finally:
+        server.stop()
+
+
+def test_requested_block_rebuilds_from_stale_checkpoint_file() -> None:
+    server = viser4d.Viser4dServer(
+        num_steps=3,
+        fps=1.0,
+        chunk_streaming=viser4d.ChunkStreamingConfig(block_size=1),
+        port=0,
+        verbose=False,
+    )
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+
+        with server.at(1):
+            joint.position = (1.0, 0.0, 0.0)
+
+        with server.at(2):
+            joint.position = (2.0, 0.0, 0.0)
+
+        store = server._timeline
+        for block_index in range(store.block_count):
+            block = store._load_block(block_index)
+            store._flush_block(block_index, block)
+            store._wait_for_pending_flush(block_index)
+
+        checkpoint_path = store._checkpoint_path(2)
+        assert checkpoint_path.exists() is False
+
+        before_payload = store.block_payload(2)
+        assert checkpoint_path.exists()
+        assert _checkpoint_position(before_payload, "/joint") == (1.0, 0.0, 0.0)
+
+        with server.at(1):
+            joint.position = (5.0, 0.0, 0.0)
+
+        assert checkpoint_path.exists()
+
+        after_payload = store.block_payload(2)
+        assert _checkpoint_position(after_payload, "/joint") == (5.0, 0.0, 0.0)
     finally:
         server.stop()
 
