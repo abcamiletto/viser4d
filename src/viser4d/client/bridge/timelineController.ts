@@ -18,7 +18,6 @@ import {
 import { PlaybackEngine } from "./playbackEngine";
 import { SceneApplicator } from "./sceneApplicator";
 import { type GuiUpdateMessage, type RuntimeConfig } from "./protocol";
-import type { BlockManifest } from "./preloadPlanner";
 
 type TimelineControllerIO = {
   pushMessages(messages: RuntimeMessage[]): void;
@@ -186,7 +185,7 @@ export class TimelineController {
     };
     this.blocks.blockSize = this.config.blockSize;
     this.blocks.setBudgetBytes(this.config.clientChunkCacheBytes);
-    this.blocks.setManifests(this.config.blockManifests as BlockManifest[]);
+    this.blocks.setManifests(this.config.blockManifests);
     this.engine.updateConfig(this.config);
     this.audio.setStepRate(this.config.timelineFps);
     debugState.push("runtime.configure", {
@@ -203,7 +202,7 @@ export class TimelineController {
       ...this.config,
       blockManifests: message.blockManifests,
     };
-    this.blocks.setManifests(message.blockManifests as BlockManifest[]);
+    this.blocks.setManifests(message.blockManifests);
     debugState.push("runtime.manifests", {
       count: message.blockManifests.length,
     });
