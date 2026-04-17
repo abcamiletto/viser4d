@@ -2,7 +2,7 @@ import type { LoadedBlock } from "./blockState";
 import { getWindow } from "./protocol";
 
 const DB_NAME = "viser4d-runtime";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const BLOCK_STORE = "chunk-cache-blocks";
 
 type BlockRecord = {
@@ -51,7 +51,16 @@ export class PersistentBlockStore {
       tx.objectStore(BLOCK_STORE).get(this.blockKey(blockIndex)),
     );
     await transactionDone(tx);
-    return record?.block ?? null;
+    if (!record) {
+      return null;
+    }
+    if (isLoadedBlock(record.block)) {
+      return record.block;
+    }
+    void this.deleteBlock(blockIndex).catch((error) => {
+      console.warn("[viser4d] Failed to evict stale chunk block.", error);
+    });
+    return null;
   }
 
   async storeBlock(blockIndex: number, block: LoadedBlock): Promise<void> {
@@ -70,6 +79,16 @@ export class PersistentBlockStore {
   private blockKey(blockIndex: number): string {
     return `${this.keyPrefix}::${blockIndex}`;
   }
+
+  private async deleteBlock(blockIndex: number): Promise<void> {
+    const db = await this.dbPromise;
+    if (!db) {
+      return;
+    }
+    const tx = db.transaction(BLOCK_STORE, "readwrite");
+    tx.objectStore(BLOCK_STORE).delete(this.blockKey(blockIndex));
+    await transactionDone(tx);
+  }
 }
 
 function cacheId(): string {
@@ -84,12 +103,27 @@ function openDatabase(): Promise<IDBDatabase> {
     request.onerror = () => reject(request.error);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(BLOCK_STORE)) {
-        db.createObjectStore(BLOCK_STORE, { keyPath: "id" });
+      if (db.objectStoreNames.contains(BLOCK_STORE)) {
+        db.deleteObjectStore(BLOCK_STORE);
       }
+      db.createObjectStore(BLOCK_STORE, { keyPath: "id" });
     };
     request.onsuccess = () => resolve(request.result);
   });
+}
+
+function isLoadedBlock(value: unknown): value is LoadedBlock {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const block = value as Partial<LoadedBlock>;
+  if (!block.checkpoint || !Array.isArray(block.stepPatches)) {
+    return false;
+  }
+  return (
+    block.checkpoint.sceneEntries instanceof Map &&
+    block.checkpoint.audioEntries instanceof Map
+  );
 }
 
 function requestAsPromise<T>(request: IDBRequest<T>): Promise<T> {
