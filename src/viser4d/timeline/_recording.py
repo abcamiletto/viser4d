@@ -17,6 +17,7 @@ from ._messages_util import (
     scene_entries_for_message,
     store_raw_message,
 )
+from ._playback import manifest_payload
 
 if TYPE_CHECKING:
     from .._server import Viser4dServer
@@ -212,8 +213,11 @@ class SceneRecorder:
         self._server.bump_client_chunk_cache_version()
         payloads: dict[int, RuntimeBlockPayload] = {}
         with self._timeline_lock:
+            manifests = [
+                manifest_payload(manifest)
+                for manifest in self._server._timeline.block_manifests()
+            ]
             for playback in self._server.get_client_playbacks().values():
-                playback.sync_runtime_config()
                 for block_index in sorted(playback.loaded_blocks):
                     if block_index < changed_block:
                         continue
@@ -222,6 +226,7 @@ class SceneRecorder:
                         payload = self._server._timeline.block_payload(block_index)
                         payloads[block_index] = payload
                     playback.update_block(payload)
+                playback.send_manifests(manifests)
 
     def _validate_step_messages(self, messages: list[impl.Message]) -> None:
         for message in messages:

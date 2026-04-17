@@ -7,9 +7,10 @@ from typing import ClassVar, NewType, TypedDict
 from typing_extensions import override
 
 from . import _viser_private as impl
-from ._types import RuntimePayload
+from ._types import BlockManifestPayload, RuntimePayload
 
 RuntimeSceneMessage = NewType("RuntimeSceneMessage", RuntimePayload)
+RuntimeBlockManifest = BlockManifestPayload
 
 
 def runtime_scene_message(message: RuntimePayload) -> RuntimeSceneMessage:
@@ -72,6 +73,8 @@ class RuntimeConfigureMessage(_RuntimeControlMessage):
     speed: float
     loop: bool
     chunkCacheVersion: str
+    clientChunkCacheBytes: int
+    blockManifests: list[RuntimeBlockManifest]
     timelineSliderUuid: str
     speedSliderUuid: str
     stepButtonsUuid: str
@@ -80,16 +83,16 @@ class RuntimeConfigureMessage(_RuntimeControlMessage):
 
 
 @dataclasses.dataclass
+class RuntimeManifestsMessage(_RuntimeControlMessage):
+    blockManifests: list[RuntimeBlockManifest]
+
+
+@dataclasses.dataclass
 class RuntimeLoadBlockMessage(_RuntimeControlMessage):
     block: int
     checkpointSceneEntries: list[RuntimeSceneEntry]
     checkpointAudioMessages: list[RuntimeSceneMessage]
     stepPatches: list[RuntimeStatePatch]
-
-
-@dataclasses.dataclass
-class RuntimeEvictBlockMessage(_RuntimeControlMessage):
-    block: int
 
 
 @dataclasses.dataclass
@@ -137,7 +140,12 @@ class RuntimeApplyMessageUpdateMessage(_RuntimeControlMessage):
 
 @dataclasses.dataclass
 class RuntimeBlockRequestMessage(RuntimeEventMessage):
-    step: int
+    blockIndex: int
+
+
+@dataclasses.dataclass
+class RuntimeBlockDiscardMessage(RuntimeEventMessage):
+    blockIndex: int
 
 
 @dataclasses.dataclass
@@ -162,6 +170,7 @@ class RuntimeReadyMessage(RuntimeEventMessage):
 
 RUNTIME_EVENT_MESSAGE_TYPES = (
     RuntimeBlockRequestMessage,
+    RuntimeBlockDiscardMessage,
     RuntimeTimestepMessage,
     RuntimeSpeedMessage,
     RuntimePlaybackStateMessage,
