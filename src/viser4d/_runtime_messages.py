@@ -83,6 +83,7 @@ class RuntimeConfigureMessage(_RuntimeControlMessage):
 
 @dataclasses.dataclass
 class RuntimeManifestsMessage(_RuntimeControlMessage):
+    chunkCacheVersion: str
     blockManifests: list[BlockManifestPayload]
 
 
@@ -148,6 +149,17 @@ class RuntimeBlockDiscardMessage(RuntimeEventMessage):
 
 
 @dataclasses.dataclass
+class RuntimeBlockCachedMessage(RuntimeEventMessage):
+    """Client-side notification that a block was restored from persistent cache.
+
+    The server uses this to track residency so live recording patches can reach
+    blocks the server itself never sent.
+    """
+
+    blockIndex: int
+
+
+@dataclasses.dataclass
 class RuntimeTimestepMessage(RuntimeEventMessage):
     step: int
 
@@ -170,6 +182,7 @@ class RuntimeReadyMessage(RuntimeEventMessage):
 RUNTIME_EVENT_MESSAGE_TYPES = (
     RuntimeBlockRequestMessage,
     RuntimeBlockDiscardMessage,
+    RuntimeBlockCachedMessage,
     RuntimeTimestepMessage,
     RuntimeSpeedMessage,
     RuntimePlaybackStateMessage,

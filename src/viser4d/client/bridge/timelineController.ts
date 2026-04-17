@@ -207,10 +207,13 @@ export class TimelineController {
   private applyManifests(message: RuntimeManifestsMessage): void {
     this.config = {
       ...this.config,
+      chunkCacheVersion: message.chunkCacheVersion,
       blockManifests: message.blockManifests,
     };
     this.blocks.setManifests(message.blockManifests as BlockManifest[]);
+    this.persistentBlocks.configure(message.chunkCacheVersion);
     debugState.push("runtime.manifests", {
+      version: message.chunkCacheVersion,
       count: message.blockManifests.length,
     });
     this.refocusPreload(this.currentStep(), true);
@@ -287,6 +290,13 @@ export class TimelineController {
           debugState.push("runtime.load_block.cache_hit", { block: blockIndex });
           if (!this.blocks.hasBlockIndex(blockIndex)) {
             this.blocks.restoreBlock(blockIndex, block);
+            // Tell the server we now hold this block so it can patch it on
+            // live recording mutations. Without this, server-side
+            // update_block would skip restored blocks and they'd go stale.
+            this.sendRuntimeEvent({
+              type: "RuntimeBlockCachedMessage",
+              blockIndex,
+            });
             this.afterBlockLoad(blockIndex);
           }
           return;

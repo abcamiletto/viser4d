@@ -11,6 +11,7 @@ from .. import _viser_private as impl
 from .._hybrid import inflate_stored_message, inflate_stored_messages
 from .._runtime_messages import (
     RuntimeApplyMessageUpdateMessage,
+    RuntimeBlockCachedMessage,
     RuntimeBlockDiscardMessage,
     RuntimeBlockRequestMessage,
     RuntimeClearMessage,
@@ -168,7 +169,11 @@ class ClientPlaybackHandle:
         self._speed = server.playback_speed
         self._is_playing = False
         self._current_timestep = 0
-        self._loaded_block_payloads: dict[int, RuntimeBlockPayload] = {}
+        # Maps block index → last payload the server sent (for patch diffing),
+        # or None if the client restored the block from its persistent cache
+        # and the server has never serialized it. Key presence means "client
+        # holds this block."
+        self._loaded_block_payloads: dict[int, RuntimeBlockPayload | None] = {}
         self._pending_runtime_messages: list[impl.Message] = []
         self._runtime_ready = False
         self._lock = threading.RLock()
@@ -279,15 +284,19 @@ class ClientPlaybackHandle:
     def update_block(self, payload: RuntimeBlockPayload) -> None:
         """Push a patch for a block the client is already holding.
 
-        Skips blocks the client has evicted; the recorder uses this to keep
-        cached blocks fresh without forcing a full re-download.
+        Skips blocks the client has evicted. If the client restored the block
+        from its persistent cache (so the server has no previous payload to
+        diff), send a full load instead.
         """
         block_index = payload["block"]
         with self._lock:
-            previous_payload = self._loaded_block_payloads.get(block_index)
-            if previous_payload is None:
+            if block_index not in self._loaded_block_payloads:
                 return
+            previous_payload = self._loaded_block_payloads[block_index]
             self._loaded_block_payloads[block_index] = payload
+        if previous_payload is None:
+            self.load_block(payload)
+            return
         patch = _diff_block_payloads(previous_payload, payload)
         if patch is None:
             return
@@ -313,7 +322,12 @@ class ClientPlaybackHandle:
         )
 
     def send_manifests(self, manifests: list[BlockManifestPayload]) -> None:
-        self._send_runtime_message(RuntimeManifestsMessage(blockManifests=manifests))
+        self._send_runtime_message(
+            RuntimeManifestsMessage(
+                chunkCacheVersion=self._server.client_chunk_cache_version,
+                blockManifests=manifests,
+            )
+        )
 
     def handle_runtime_event(self, message: RuntimeEventMessage) -> None:
         if isinstance(message, RuntimeReadyMessage):
@@ -332,6 +346,10 @@ class ClientPlaybackHandle:
         if isinstance(message, RuntimeBlockDiscardMessage):
             with self._lock:
                 self._loaded_block_payloads.pop(message.blockIndex, None)
+            return
+        if isinstance(message, RuntimeBlockCachedMessage):
+            with self._lock:
+                self._loaded_block_payloads.setdefault(message.blockIndex, None)
             return
         if isinstance(message, RuntimeTimestepMessage):
             if self._ignore_invalid_runtime_step(message.step):
