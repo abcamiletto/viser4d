@@ -22,7 +22,23 @@ export class PersistentBlockStore {
   private keyPrefix = `${cacheId()}::`;
 
   configure(version: string): void {
+    const prev = this.keyPrefix;
     this.keyPrefix = `${cacheId()}::${version}`;
+    if (prev !== this.keyPrefix) {
+      void this.deleteStaleEntries().catch((error) => {
+        console.warn("[viser4d] Failed to evict stale cache entries.", error);
+      });
+    }
+  }
+
+  private async deleteStaleEntries(): Promise<void> {
+    const db = await this.dbPromise;
+    if (!db) {
+      return;
+    }
+    const tx = db.transaction(BLOCK_STORE, "readwrite");
+    tx.objectStore(BLOCK_STORE).clear();
+    await transactionDone(tx);
   }
 
   async loadBlock(blockIndex: number): Promise<LoadedBlock | null> {
