@@ -125,7 +125,7 @@ class SceneRecorder:
                 raise RuntimeError(
                     "Timeline scene node creation is only valid inside server.at(t)."
                 )
-            self._server._timeline.record_scene_override(message)
+            self._server._timeline.record_scene_override(stored_message)
             puts, delete_nodes = scene_entries_for_message(stored_message)
         # Forward scene overrides directly to connected clients. They live in a
         # client-side overlay, independent of recorded block state.
