@@ -11,7 +11,6 @@ from .. import _viser_private as impl
 from .._hybrid import inflate_stored_message, inflate_stored_messages
 from .._runtime_messages import (
     RuntimeApplyMessageUpdateMessage,
-    RuntimeBlockCachedMessage,
     RuntimeBlockDiscardMessage,
     RuntimeBlockRequestMessage,
     RuntimeClearMessage,
@@ -203,10 +202,8 @@ class ClientPlaybackHandle:
         self._speed = server.playback_speed
         self._is_playing = False
         self._current_timestep = 0
-        # Block index → last payload sent (for diffing), or None when the
-        # client restored from its persistent cache and we have no snapshot.
-        # Key presence means "client holds this block."
-        self._loaded_block_payloads: dict[int, RuntimeBlockPayload | None] = {}
+        # Block index → last payload sent to the client (for patch diffing).
+        self._loaded_block_payloads: dict[int, RuntimeBlockPayload] = {}
         # In-flight serializations. Removing an entry before completion
         # cancels the send.
         self._pending_requests: set[int] = set()
@@ -309,15 +306,12 @@ class ClientPlaybackHandle:
             self._send_runtime_message(message)
 
     def update_block(self, payload: RuntimeBlockPayload) -> None:
-        """Push a mutation to a client-held block; full load if no snapshot."""
+        """Push a patch to a client-held block; no-op if the client has evicted."""
         block_index = payload["block"]
         with self._lock:
             if block_index not in self._loaded_block_payloads:
                 return
             previous_payload = self._loaded_block_payloads[block_index]
-        if previous_payload is None:
-            self.load_block(payload)
-            return
         patch = _diff_block_payloads(previous_payload, payload)
         if patch is None:
             return
@@ -329,12 +323,7 @@ class ClientPlaybackHandle:
             self._send_runtime_message(message)
 
     def send_manifests(self, manifests: list[BlockManifestPayload]) -> None:
-        self._send_runtime_message(
-            RuntimeManifestsMessage(
-                chunkCacheVersion=self._server.client_chunk_cache_version,
-                blockManifests=manifests,
-            )
-        )
+        self._send_runtime_message(RuntimeManifestsMessage(blockManifests=manifests))
 
     def handle_runtime_event(self, message: RuntimeEventMessage) -> None:
         if isinstance(message, RuntimeReadyMessage):
@@ -356,12 +345,6 @@ class ClientPlaybackHandle:
             with self._lock:
                 self._loaded_block_payloads.pop(message.blockIndex, None)
                 self._pending_requests.discard(message.blockIndex)
-            return
-        if isinstance(message, RuntimeBlockCachedMessage):
-            if not self._valid_block_index(message.blockIndex):
-                return
-            with self._lock:
-                self._loaded_block_payloads.setdefault(message.blockIndex, None)
             return
         if isinstance(message, RuntimeTimestepMessage):
             if self._ignore_invalid_runtime_step(message.step):
@@ -398,7 +381,6 @@ class ClientPlaybackHandle:
                     timelineFps=self._server.fps,
                     speed=speed,
                     loop=loop,
-                    chunkCacheVersion=self._server.client_chunk_cache_version,
                     clientChunkCacheBytes=self._server.client_chunk_cache_bytes,
                     blockManifests=manifests,
                     timelineSliderUuid=impl.gui_uuid(self._timeline_slider),

@@ -2,7 +2,6 @@ import type { RuntimeMessage, RuntimeValue } from "../binary";
 import { AudioRuntime } from "../audio/runtime";
 import { isAudioMessage } from "../audio/messages";
 import { BlockCache } from "./blockCache";
-import type { LoadedBlock } from "./blockState";
 import {
   isRuntimeControlMessage,
   type RuntimeApplyMessageUpdateMessage,
@@ -17,7 +16,6 @@ import {
   type RuntimeSetSpeedMessage,
 } from "./generatedRuntimeMessages";
 import { PlaybackEngine } from "./playbackEngine";
-import { PersistentBlockStore } from "./persistentBlockStore";
 import { SceneApplicator } from "./sceneApplicator";
 import { type GuiUpdateMessage, type RuntimeConfig } from "./protocol";
 import type { BlockManifest } from "./preloadPlanner";
@@ -62,7 +60,6 @@ export class TimelineController {
     timelineFps: 30,
     speed: 1,
     loop: false,
-    chunkCacheVersion: "",
     clientChunkCacheBytes: 0,
     blockManifests: [],
     timelineSliderUuid: null,
@@ -74,14 +71,13 @@ export class TimelineController {
   private lastLocalSliderStep = -1;
   private lastSyncedStep = -1;
   private lastFocusBlock = -1;
-  private readonly persistentBlocks = new PersistentBlockStore();
 
   private readonly audio: AudioRuntime = new AudioRuntime(
     () => this.engine.getTransportStep(),
     (event, payload) => debugState.push(event, payload),
   );
   private readonly blocks: BlockCache = new BlockCache({
-    requestBlock: (blockIndex) => this.requestBlockFromStorage(blockIndex),
+    requestBlock: (blockIndex) => this.requestBlockFromServer(blockIndex),
     discardBlock: (blockIndex) => this.reportBlockDiscard(blockIndex),
   });
   private readonly scene: SceneApplicator = new SceneApplicator(
@@ -180,7 +176,6 @@ export class TimelineController {
       timelineFps: message.timelineFps,
       speed: message.speed,
       loop: message.loop,
-      chunkCacheVersion: message.chunkCacheVersion,
       clientChunkCacheBytes: message.clientChunkCacheBytes,
       blockManifests: message.blockManifests,
       timelineSliderUuid: message.timelineSliderUuid,
@@ -192,7 +187,6 @@ export class TimelineController {
     this.blocks.blockSize = this.config.blockSize;
     this.blocks.setBudgetBytes(this.config.clientChunkCacheBytes);
     this.blocks.setManifests(this.config.blockManifests as BlockManifest[]);
-    this.persistentBlocks.configure(this.config.chunkCacheVersion);
     this.engine.updateConfig(this.config);
     this.audio.setStepRate(this.config.timelineFps);
     debugState.push("runtime.configure", {
@@ -207,13 +201,10 @@ export class TimelineController {
   private applyManifests(message: RuntimeManifestsMessage): void {
     this.config = {
       ...this.config,
-      chunkCacheVersion: message.chunkCacheVersion,
       blockManifests: message.blockManifests,
     };
     this.blocks.setManifests(message.blockManifests as BlockManifest[]);
-    this.persistentBlocks.configure(message.chunkCacheVersion);
     debugState.push("runtime.manifests", {
-      version: message.chunkCacheVersion,
       count: message.blockManifests.length,
     });
     this.refocusPreload(this.currentStep(), true);
@@ -236,12 +227,6 @@ export class TimelineController {
       checkpointAudioMessages: message.checkpointAudioMessages,
       stepPatches: message.stepPatches,
     });
-    const block = this.blocks.getBlockByIndex(message.block);
-    if (block) {
-      void this.persistentBlocks.storeBlock(message.block, block).catch((error) => {
-        console.warn("[viser4d] Failed to persist chunk block.", error);
-      });
-    }
     this.afterBlockLoad(message.block);
   }
 
@@ -282,39 +267,8 @@ export class TimelineController {
     this.refocusPreload(currentStep, true);
   }
 
-  private requestBlockFromStorage(blockIndex: number): void {
-    void this.persistentBlocks
-      .loadBlock(blockIndex)
-      .then((block: LoadedBlock | null) => {
-        // A clear/reset or focus-change between request start and IndexedDB
-        // resolution clears pendingRequests. Drop the result to keep a stale
-        // cache entry from winning the race into the new session.
-        if (!this.blocks.hasPendingRequest(blockIndex)) {
-          return;
-        }
-        if (block) {
-          debugState.push("runtime.load_block.cache_hit", { block: blockIndex });
-          this.blocks.restoreBlock(blockIndex, block);
-          this.sendRuntimeEvent({
-            type: "RuntimeBlockCachedMessage",
-            blockIndex,
-          });
-          this.afterBlockLoad(blockIndex);
-          return;
-        }
-        this.requestBlockFromServer(blockIndex);
-      })
-      .catch((error) => {
-        console.warn("[viser4d] Failed to read cached chunk block.", error);
-        if (!this.blocks.hasPendingRequest(blockIndex)) {
-          return;
-        }
-        this.requestBlockFromServer(blockIndex);
-      });
-  }
-
   private requestBlockFromServer(blockIndex: number): void {
-    debugState.push("runtime.load_block.cache_miss", { block: blockIndex });
+    debugState.push("runtime.load_block.request", { block: blockIndex });
     this.sendRuntimeEvent({
       type: "RuntimeBlockRequestMessage",
       blockIndex,

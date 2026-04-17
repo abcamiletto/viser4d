@@ -39,10 +39,6 @@ export class BlockCache {
     return this.blocks.has(blockIndex);
   }
 
-  hasPendingRequest(blockIndex: number): boolean {
-    return this.pendingRequests.has(blockIndex);
-  }
-
   blockIndexOf(step: number): number {
     return Math.floor(step / this.blockSize);
   }
@@ -61,11 +57,6 @@ export class BlockCache {
   ): void {
     this.pendingRequests.delete(blockIndex);
     this.blocks.set(blockIndex, makeLoadedBlock(block));
-  }
-
-  restoreBlock(blockIndex: number, block: LoadedBlock): void {
-    this.pendingRequests.delete(blockIndex);
-    this.blocks.set(blockIndex, block);
   }
 
   patchBlock(

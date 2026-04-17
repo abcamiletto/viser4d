@@ -7,7 +7,6 @@ export type RuntimeConfig = {
   timelineFps: number;
   speed: number;
   loop: boolean;
-  chunkCacheVersion: string;
   clientChunkCacheBytes: number;
   blockManifests: BlockManifest[];
   timelineSliderUuid: string | null;

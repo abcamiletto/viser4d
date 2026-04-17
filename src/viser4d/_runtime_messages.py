@@ -71,7 +71,6 @@ class RuntimeConfigureMessage(_RuntimeControlMessage):
     timelineFps: float
     speed: float
     loop: bool
-    chunkCacheVersion: str
     clientChunkCacheBytes: int
     blockManifests: list[BlockManifestPayload]
     timelineSliderUuid: str
@@ -83,7 +82,6 @@ class RuntimeConfigureMessage(_RuntimeControlMessage):
 
 @dataclasses.dataclass
 class RuntimeManifestsMessage(_RuntimeControlMessage):
-    chunkCacheVersion: str
     blockManifests: list[BlockManifestPayload]
 
 
@@ -149,13 +147,6 @@ class RuntimeBlockDiscardMessage(RuntimeEventMessage):
 
 
 @dataclasses.dataclass
-class RuntimeBlockCachedMessage(RuntimeEventMessage):
-    """Client restored this block from persistent cache; register residency."""
-
-    blockIndex: int
-
-
-@dataclasses.dataclass
 class RuntimeTimestepMessage(RuntimeEventMessage):
     step: int
 
@@ -178,7 +169,6 @@ class RuntimeReadyMessage(RuntimeEventMessage):
 RUNTIME_EVENT_MESSAGE_TYPES = (
     RuntimeBlockRequestMessage,
     RuntimeBlockDiscardMessage,
-    RuntimeBlockCachedMessage,
     RuntimeTimestepMessage,
     RuntimeSpeedMessage,
     RuntimePlaybackStateMessage,

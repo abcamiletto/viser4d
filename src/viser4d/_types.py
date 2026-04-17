@@ -61,7 +61,6 @@ class RuntimeConfig(TypedDict):
     timelineFps: float
     speed: float
     loop: bool
-    chunkCacheVersion: str
     clientChunkCacheBytes: int
     blockManifests: list[BlockManifestPayload]
 
