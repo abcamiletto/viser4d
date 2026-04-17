@@ -14,15 +14,15 @@ import msgspec
 import zstandard
 
 from .. import _viser_private as impl
-from ..audio._messages import is_audio_message
 from .._types import RuntimeBlockPayload, StoredMessage, StoredStatePatch
 from ._checkpoint import (
     CheckpointState,
+    CheckpointSnapshot,
+    apply_audio_message,
     apply_scene_message,
     apply_steps,
     checkpoint_audio_messages,
     checkpoint_scene_entries,
-    classify_step_change,
     copy_checkpoint,
     load_checkpoint_file,
     remove_scene_node_subtree,
@@ -93,7 +93,7 @@ class TimelineStore:
         self._lock = threading.RLock()
         self._loaded_blocks: OrderedDict[int, TimelineBlock] = OrderedDict()
         self._max_loaded_blocks = max_loaded_blocks
-        self._checkpoint_cache: OrderedDict[int, CheckpointState] = OrderedDict()
+        self._checkpoint_cache: OrderedDict[int, CheckpointSnapshot] = OrderedDict()
         self._max_cached_checkpoints = max_cached_checkpoints
         self._manifest_states = [_BlockManifestState() for _ in range(self.block_count)]
         self._flush_executor = flush_executor
@@ -102,7 +102,10 @@ class TimelineStore:
         self._block_dir = Path(self._block_dir_root.name)
         # Running checkpoint for eager incremental persistence during sequential recording.
         self._eager_checkpoint = CheckpointState()
+        self._eager_checkpoint_source_revision = 0
         self._eager_checkpoint_next_block = 0
+        self._block_revisions: dict[int, int] = {}
+        self._next_revision = 1
 
     def validate_step(self, step: int) -> int:
         """Return ``step`` if it is in range, else raise ``IndexError``."""
@@ -123,43 +126,27 @@ class TimelineStore:
             block = self._load_block(step // self.block_size)
             return block.steps[step % self.block_size]
 
-    def record_step(
-        self, step: int, messages: list[impl.Message]
-    ) -> tuple[set[str], bool]:
-        """Store one timestep's scene and audio updates.
-
-        Returns:
-            A ``(changed_keys, is_structural)`` tuple.  *changed_keys* lists the
-            canonical state keys of scene messages that were added or replaced;
-            *is_structural* is ``True`` when any message creates/removes a scene
-            node or touches audio (requiring full checkpoint invalidation).
-        """
-        changed_keys, is_structural = classify_step_change(messages)
+    def record_step(self, step: int, messages: list[impl.Message]) -> None:
+        """Store one timestep's scene and audio updates."""
         with self._lock:
             step = self.validate_step(step)
             block_index = step // self.block_size
+            step_offset = step % self.block_size
+            before_step = self._checkpoint_for_block(block_index)
             block = self._load_block(block_index)
-            step_state = block.steps[step % self.block_size]
-            for message in messages:
-                stored_message = store_raw_message(message)
-                if is_scene_message(stored_message):
-                    entries, delete_nodes = scene_entries_for_message(stored_message)
-                    for node_name in delete_nodes:
-                        _record_scene_delete(step_state, node_name)
-                    for entry in entries:
-                        step_state.scene_puts.pop(entry["key"], None)
-                        step_state.scene_puts[entry["key"]] = entry["message"]
-                    continue
-                if is_audio_message(message):
-                    step_state.audio_messages.append(stored_message)
+            apply_steps(before_step, block.steps[:step_offset])
+            existing_messages = step_patch_messages(block.steps[step_offset])
+            block.steps[step_offset] = self._compile_step_patch(
+                before_step,
+                [
+                    *existing_messages,
+                    *(store_raw_message(message) for message in messages),
+                ],
+            )
             block.dirty = True
-            if is_structural:
-                self._invalidate_checkpoints_after_block(block_index)
-                self._invalidate_manifests_after_block(block_index)
-            else:
-                self._patch_checkpoints_after_block(block_index, changed_keys)
-                self._invalidate_manifest_for_block(block_index)
-        return changed_keys, is_structural
+            self._block_revisions[block_index] = self._next_revision
+            self._next_revision += 1
+            self._invalidate_manifests_after_block(block_index)
 
     def record_global_override(self, message: impl.Message) -> None:
         """Store a live scene override that should replay for all future steps."""
@@ -218,6 +205,51 @@ class TimelineStore:
 
             return resized
 
+    def _compile_step_patch(
+        self,
+        state: CheckpointState,
+        messages: list[StoredMessage],
+    ) -> TimelineStep:
+        step = TimelineStep()
+        for stored_message in messages:
+            if is_scene_message(stored_message):
+                self._compile_scene_message(step, state, stored_message)
+                continue
+            step.audio_messages.append(stored_message)
+            apply_audio_message(state, stored_message)
+        return step
+
+    def _compile_scene_message(
+        self,
+        step: TimelineStep,
+        state: CheckpointState,
+        stored_message: StoredMessage,
+    ) -> None:
+        scene_puts, scene_delete_nodes = scene_entries_for_message(stored_message)
+        for node_name in scene_delete_nodes:
+            _record_scene_delete(step, node_name)
+            remove_scene_node_subtree(state, node_name)
+
+        node_name = extract_message_name(stored_message)
+        recreates_existing_node = (
+            "props" in stored_message.payload
+            and isinstance(node_name, str)
+            and any(
+                visible_node == node_name or visible_node.startswith(f"{node_name}/")
+                for visible_node in state.key_to_node.values()
+                if isinstance(visible_node, str)
+            )
+            and node_name not in step.scene_delete_nodes
+        )
+        if recreates_existing_node:
+            assert node_name is not None
+            _record_scene_delete(step, node_name)
+            remove_scene_node_subtree(state, node_name)
+
+        for entry in scene_puts:
+            step.scene_puts[entry["key"]] = entry["message"]
+            apply_scene_message(state, entry["key"], entry["message"])
+
     def _prune_removed_node_overrides(self, removed_node: str) -> None:
         self._global_overrides = {
             key: message
@@ -258,23 +290,25 @@ class TimelineStore:
             block_index = self._validate_block_index(block_index)
             ckpt = self._checkpoint_for_block(block_index)
             block = self._load_block(block_index)
+            checkpoint_scene = checkpoint_scene_entries(ckpt)
+            checkpoint_audio = checkpoint_audio_messages(ckpt)
+            step_patches = [step_patch_payload(step) for step in block.steps]
+            manifest = self._manifest_states[block_index]
+            manifest.checkpoint_block_index = (
+                None if block_index == 0 else block_index - 1
+            )
+            manifest.payload_byte_size = _block_payload_byte_size(
+                checkpoint_scene,
+                checkpoint_audio,
+                step_patches,
+            )
+            manifest.dirty = False
         return {
             "block": block_index,
-            "checkpointSceneEntries": checkpoint_scene_entries(ckpt),
-            "checkpointAudioMessages": checkpoint_audio_messages(ckpt),
-            "stepPatches": [step_patch_payload(s) for s in block.steps],
+            "checkpointSceneEntries": checkpoint_scene,
+            "checkpointAudioMessages": checkpoint_audio,
+            "stepPatches": step_patches,
         }
-
-    def step_patches_for_offsets(
-        self,
-        block_index: int,
-        offsets: list[int],
-    ) -> list[StoredStatePatch]:
-        """Return step patches for specific offsets within a block."""
-        with self._lock:
-            block_index = self._validate_block_index(block_index)
-            block = self._load_block(block_index)
-            return [step_patch_payload(block.steps[offset]) for offset in offsets]
 
     def _global_override_messages_for_state(
         self, state: CheckpointState
@@ -365,27 +399,39 @@ class TimelineStore:
         block.dirty = False
         pending_flush = self._pending_flushes.get(block_index)
         next_block = block_index + 1
-        ckpt: tuple[Path, CheckpointState] | None = None
-        if block_index == self._eager_checkpoint_next_block:
+        checkpoint_source_revision = self._checkpoint_source_revision(block_index)
+        if (
+            block_index == self._eager_checkpoint_next_block
+            and self._eager_checkpoint_source_revision == checkpoint_source_revision
+        ):
             checkpoint_state = copy_checkpoint(self._eager_checkpoint)
         else:
             checkpoint_state = self._checkpoint_for_block(block_index)
+            self._eager_checkpoint = copy_checkpoint(checkpoint_state)
+            self._eager_checkpoint_source_revision = checkpoint_source_revision
+            self._eager_checkpoint_next_block = block_index
+        step_patches = [step_patch_payload(step) for step in block.steps]
         manifest = self._manifest_states[block_index]
         manifest.checkpoint_block_index = None if block_index == 0 else block_index - 1
         manifest.payload_byte_size = _block_payload_byte_size(
             checkpoint_scene_entries(checkpoint_state),
             checkpoint_audio_messages(checkpoint_state),
-            [step_patch_payload(s) for s in block.steps],
+            step_patches,
         )
         manifest.dirty = False
-        if block_index == self._eager_checkpoint_next_block:
+        ckpt: tuple[Path, CheckpointState, int] | None = None
+        if next_block < self.block_count:
             apply_steps(self._eager_checkpoint, block.steps)
+            self._eager_checkpoint_source_revision = max(
+                self._eager_checkpoint_source_revision,
+                self._block_revisions.get(block_index, 0),
+            )
             self._eager_checkpoint_next_block = next_block
-            if next_block < self.block_count:
-                ckpt = (
-                    self._checkpoint_path(next_block),
-                    copy_checkpoint(self._eager_checkpoint),
-                )
+            ckpt = (
+                self._checkpoint_path(next_block),
+                copy_checkpoint(self._eager_checkpoint),
+                self._eager_checkpoint_source_revision,
+            )
         self._pending_flushes[block_index] = self._flush_executor.submit(
             _write_block_and_checkpoint_after,
             pending_flush,
@@ -399,69 +445,6 @@ class TimelineStore:
         if future is not None:
             future.result()
 
-    def _invalidate_checkpoints_after_block(self, block_index: int) -> None:
-        stale = [i for i in self._checkpoint_cache if i > block_index]
-        for i in stale:
-            del self._checkpoint_cache[i]
-
-    def _patch_checkpoints_after_block(
-        self, block_index: int, changed_keys: set[str]
-    ) -> None:
-        """Incrementally patch cached checkpoints after a property-only edit."""
-        if not changed_keys:
-            return
-        for ckpt_index in list(self._checkpoint_cache):
-            if ckpt_index <= block_index:
-                continue
-            checkpoint = self._checkpoint_cache[ckpt_index]
-            self._patch_one_checkpoint(
-                checkpoint, block_index, ckpt_index, changed_keys
-            )
-            disk_path = self._checkpoint_path(ckpt_index)
-            if disk_path.exists():
-                disk_path.unlink()
-        if self._eager_checkpoint_next_block > block_index:
-            self._patch_one_checkpoint(
-                self._eager_checkpoint,
-                block_index,
-                self._eager_checkpoint_next_block,
-                changed_keys,
-            )
-
-    def _patch_one_checkpoint(
-        self,
-        checkpoint: CheckpointState,
-        from_block: int,
-        to_block_exclusive: int,
-        changed_keys: set[str],
-    ) -> None:
-        for key in changed_keys:
-            latest = self._find_latest_value_for_key(
-                key, from_block, to_block_exclusive
-            )
-            if latest is not None:
-                apply_scene_message(checkpoint, key, latest)
-
-    def _find_latest_value_for_key(
-        self,
-        key: str,
-        from_block: int,
-        to_block_exclusive: int,
-    ) -> StoredMessage | None:
-        """Scan backward for the latest value of *key*, returning at first hit."""
-        for block_idx in range(to_block_exclusive - 1, from_block - 1, -1):
-            block = self._load_block(block_idx)
-            for step_state in reversed(block.steps):
-                value = step_state.scene_puts.get(key)
-                if value is not None:
-                    return value
-        return None
-
-    def _invalidate_manifest_for_block(self, block_index: int) -> None:
-        manifest = self._manifest_states[block_index]
-        manifest.payload_byte_size = None
-        manifest.dirty = True
-
     def _invalidate_manifests_after_block(self, block_index: int) -> None:
         for manifest in self._manifest_states[block_index:]:
             manifest.checkpoint_block_index = None
@@ -470,40 +453,83 @@ class TimelineStore:
 
     def _checkpoint_for_block(self, block_index: int) -> CheckpointState:
         block_index = self._validate_block_index(block_index)
-        cached = self._checkpoint_cache.get(block_index)
-        if cached is not None:
-            self._checkpoint_cache.move_to_end(block_index)
-            return copy_checkpoint(cached)
-        disk_state = self._load_checkpoint_from_disk(block_index)
-        if disk_state is not None:
-            self._cache_checkpoint(block_index, disk_state)
-            return disk_state
-        prior_blocks = [i for i in self._checkpoint_cache if i < block_index]
-        base_index = max(prior_blocks, default=0)
-        state = (
-            copy_checkpoint(self._checkpoint_cache[base_index])
-            if base_index in self._checkpoint_cache
-            else CheckpointState()
-        )
+        snapshot = self._checkpoint_snapshot(block_index)
+        if snapshot is not None:
+            return copy_checkpoint(snapshot.state)
+        base_index = 0
+        state = CheckpointState()
+        for candidate in range(block_index - 1, 0, -1):
+            snapshot = self._checkpoint_snapshot(candidate)
+            if snapshot is None:
+                continue
+            state = copy_checkpoint(snapshot.state)
+            base_index = candidate
+            break
         for index in range(base_index, block_index):
             block = self._load_block(index)
             apply_steps(state, block.steps)
-            self._cache_checkpoint(index + 1, state)
+            self._cache_checkpoint(
+                index + 1,
+                state,
+                self._checkpoint_source_revision(index + 1),
+            )
         return copy_checkpoint(state)
 
-    def _load_checkpoint_from_disk(self, block_index: int) -> CheckpointState | None:
+    def _checkpoint_snapshot(self, block_index: int) -> CheckpointSnapshot | None:
+        expected_source_revision = self._checkpoint_source_revision(block_index)
+        cached = self._checkpoint_cache.get(block_index)
+        if cached is not None and cached.source_revision == expected_source_revision:
+            self._checkpoint_cache.move_to_end(block_index)
+            return cached
+        snapshot = self._load_checkpoint_from_disk(
+            block_index,
+            expected_source_revision,
+        )
+        if snapshot is None:
+            return None
+        self._cache_checkpoint(
+            block_index,
+            snapshot.state,
+            snapshot.source_revision,
+        )
+        return self._checkpoint_cache[block_index]
+
+    def _load_checkpoint_from_disk(
+        self,
+        block_index: int,
+        expected_source_revision: int,
+    ) -> CheckpointSnapshot | None:
         if block_index > 0:
             pending = self._pending_flushes.get(block_index - 1)
             if pending is not None:
                 pending.result()
         path = self._checkpoint_path(block_index)
-        return load_checkpoint_file(path) if path.exists() else None
+        if not path.exists():
+            return None
+        snapshot = load_checkpoint_file(path)
+        if snapshot.source_revision != expected_source_revision:
+            return None
+        return snapshot
 
-    def _cache_checkpoint(self, block_index: int, state: CheckpointState) -> None:
-        self._checkpoint_cache[block_index] = copy_checkpoint(state)
+    def _cache_checkpoint(
+        self,
+        block_index: int,
+        state: CheckpointState,
+        source_revision: int,
+    ) -> None:
+        self._checkpoint_cache[block_index] = CheckpointSnapshot(
+            state=copy_checkpoint(state),
+            source_revision=source_revision,
+        )
         self._checkpoint_cache.move_to_end(block_index)
         while len(self._checkpoint_cache) > self._max_cached_checkpoints:
             self._checkpoint_cache.popitem(last=False)
+
+    def _checkpoint_source_revision(self, block_index: int) -> int:
+        return max(
+            (self._block_revisions.get(index, 0) for index in range(block_index)),
+            default=0,
+        )
 
     def _block_manifest_locked(self, block_index: int) -> BlockManifest:
         manifest = self._manifest_states[block_index]
@@ -545,7 +571,7 @@ def _write_block_and_checkpoint_after(
     previous_flush: Future[None] | None,
     block_path: Path,
     block: TimelineBlock,
-    checkpoint: tuple[Path, CheckpointState] | None,
+    checkpoint: tuple[Path, CheckpointState, int] | None,
 ) -> None:
     if previous_flush is not None:
         previous_flush.result()
@@ -555,9 +581,9 @@ def _write_block_and_checkpoint_after(
 
 
 def _block_payload_byte_size(
-    scene_entries: list[object],
-    audio_messages: list[object],
-    step_patches: list[object],
+    scene_entries: object,
+    audio_messages: object,
+    step_patches: object,
 ) -> int:
     return len(
         msgspec.msgpack.encode(

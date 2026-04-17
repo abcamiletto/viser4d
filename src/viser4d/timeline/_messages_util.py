@@ -75,15 +75,19 @@ def _scene_node_prefix(name: str) -> str:
 def scene_message_state_key(message: StoredMessage) -> str | None:
     """Return the canonical viser4d-owned key for one scene message.
 
-    Returns ``None`` for ``RemoveSceneNodeMessage`` (handled as a delete,
-    not a put) and for unrecognised message types.
+    Returns ``None`` for ``RemoveSceneNodeMessage`` because deletes are
+    represented separately from keyed puts.
     """
     message_type = message.payload.get("type")
     if not isinstance(message_type, str) or message_type == "RemoveSceneNodeMessage":
         return None
 
     name_field = message.payload.get("name")
-    prefix = _scene_node_prefix(name_field) if isinstance(name_field, str) else "scene.global"
+    prefix = (
+        _scene_node_prefix(name_field)
+        if isinstance(name_field, str)
+        else "scene.global"
+    )
 
     if "props" in message.payload:
         return f"{prefix}:create"
@@ -107,13 +111,11 @@ def scene_message_state_key(message: StoredMessage) -> str | None:
 
     # Generic fallback based on non-standard payload fields.
     payload_keys = tuple(
-        str(key)
-        for key in message.payload
-        if key not in {"type", "name", "props"}
+        str(key) for key in message.payload if key not in {"type", "name", "props"}
     )
     if len(payload_keys) == 1:
         return f"{prefix}:prop:{payload_keys[0]}"
-    return f"{prefix}:{message_type}"
+    return f"{prefix}:message:{message_type}"
 
 
 def scene_delete_state_key(node_name: str) -> str:
@@ -162,8 +164,7 @@ def step_patch_payload(step: TimelineStep) -> StoredStatePatch:
     """Serialize one ``TimelineStep`` into a ``StoredStatePatch`` dict."""
     return {
         "scenePuts": [
-            {"key": key, "message": message}
-            for key, message in step.scene_puts.items()
+            {"key": key, "message": message} for key, message in step.scene_puts.items()
         ],
         "sceneDeleteNodes": list(step.scene_delete_nodes),
         "audioMessages": list(step.audio_messages),

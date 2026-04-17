@@ -28,7 +28,6 @@ from .._runtime_messages import (
     RuntimeSetSpeedMessage,
     RuntimeSpeedMessage,
     RuntimeStatePatch,
-    RuntimeStepPatchUpdate,
     RuntimeTimestepMessage,
     runtime_scene_message,
     runtime_scene_messages,
@@ -40,15 +39,15 @@ from .._types import (
     StoredMessage,
     StoredMessageEntry,
     StoredStatePatch,
+    StepPatchUpdate,
 )
 from .._validation import require_positive_float
-from ._checkpoint import checkpoint_audio_messages, checkpoint_scene_entries
+from ._messages_util import extract_message_name
 from ._streaming import PreloadPlanner
 
 if TYPE_CHECKING:
     from .._viser_private import ClientHandle
     from .._server import Viser4dServer
-    from ._store import TimelineStore
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +59,10 @@ def _inflate_scene_entries(
     entries: list[StoredMessageEntry],
 ) -> list[RuntimeSceneEntry]:
     return [
-        {"key": e["key"], "message": runtime_scene_message(inflate_stored_message(e["message"]))}
+        {
+            "key": e["key"],
+            "message": runtime_scene_message(inflate_stored_message(e["message"])),
+        }
         for e in entries
     ]
 
@@ -101,23 +103,29 @@ def _diff_block_payloads(
         if key not in after_scene:
             scene_deletes.append(key)
 
-    before_audio = {
-        m.payload.get("name", ""): m for m in before["checkpointAudioMessages"]
-    }
-    after_audio = {
-        m.payload.get("name", ""): m for m in after["checkpointAudioMessages"]
-    }
-    audio_puts = [m for k, m in after_audio.items() if before_audio.get(k) != m]
-    audio_deletes = [str(k) for k in before_audio if k not in after_audio]
+    before_audio = _checkpoint_audio_map(before["checkpointAudioMessages"])
+    after_audio = _checkpoint_audio_map(after["checkpointAudioMessages"])
+    audio_puts = [
+        message
+        for message in after["checkpointAudioMessages"]
+        if before_audio.get(_audio_checkpoint_name(message)) != message
+    ]
+    audio_deletes = [name for name in before_audio if name not in after_audio]
 
-    step_updates: list[dict[str, object]] = []
+    step_updates: list[StepPatchUpdate] = []
     for i, (bp, ap) in enumerate(
         zip(before["stepPatches"], after["stepPatches"], strict=True)
     ):
         if bp != ap:
             step_updates.append({"stepOffset": i, "patch": ap})
 
-    if not scene_puts and not scene_deletes and not audio_puts and not audio_deletes and not step_updates:
+    if (
+        not scene_puts
+        and not scene_deletes
+        and not audio_puts
+        and not audio_deletes
+        and not step_updates
+    ):
         return None
 
     return {
@@ -126,7 +134,7 @@ def _diff_block_payloads(
         "checkpointSceneDeletes": scene_deletes,
         "checkpointAudioPuts": audio_puts,
         "checkpointAudioDeletes": audio_deletes,
-        "stepPatchUpdates": step_updates,  # type: ignore[typeddict-item]
+        "stepPatchUpdates": step_updates,
     }
 
 
@@ -150,6 +158,7 @@ class ClientPlaybackHandle:
         self._is_playing = False
         self._current_timestep = 0
         self._loaded_blocks: set[int] = set()
+        self._loaded_block_payloads: dict[int, RuntimeBlockPayload] = {}
         self._pending_block_loads: dict[int, Future[RuntimeBlockPayload]] = {}
         self._pending_runtime_messages: list[impl.Message] = []
         self._runtime_ready = False
@@ -214,6 +223,7 @@ class ClientPlaybackHandle:
             previous_blocks = set(self._loaded_blocks)
             stale_futures = list(self._pending_block_loads.values())
             self._loaded_blocks = set()
+            self._loaded_block_payloads = {}
             self._pending_block_loads = {}
         for future in stale_futures:
             future.result()
@@ -229,6 +239,7 @@ class ClientPlaybackHandle:
             self._speed = 1.0
             self._is_playing = False
             self._loaded_blocks = set()
+            self._loaded_block_payloads = {}
             self._pending_block_loads = {}
             if not self._runtime_ready:
                 self._pending_runtime_messages = []
@@ -250,6 +261,8 @@ class ClientPlaybackHandle:
 
     def load_block(self, payload: RuntimeBlockPayload) -> None:
         """Inflate and send one timeline block payload to the browser runtime."""
+        with self._lock:
+            self._loaded_block_payloads[payload["block"]] = payload
         self._send_runtime_message(
             RuntimeLoadBlockMessage(
                 block=payload["block"],
@@ -259,57 +272,40 @@ class ClientPlaybackHandle:
                 checkpointAudioMessages=runtime_scene_messages(
                     inflate_stored_messages(payload["checkpointAudioMessages"])
                 ),
-                stepPatches=[
-                    _inflate_state_patch(p) for p in payload["stepPatches"]
-                ],
+                stepPatches=[_inflate_state_patch(p) for p in payload["stepPatches"]],
             )
         )
 
-    def patch_block(
-        self,
-        timeline: TimelineStore,
-        block_index: int,
-        step_offsets: set[int],
-    ) -> None:
-        """Send a delta patch with only the changed step patches."""
-        sorted_offsets = sorted(step_offsets)
-        patches = timeline.step_patches_for_offsets(block_index, sorted_offsets)
+    def update_block(self, payload: RuntimeBlockPayload) -> None:
+        """Patch a previously sent block payload in place when possible."""
+        with self._lock:
+            previous_payload = self._loaded_block_payloads.get(payload["block"])
+        if previous_payload is None:
+            self.load_block(payload)
+            return
+        patch = _diff_block_payloads(previous_payload, payload)
+        with self._lock:
+            self._loaded_block_payloads[payload["block"]] = payload
+        if patch is None:
+            return
         self._send_runtime_message(
             RuntimePatchBlockMessage(
-                block=block_index,
-                checkpointScenePuts=[],
-                checkpointSceneDeletes=[],
-                checkpointAudioPuts=[],
-                checkpointAudioDeletes=[],
-                stepPatchUpdates=[
-                    RuntimeStepPatchUpdate(
-                        stepOffset=offset,
-                        patch=_inflate_state_patch(patch),
-                    )
-                    for offset, patch in zip(sorted_offsets, patches, strict=True)
-                ],
-            )
-        )
-
-    def patch_block_checkpoint(
-        self,
-        timeline: TimelineStore,
-        block_index: int,
-    ) -> None:
-        """Replace only the checkpoint for a downstream block."""
-        ckpt = timeline._checkpoint_for_block(block_index)
-        self._send_runtime_message(
-            RuntimePatchBlockMessage(
-                block=block_index,
+                block=patch["block"],
                 checkpointScenePuts=_inflate_scene_entries(
-                    checkpoint_scene_entries(ckpt)
+                    patch["checkpointScenePuts"]
                 ),
-                checkpointSceneDeletes=[],
+                checkpointSceneDeletes=patch["checkpointSceneDeletes"],
                 checkpointAudioPuts=runtime_scene_messages(
-                    inflate_stored_messages(checkpoint_audio_messages(ckpt))
+                    inflate_stored_messages(patch["checkpointAudioPuts"])
                 ),
-                checkpointAudioDeletes=[],
-                stepPatchUpdates=[],
+                checkpointAudioDeletes=patch["checkpointAudioDeletes"],
+                stepPatchUpdates=[
+                    {
+                        "stepOffset": update["stepOffset"],
+                        "patch": _inflate_state_patch(update["patch"]),
+                    }
+                    for update in patch["stepPatchUpdates"]
+                ],
             )
         )
 
@@ -317,6 +313,7 @@ class ClientPlaybackHandle:
         """Evict one block from this client's cache."""
         with self._lock:
             self._loaded_blocks.discard(block_index)
+            self._loaded_block_payloads.pop(block_index, None)
         self._send_runtime_message(RuntimeEvictBlockMessage(block=block_index))
 
     def handle_runtime_event(self, message: RuntimeEventMessage) -> None:
@@ -431,6 +428,8 @@ class ClientPlaybackHandle:
         )
         with self._lock:
             self._loaded_blocks = set(plan.desired_blocks)
+            for block_index in plan.evictions:
+                self._loaded_block_payloads.pop(block_index, None)
         for block_index in plan.required_loads:
             self._queue_block_load(block_index)
         for block_index in plan.speculative_loads:
@@ -485,3 +484,14 @@ def _pause_button_color(
 ) -> tuple[int, int, int]:
     r, g, b = (34, 139, 230) if brand_color is None else brand_color
     return (int(r * 0.85), int(g * 0.85), int(b * 0.85))
+
+
+def _checkpoint_audio_map(messages: list[StoredMessage]) -> dict[str, StoredMessage]:
+    return {_audio_checkpoint_name(message): message for message in messages}
+
+
+def _audio_checkpoint_name(message: StoredMessage) -> str:
+    name = extract_message_name(message)
+    if name is None:
+        raise ValueError("Checkpoint audio message is missing a track name.")
+    return name

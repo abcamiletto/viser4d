@@ -10,15 +10,12 @@ import msgspec
 import numpy as np
 import zstandard
 
-from .. import _viser_private as impl
 from ..audio._api import audio_array_payload
-from ..audio._messages import AddAudioMessage, is_audio_message
+from ..audio._messages import AddAudioMessage
 from .._types import StoredMessage, StoredMessageEntry, StoredPayload
 from ._messages_util import (
     TimelineStep,
     extract_message_name,
-    is_scene_message,
-    scene_entries_for_message,
     store_raw_message,
     stored_dict,
     stored_float,
@@ -44,7 +41,16 @@ class CheckpointState:
     audio_tracks: dict[str, AudioTrackState] = field(default_factory=dict)
 
 
+@dataclass
+class CheckpointSnapshot:
+    """Checkpoint state plus the source revision it was derived from."""
+
+    state: CheckpointState
+    source_revision: int
+
+
 class _CheckpointFilePayload(msgspec.Struct):
+    sourceRevision: int
     sceneUpdates: list[tuple[str, StoredMessage]]
     keyToNode: list[tuple[str, str | None]]
     audioTracks: list["_CheckpointAudioTrackPayload"]
@@ -150,8 +156,7 @@ def copy_checkpoint(state: CheckpointState) -> CheckpointState:
 def checkpoint_scene_entries(state: CheckpointState) -> list[StoredMessageEntry]:
     """Build the keyed scene entries for one checkpoint."""
     return [
-        {"key": key, "message": message}
-        for key, message in state.scene_updates.items()
+        {"key": key, "message": message} for key, message in state.scene_updates.items()
     ]
 
 
@@ -166,47 +171,18 @@ def checkpoint_audio_messages(state: CheckpointState) -> list[StoredMessage]:
 def step_patch_messages(step: TimelineStep) -> list[StoredMessage]:
     """Materialize one step patch back into ordered viewer messages."""
     scene_messages = [
-        StoredMessage(
-            payload={"type": "RemoveSceneNodeMessage", "name": node_name}
-        )
+        StoredMessage(payload={"type": "RemoveSceneNodeMessage", "name": node_name})
         for node_name in step.scene_delete_nodes
     ]
-    scene_messages.extend(step.scene_puts.values())
+    scene_messages.extend(materialize_scene_puts(step.scene_puts))
     return scene_messages + list(step.audio_messages)
 
 
-def classify_step_change(
-    messages: list[impl.Message],
-) -> tuple[set[str], bool]:
-    """Classify recorded messages into changed scene keys and structural flag.
-
-    Returns:
-        changed_keys: Canonical state keys of scene messages that were added
-            or replaced.
-        is_structural: ``True`` when any message creates/removes a scene node or
-            touches audio (cases that may cascade through the checkpoint and
-            therefore require full invalidation instead of incremental patching).
-    """
-    changed_keys: set[str] = set()
-    is_structural = False
-    for message in messages:
-        stored = store_raw_message(message)
-        if is_audio_message(message):
-            is_structural = True
-            continue
-        if not is_scene_message(stored):
-            continue
-        entries, delete_nodes = scene_entries_for_message(stored)
-        for entry in entries:
-            changed_keys.add(entry["key"])
-        if impl.is_create_scene_node_message(message):
-            is_structural = True
-        if delete_nodes:
-            is_structural = True
-    return changed_keys, is_structural
-
-
-def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
+def write_checkpoint_file(
+    path: Path,
+    state: CheckpointState,
+    source_revision: int,
+) -> None:
     """Persist a checkpoint snapshot to disk."""
     audio_tracks = [
         _CheckpointAudioTrackPayload(
@@ -220,6 +196,7 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
         for name, track in sorted(state.audio_tracks.items())
     ]
     payload = _CheckpointFilePayload(
+        sourceRevision=source_revision,
         sceneUpdates=list(state.scene_updates.items()),
         keyToNode=list(state.key_to_node.items()),
         audioTracks=audio_tracks,
@@ -229,7 +206,7 @@ def write_checkpoint_file(path: Path, state: CheckpointState) -> None:
     path.write_bytes(compressed)
 
 
-def load_checkpoint_file(path: Path) -> CheckpointState:
+def load_checkpoint_file(path: Path) -> CheckpointSnapshot:
     """Load a checkpoint snapshot written by :func:`write_checkpoint_file`."""
     raw = zstandard.ZstdDecompressor().decompress(path.read_bytes())
     payload = msgspec.msgpack.decode(raw, type=_CheckpointFilePayload)
@@ -244,10 +221,13 @@ def load_checkpoint_file(path: Path) -> CheckpointState:
             waveform=np.ascontiguousarray(arr.reshape(shape)),
             volume=td.volume,
         )
-    return CheckpointState(
-        scene_updates=scene_updates,
-        key_to_node=key_to_node,
-        audio_tracks=audio_tracks,
+    return CheckpointSnapshot(
+        state=CheckpointState(
+            scene_updates=scene_updates,
+            key_to_node=key_to_node,
+            audio_tracks=audio_tracks,
+        ),
+        source_revision=payload.sourceRevision,
     )
 
 
@@ -276,3 +256,31 @@ def _append_audio_waveform(head: np.ndarray, tail: np.ndarray) -> np.ndarray:
     if head.ndim != tail.ndim:
         raise ValueError("Audio append must preserve waveform dimensionality.")
     return np.ascontiguousarray(np.concatenate((head, tail), axis=0))
+
+
+def materialize_scene_puts(scene_puts: dict[str, StoredMessage]) -> list[StoredMessage]:
+    scene_messages: list[StoredMessage] = []
+    node_messages: dict[str, list[StoredMessage]] = {}
+    for key, message in scene_puts.items():
+        if key.startswith("scene.node:"):
+            node_name = key.removeprefix("scene.node:").partition(":")[0]
+            node_messages.setdefault(node_name, []).append(message)
+            continue
+        if key.startswith("scene.root:"):
+            node_messages.setdefault("", []).append(message)
+            continue
+        scene_messages.append(message)
+
+    for name in sorted(node_messages, key=_scene_node_sort_key):
+        messages = node_messages[name]
+        scene_messages.extend(
+            message for message in messages if "props" in message.payload
+        )
+        scene_messages.extend(
+            message for message in messages if "props" not in message.payload
+        )
+    return scene_messages
+
+
+def _scene_node_sort_key(name: str) -> tuple[int, str]:
+    return (name.count("/"), name)

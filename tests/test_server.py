@@ -42,6 +42,20 @@ def _fake_create_gui(
     self._pause_button = SimpleNamespace()
 
 
+def _checkpoint_position(
+    payload: object,
+    name: str,
+) -> tuple[float, float, float]:
+    payload_dict = cast(dict[str, object], payload)
+    entries = cast(list[dict[str, object]], payload_dict["checkpointSceneEntries"])
+    for entry in entries:
+        if entry.get("key") != f"scene.node:{name}:prop:position":
+            continue
+        message = cast(Any, entry["message"])
+        return tuple(cast(list[float], message.payload["position"]))  # type: ignore[return-value]
+    raise AssertionError(f"Missing checkpoint position for {name!r}.")
+
+
 def test_server_does_not_expose_audio_api() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
@@ -808,6 +822,47 @@ def test_serialization_survives_block_eviction_to_disk() -> None:
             (192.0, 0.0, 0.0),
             (256.0, 0.0, 0.0),
         ]
+    finally:
+        server.stop()
+
+
+def test_requested_block_rebuilds_from_stale_checkpoint_file() -> None:
+    server = viser4d.Viser4dServer(
+        num_steps=3,
+        fps=1.0,
+        chunk_streaming=viser4d.ChunkStreamingConfig(block_size=1),
+        port=0,
+        verbose=False,
+    )
+    try:
+        with server.at(0) as timeline:
+            joint = timeline.scene.add_frame("/joint")
+
+        with server.at(1):
+            joint.position = (1.0, 0.0, 0.0)
+
+        with server.at(2):
+            joint.position = (2.0, 0.0, 0.0)
+
+        store = server._timeline
+        for block_index in range(store.block_count):
+            block = store._load_block(block_index)
+            store._flush_block(block_index, block)
+            store._wait_for_pending_flush(block_index)
+
+        checkpoint_path = store._checkpoint_path(2)
+        assert checkpoint_path.exists()
+
+        before_payload = store.block_payload(2)
+        assert _checkpoint_position(before_payload, "/joint") == (1.0, 0.0, 0.0)
+
+        with server.at(1):
+            joint.position = (5.0, 0.0, 0.0)
+
+        assert checkpoint_path.exists()
+
+        after_payload = store.block_payload(2)
+        assert _checkpoint_position(after_payload, "/joint") == (5.0, 0.0, 0.0)
     finally:
         server.stop()
 
