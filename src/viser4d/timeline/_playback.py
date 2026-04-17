@@ -174,6 +174,10 @@ class ClientPlaybackHandle:
         # and the server has never serialized it. Key presence means "client
         # holds this block."
         self._loaded_block_payloads: dict[int, RuntimeBlockPayload | None] = {}
+        # Blocks whose serialization is in flight. An entry here means a
+        # RuntimeLoadBlockMessage should be sent when the future completes;
+        # removing the entry before completion cancels the send.
+        self._pending_requests: set[int] = set()
         self._pending_runtime_messages: list[impl.Message] = []
         self._runtime_ready = False
         self._lock = threading.RLock()
@@ -248,12 +252,16 @@ class ClientPlaybackHandle:
         self._reset_client(0)
 
     def _reset_client(self, target_step: int) -> None:
+        # Hold the lock across the reset and the initial sends so that a
+        # late _finish_block_request for a retired session cannot interleave
+        # its load message between our clear and configure.
         with self._lock:
             self._loaded_block_payloads = {}
-        self._send_runtime_message(RuntimeClearMessage())
-        self.sync_runtime_config()
-        self._send_runtime_message(RuntimeSeekMessage(step=target_step))
-        self._sync_scene_overrides()
+            self._pending_requests.clear()
+            self._send_runtime_message(RuntimeClearMessage())
+            self.sync_runtime_config()
+            self._send_runtime_message(RuntimeSeekMessage(step=target_step))
+            self._sync_scene_overrides()
 
     def apply_message_update(self, key: str, message: StoredMessage) -> None:
         """Forward one keyed live stored message into the browser runtime."""
@@ -346,6 +354,7 @@ class ClientPlaybackHandle:
         if isinstance(message, RuntimeBlockDiscardMessage):
             with self._lock:
                 self._loaded_block_payloads.pop(message.blockIndex, None)
+                self._pending_requests.discard(message.blockIndex)
             return
         if isinstance(message, RuntimeBlockCachedMessage):
             with self._lock:
@@ -449,6 +458,10 @@ class ClientPlaybackHandle:
                 stacklevel=3,
             )
             return
+        with self._lock:
+            if block_index in self._pending_requests:
+                return
+            self._pending_requests.add(block_index)
         executor = impl.server_thread_executor(self._server)
         future = executor.submit(self._server._timeline.block_payload, block_index)
         future.add_done_callback(
@@ -462,8 +475,15 @@ class ClientPlaybackHandle:
         block_index: int,
         future: Future[RuntimeBlockPayload],
     ) -> None:
-        payload = future.result()
-        self.load_block(payload)
+        with self._lock:
+            if block_index not in self._pending_requests:
+                # Cancelled by a discard or a clear/set_steps reset.
+                return
+            self._pending_requests.discard(block_index)
+            if future.exception() is not None:
+                # Timeline was replaced mid-serialization; drop the result.
+                return
+            self.load_block(future.result())
 
     def _send_runtime_message(self, message: impl.Message) -> None:
         with self._lock:

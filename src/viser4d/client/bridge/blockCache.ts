@@ -106,6 +106,18 @@ export class BlockCache {
       this.budgetBytes,
       this.blocks,
     );
+    const desired = new Set<number>([...plan.required, ...plan.speculative]);
+
+    // Cancel pending requests that have drifted out of the desired window —
+    // otherwise rapid scrubbing across blocks would leave a growing trail of
+    // in-flight block loads piling up on the socket.
+    for (const blockIndex of [...this.pendingRequests]) {
+      if (desired.has(blockIndex)) {
+        continue;
+      }
+      this.pendingRequests.delete(blockIndex);
+      this.io.discardBlock(blockIndex);
+    }
 
     for (const blockIndex of plan.evictions) {
       this.blocks.delete(blockIndex);
