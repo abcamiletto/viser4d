@@ -100,10 +100,8 @@ class TimelineStore:
         self._pending_flushes: dict[int, Future[None]] = {}
         self._block_dir_root = tempfile.TemporaryDirectory(prefix="viser4d-timeline-")
         self._block_dir = Path(self._block_dir_root.name)
-        # Running checkpoint for eager incremental persistence during sequential recording.
-        self._eager_checkpoint = CheckpointState()
-        self._eager_checkpoint_source_revision = 0
-        self._eager_checkpoint_next_block = 0
+        # Recorded blocks carry monotonic revisions so derived checkpoints can be
+        # validated lazily without eagerly invalidating downstream snapshots.
         self._block_revisions: dict[int, int] = {}
         self._next_revision = 1
 
@@ -132,7 +130,7 @@ class TimelineStore:
             step = self.validate_step(step)
             block_index = step // self.block_size
             step_offset = step % self.block_size
-            before_step = self._checkpoint_for_block(block_index)
+            before_step = self._checkpoint_for_block(block_index, persist=False)
             block = self._load_block(block_index)
             apply_steps(before_step, block.steps[:step_offset])
             existing_messages = step_patch_messages(block.steps[step_offset])
@@ -266,7 +264,7 @@ class TimelineStore:
             step = self.validate_step(step)
             block_index = step // self.block_size
             step_offset = step % self.block_size
-            state = self._checkpoint_for_block(block_index)
+            state = self._checkpoint_for_block(block_index, persist=False)
             block = self._load_block(block_index)
             apply_steps(state, block.steps[: step_offset + 1])
             return [
@@ -398,46 +396,11 @@ class TimelineStore:
             return
         block.dirty = False
         pending_flush = self._pending_flushes.get(block_index)
-        next_block = block_index + 1
-        checkpoint_source_revision = self._checkpoint_source_revision(block_index)
-        if (
-            block_index == self._eager_checkpoint_next_block
-            and self._eager_checkpoint_source_revision == checkpoint_source_revision
-        ):
-            checkpoint_state = copy_checkpoint(self._eager_checkpoint)
-        else:
-            checkpoint_state = self._checkpoint_for_block(block_index)
-            self._eager_checkpoint = copy_checkpoint(checkpoint_state)
-            self._eager_checkpoint_source_revision = checkpoint_source_revision
-            self._eager_checkpoint_next_block = block_index
-        step_patches = [step_patch_payload(step) for step in block.steps]
-        manifest = self._manifest_states[block_index]
-        manifest.checkpoint_block_index = None if block_index == 0 else block_index - 1
-        manifest.payload_byte_size = _block_payload_byte_size(
-            checkpoint_scene_entries(checkpoint_state),
-            checkpoint_audio_messages(checkpoint_state),
-            step_patches,
-        )
-        manifest.dirty = False
-        ckpt: tuple[Path, CheckpointState, int] | None = None
-        if next_block < self.block_count:
-            apply_steps(self._eager_checkpoint, block.steps)
-            self._eager_checkpoint_source_revision = max(
-                self._eager_checkpoint_source_revision,
-                self._block_revisions.get(block_index, 0),
-            )
-            self._eager_checkpoint_next_block = next_block
-            ckpt = (
-                self._checkpoint_path(next_block),
-                copy_checkpoint(self._eager_checkpoint),
-                self._eager_checkpoint_source_revision,
-            )
         self._pending_flushes[block_index] = self._flush_executor.submit(
-            _write_block_and_checkpoint_after,
+            _write_block_after,
             pending_flush,
             self._block_path(block_index),
             block,
-            ckpt,
         )
 
     def _wait_for_pending_flush(self, block_index: int) -> None:
@@ -451,29 +414,43 @@ class TimelineStore:
             manifest.payload_byte_size = None
             manifest.dirty = True
 
-    def _checkpoint_for_block(self, block_index: int) -> CheckpointState:
+    def _checkpoint_for_block(
+        self,
+        block_index: int,
+        *,
+        persist: bool = True,
+    ) -> CheckpointState:
         block_index = self._validate_block_index(block_index)
+        if block_index == 0:
+            return CheckpointState()
         snapshot = self._checkpoint_snapshot(block_index)
         if snapshot is not None:
+            if persist:
+                self._persist_checkpoint_snapshot(block_index, snapshot)
             return copy_checkpoint(snapshot.state)
+
         base_index = 0
         state = CheckpointState()
+        source_revision = 0
         for candidate in range(block_index - 1, 0, -1):
             snapshot = self._checkpoint_snapshot(candidate)
             if snapshot is None:
                 continue
             state = copy_checkpoint(snapshot.state)
+            source_revision = snapshot.source_revision
             base_index = candidate
             break
+
         for index in range(base_index, block_index):
             block = self._load_block(index)
             apply_steps(state, block.steps)
-            self._cache_checkpoint(
-                index + 1,
-                state,
-                self._checkpoint_source_revision(index + 1),
-            )
-        return copy_checkpoint(state)
+            source_revision = max(source_revision, self._block_revisions.get(index, 0))
+            self._cache_checkpoint(index + 1, state, source_revision)
+
+        snapshot = self._checkpoint_cache[block_index]
+        if persist:
+            self._persist_checkpoint_snapshot(block_index, snapshot)
+        return copy_checkpoint(snapshot.state)
 
     def _checkpoint_snapshot(self, block_index: int) -> CheckpointSnapshot | None:
         expected_source_revision = self._checkpoint_source_revision(block_index)
@@ -525,6 +502,19 @@ class TimelineStore:
         while len(self._checkpoint_cache) > self._max_cached_checkpoints:
             self._checkpoint_cache.popitem(last=False)
 
+    def _persist_checkpoint_snapshot(
+        self,
+        block_index: int,
+        snapshot: CheckpointSnapshot,
+    ) -> None:
+        if block_index == 0:
+            return
+        write_checkpoint_file(
+            self._checkpoint_path(block_index),
+            snapshot.state,
+            snapshot.source_revision,
+        )
+
     def _checkpoint_source_revision(self, block_index: int) -> int:
         return max(
             (self._block_revisions.get(index, 0) for index in range(block_index)),
@@ -567,17 +557,14 @@ def _write_block_file(path: Path, block: TimelineBlock) -> None:
     path.write_bytes(compressed)
 
 
-def _write_block_and_checkpoint_after(
+def _write_block_after(
     previous_flush: Future[None] | None,
     block_path: Path,
     block: TimelineBlock,
-    checkpoint: tuple[Path, CheckpointState, int] | None,
 ) -> None:
     if previous_flush is not None:
         previous_flush.result()
     _write_block_file(block_path, block)
-    if checkpoint is not None:
-        write_checkpoint_file(*checkpoint)
 
 
 def _block_payload_byte_size(

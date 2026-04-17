@@ -49,9 +49,12 @@ def _checkpoint_position(
     payload_dict = cast(dict[str, object], payload)
     entries = cast(list[dict[str, object]], payload_dict["checkpointSceneEntries"])
     for entry in entries:
-        if entry.get("key") != f"scene.node:{name}:prop:position":
-            continue
         message = cast(Any, entry["message"])
+        if (
+            message.payload.get("type") != "SetPositionMessage"
+            or message.payload.get("name") != name
+        ):
+            continue
         return tuple(cast(list[float], message.payload["position"]))  # type: ignore[return-value]
     raise AssertionError(f"Missing checkpoint position for {name!r}.")
 
@@ -851,9 +854,10 @@ def test_requested_block_rebuilds_from_stale_checkpoint_file() -> None:
             store._wait_for_pending_flush(block_index)
 
         checkpoint_path = store._checkpoint_path(2)
-        assert checkpoint_path.exists()
+        assert checkpoint_path.exists() is False
 
         before_payload = store.block_payload(2)
+        assert checkpoint_path.exists()
         assert _checkpoint_position(before_payload, "/joint") == (1.0, 0.0, 0.0)
 
         with server.at(1):

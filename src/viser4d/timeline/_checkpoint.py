@@ -261,15 +261,12 @@ def _append_audio_waveform(head: np.ndarray, tail: np.ndarray) -> np.ndarray:
 def materialize_scene_puts(scene_puts: dict[str, StoredMessage]) -> list[StoredMessage]:
     scene_messages: list[StoredMessage] = []
     node_messages: dict[str, list[StoredMessage]] = {}
-    for key, message in scene_puts.items():
-        if key.startswith("scene.node:"):
-            node_name = key.removeprefix("scene.node:").partition(":")[0]
-            node_messages.setdefault(node_name, []).append(message)
+    for message in scene_puts.values():
+        node_name = extract_message_name(message)
+        if node_name is None:
+            scene_messages.append(message)
             continue
-        if key.startswith("scene.root:"):
-            node_messages.setdefault("", []).append(message)
-            continue
-        scene_messages.append(message)
+        node_messages.setdefault(node_name, []).append(message)
 
     for name in sorted(node_messages, key=_scene_node_sort_key):
         messages = node_messages[name]

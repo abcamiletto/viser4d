@@ -63,15 +63,6 @@ def is_scene_message(message: StoredMessage) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Canonical state keys
-# ---------------------------------------------------------------------------
-
-
-def _scene_node_prefix(name: str) -> str:
-    return f"scene.node:{name}" if name else "scene.root:"
-
-
 def scene_message_state_key(message: StoredMessage) -> str | None:
     """Return the canonical viser4d-owned key for one scene message.
 
@@ -82,45 +73,26 @@ def scene_message_state_key(message: StoredMessage) -> str | None:
     if not isinstance(message_type, str) or message_type == "RemoveSceneNodeMessage":
         return None
 
-    name_field = message.payload.get("name")
-    prefix = (
-        _scene_node_prefix(name_field)
-        if isinstance(name_field, str)
-        else "scene.global"
-    )
-
     if "props" in message.payload:
-        return f"{prefix}:create"
+        name = message.payload.get("name")
+        return (
+            f"scene:create:{name}"
+            if isinstance(name, str)
+            else f"scene:create:{message_type}"
+        )
 
     if message_type == "SceneNodeUpdateMessage":
-        return f"{prefix}:update"
-    if message_type == "SetOrientationMessage":
-        return f"{prefix}:prop:orientation"
-    if message_type == "SetPositionMessage":
-        return f"{prefix}:prop:position"
-    if message_type == "SetSceneNodeVisibilityMessage":
-        return f"{prefix}:prop:visible"
-    if message_type == "SetSceneNodeClickableMessage":
-        return f"{prefix}:prop:clickable"
-    if message_type == "SetBoneOrientationMessage":
-        bone_index = message.payload.get("bone_index")
-        return f"{prefix}:bone:{bone_index}:orientation"
-    if message_type == "SetBonePositionMessage":
-        bone_index = message.payload.get("bone_index")
-        return f"{prefix}:bone:{bone_index}:position"
+        name = message.payload.get("name")
+        updates = stored_dict(message.payload.get("updates", {}))
+        update_keys = ",".join(str(key) for key in updates)
+        return f"scene:update:{name}:{update_keys}"
 
-    # Generic fallback based on non-standard payload fields.
-    payload_keys = tuple(
-        str(key) for key in message.payload if key not in {"type", "name", "props"}
-    )
-    if len(payload_keys) == 1:
-        return f"{prefix}:prop:{payload_keys[0]}"
-    return f"{prefix}:message:{message_type}"
+    return f"scene:{_message_identity(message)}"
 
 
 def scene_delete_state_key(node_name: str) -> str:
     """Canonical key for a ``RemoveSceneNodeMessage`` override."""
-    return f"scene.node:{node_name}:delete"
+    return f"scene:delete:{node_name}"
 
 
 def scene_entries_for_message(
@@ -144,7 +116,7 @@ def scene_entries_for_message(
         for prop, value in updates.items():
             entries.append(
                 {
-                    "key": f"{_scene_node_prefix(name)}:prop:{prop}",
+                    "key": f"scene:update:{name}:{prop}",
                     "message": StoredMessage(
                         payload={
                             **message.payload,
@@ -178,3 +150,21 @@ def timeline_step_from_patch_payload(patch: StoredStatePatch) -> TimelineStep:
         scene_delete_nodes=list(patch["sceneDeleteNodes"]),
         audio_messages=list(patch["audioMessages"]),
     )
+
+
+def _message_identity(message: StoredMessage) -> str:
+    message_type = message.payload.get("type")
+    if not isinstance(message_type, str):
+        raise TypeError("Stored scene message is missing a string type.")
+
+    parts = [message_type]
+    name = message.payload.get("name")
+    if isinstance(name, str):
+        parts.append(name if name else "@root")
+    else:
+        parts.append("@global")
+
+    if "bone_index" in message.payload:
+        parts.append(f"bone={message.payload['bone_index']}")
+
+    return ":".join(parts)
