@@ -425,7 +425,7 @@ class TimelineStore:
             return CheckpointState()
         snapshot = self._checkpoint_snapshot(block_index)
         if snapshot is not None:
-            if persist:
+            if persist and not self._checkpoint_path(block_index).exists():
                 self._persist_checkpoint_snapshot(block_index, snapshot)
             return copy_checkpoint(snapshot.state)
 
