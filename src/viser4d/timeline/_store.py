@@ -52,7 +52,6 @@ class TimelineBlock:
 
 @dataclass
 class _BlockManifestState:
-    checkpoint_block_index: int | None = None
     payload_byte_size: int | None = None
     dirty: bool = True
 
@@ -292,9 +291,6 @@ class TimelineStore:
             checkpoint_audio = checkpoint_audio_messages(ckpt)
             step_patches = [step_patch_payload(step) for step in block.steps]
             manifest = self._manifest_states[block_index]
-            manifest.checkpoint_block_index = (
-                None if block_index == 0 else block_index - 1
-            )
             manifest.payload_byte_size = _block_payload_byte_size(
                 checkpoint_scene,
                 checkpoint_audio,
@@ -410,7 +406,6 @@ class TimelineStore:
 
     def _invalidate_manifests_after_block(self, block_index: int) -> None:
         for manifest in self._manifest_states[block_index:]:
-            manifest.checkpoint_block_index = None
             manifest.payload_byte_size = None
             manifest.dirty = True
 
@@ -529,7 +524,6 @@ class TimelineStore:
             block_index=block_index,
             step_start=step_start,
             step_stop=step_stop,
-            checkpoint_block_index=manifest.checkpoint_block_index,
             payload_byte_size=manifest.payload_byte_size,
             dirty=manifest.dirty,
         )
