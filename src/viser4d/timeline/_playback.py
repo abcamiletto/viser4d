@@ -298,13 +298,6 @@ class ClientPlaybackHandle:
             )
         )
 
-    def load_block(self, payload: RuntimeBlockPayload) -> None:
-        """Record residency and send a full block payload to the client."""
-        message = _build_load_block_message(payload)
-        with self._lock:
-            self._loaded_block_payloads[payload["block"]] = payload
-            self._send_runtime_message(message)
-
     def update_block(self, payload: RuntimeBlockPayload) -> None:
         """Push a patch to a client-held block; no-op if the client has evicted."""
         block_index = payload["block"]
