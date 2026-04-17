@@ -213,11 +213,8 @@ class SceneRecorder:
         self._server.bump_client_chunk_cache_version()
         payloads: dict[int, RuntimeBlockPayload] = {}
         with self._timeline_lock:
-            manifests = [
-                manifest_payload(manifest)
-                for manifest in self._server._timeline.block_manifests()
-            ]
-            for playback in self._server.get_client_playbacks().values():
+            playbacks = list(self._server.get_client_playbacks().values())
+            for playback in playbacks:
                 for block_index in sorted(playback.loaded_blocks):
                     if block_index < changed_block:
                         continue
@@ -226,6 +223,15 @@ class SceneRecorder:
                         payload = self._server._timeline.block_payload(block_index)
                         payloads[block_index] = payload
                     playback.update_block(payload)
+            # block_payload() refreshes byte-size metadata on each recomputed
+            # block, so snapshot manifests after the payload loop rather than
+            # before — otherwise the client's planner sees stale None sizes
+            # and collapses speculation to one block.
+            manifests = [
+                manifest_payload(manifest)
+                for manifest in self._server._timeline.block_manifests()
+            ]
+            for playback in playbacks:
                 playback.send_manifests(manifests)
 
     def _validate_step_messages(self, messages: list[impl.Message]) -> None:

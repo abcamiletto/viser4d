@@ -360,11 +360,15 @@ class ClientPlaybackHandle:
             self._handle_block_request(message.blockIndex)
             return
         if isinstance(message, RuntimeBlockDiscardMessage):
+            if not self._valid_block_index(message.blockIndex):
+                return
             with self._lock:
                 self._loaded_block_payloads.pop(message.blockIndex, None)
                 self._pending_requests.discard(message.blockIndex)
             return
         if isinstance(message, RuntimeBlockCachedMessage):
+            if not self._valid_block_index(message.blockIndex):
+                return
             with self._lock:
                 self._loaded_block_payloads.setdefault(message.blockIndex, None)
             return
@@ -457,8 +461,11 @@ class ClientPlaybackHandle:
         )
         return True
 
+    def _valid_block_index(self, block_index: int) -> bool:
+        return 0 <= block_index < self._server._timeline.block_count
+
     def _handle_block_request(self, block_index: int) -> None:
-        if not (0 <= block_index < self._server._timeline.block_count):
+        if not self._valid_block_index(block_index):
             warnings.warn(
                 f"Ignoring runtime block request with invalid "
                 f"blockIndex={block_index}.",

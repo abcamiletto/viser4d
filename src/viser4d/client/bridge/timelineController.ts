@@ -286,32 +286,34 @@ export class TimelineController {
     void this.persistentBlocks
       .loadBlock(blockIndex)
       .then((block: LoadedBlock | null) => {
+        // A clear/reset or focus-change between request start and IndexedDB
+        // resolution clears pendingRequests. Drop the result to keep a stale
+        // cache entry from winning the race into the new session.
+        if (!this.blocks.hasPendingRequest(blockIndex)) {
+          return;
+        }
         if (block) {
           debugState.push("runtime.load_block.cache_hit", { block: blockIndex });
-          if (!this.blocks.hasBlockIndex(blockIndex)) {
-            this.blocks.restoreBlock(blockIndex, block);
-            // Register residency so recording mutations patch this block
-            // instead of skipping it.
-            this.sendRuntimeEvent({
-              type: "RuntimeBlockCachedMessage",
-              blockIndex,
-            });
-            this.afterBlockLoad(blockIndex);
-          }
+          this.blocks.restoreBlock(blockIndex, block);
+          this.sendRuntimeEvent({
+            type: "RuntimeBlockCachedMessage",
+            blockIndex,
+          });
+          this.afterBlockLoad(blockIndex);
           return;
         }
         this.requestBlockFromServer(blockIndex);
       })
       .catch((error) => {
         console.warn("[viser4d] Failed to read cached chunk block.", error);
+        if (!this.blocks.hasPendingRequest(blockIndex)) {
+          return;
+        }
         this.requestBlockFromServer(blockIndex);
       });
   }
 
   private requestBlockFromServer(blockIndex: number): void {
-    if (this.blocks.hasBlockIndex(blockIndex)) {
-      return;
-    }
     debugState.push("runtime.load_block.cache_miss", { block: blockIndex });
     this.sendRuntimeEvent({
       type: "RuntimeBlockRequestMessage",

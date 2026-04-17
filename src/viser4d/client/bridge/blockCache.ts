@@ -39,6 +39,10 @@ export class BlockCache {
     return this.blocks.has(blockIndex);
   }
 
+  hasPendingRequest(blockIndex: number): boolean {
+    return this.pendingRequests.has(blockIndex);
+  }
+
   blockIndexOf(step: number): number {
     return Math.floor(step / this.blockSize);
   }
