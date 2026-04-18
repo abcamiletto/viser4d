@@ -91,7 +91,7 @@ export class BlockCache {
     this.budgetBytes = bytes;
   }
 
-  syncCurrentBlock(currentBlock: number): void {
+  syncCurrentBlock(currentBlock: number, appliedBlock: number = -1): void {
     if (this.manifests.length === 0 || this.budgetBytes <= 0) {
       return;
     }
@@ -113,7 +113,13 @@ export class BlockCache {
       this.io.discardBlock(blockIndex);
     }
 
+    // Pin the currently-rendered block: evicting it mid-seek would blank the
+    // scene until the new target lands. It clears naturally on the next sync
+    // after the applicator advances.
     for (const blockIndex of plan.evictions) {
+      if (blockIndex === appliedBlock) {
+        continue;
+      }
       this.blocks.delete(blockIndex);
       this.pendingRequests.delete(blockIndex);
       this.io.discardBlock(blockIndex);

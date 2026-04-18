@@ -34,10 +34,11 @@ export function planPreload(
   const required = [focus];
   let used = manifests[focus].payloadByteSize ?? 0;
 
-  const previous = (focus - 1 + blockCount) % blockCount;
-  if (previous !== focus) {
-    required.push(previous);
-    used += manifests[previous].payloadByteSize ?? 0;
+  // No wrap: if the user is at block 0, forward speculation still covers the
+  // tail block if budget permits, but we don't burn a required slot on it.
+  if (focus > 0) {
+    required.push(focus - 1);
+    used += manifests[focus - 1].payloadByteSize ?? 0;
   }
 
   const desired = new Set<number>(required);
