@@ -416,7 +416,7 @@ export class TimelineController {
       return;
     }
     this.lastFocusBlock = blockIndex;
-    this.blocks.syncCurrentBlock(blockIndex);
+    this.blocks.syncCurrentBlock(blockIndex, this.scene.appliedBlock);
   }
 
   private syncAdvancedTimesteps(
