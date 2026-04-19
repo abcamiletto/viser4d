@@ -167,20 +167,21 @@ export class SceneApplicator {
       return new Map<string, string>();
     }
     const targetNodes: RenderedTimelineNodes = new Map();
-    for (const message of materializeCheckpointMessages(block.checkpoint)) {
-      if (!isAudioMessage(message)) {
-        this.trackTimelineNode(message, targetNodes);
-      }
+    for (const message of block.checkpoint.sceneEntries.values()) {
+      this.trackTimelineNode(message, targetNodes);
     }
     const blockIndex = this.blocks.blockIndexOf(step);
     const blockStart = this.blocks.blockStartStep(blockIndex);
     for (let index = blockStart; index <= step; index += 1) {
       const patch = block.stepPatches[index - blockStart];
-      const messages = patch ? materializeStatePatchMessages(patch) : [];
-      for (const message of messages) {
-        if (!isAudioMessage(message)) {
-          this.trackTimelineNode(message, targetNodes);
-        }
+      if (!patch) {
+        continue;
+      }
+      for (const name of patch.sceneDeleteNodes) {
+        this.trackRemoval(name, targetNodes);
+      }
+      for (const message of patch.scenePuts.values()) {
+        this.trackTimelineNode(message, targetNodes);
       }
     }
     return targetNodes;
@@ -227,9 +228,12 @@ export class SceneApplicator {
       return true;
     }
     if (message.type === "RemoveSceneNodeMessage") {
-      return Array.from(this.renderedTimelineNodes.keys()).some(
-        (nodeName) => nodeName === name || nodeName.startsWith(`${name}/`),
-      );
+      for (const nodeName of this.renderedTimelineNodes.keys()) {
+        if (isNodeOrDescendant(nodeName, name)) {
+          return true;
+        }
+      }
+      return false;
     }
     return this.renderedTimelineNodes.has(name);
   }
@@ -240,10 +244,7 @@ export class SceneApplicator {
       for (const [overrideKey, overrideMessage] of Array.from(this.liveSceneOverrides.entries())) {
         const overrideName =
           typeof overrideMessage.name === "string" ? overrideMessage.name : null;
-        if (
-          overrideName !== null &&
-          (overrideName === name || overrideName.startsWith(`${name}/`))
-        ) {
+        if (overrideName !== null && isNodeOrDescendant(overrideName, name)) {
           this.liveSceneOverrides.delete(overrideKey);
         }
       }
@@ -261,10 +262,7 @@ export class SceneApplicator {
     }
     if (message.type === "RemoveSceneNodeMessage") {
       for (const preservedName of preservedNodes) {
-        if (
-          preservedName === name ||
-          preservedName.startsWith(`${name}/`)
-        ) {
+        if (isNodeOrDescendant(preservedName, name)) {
           return null;
         }
       }
@@ -289,20 +287,31 @@ export class SceneApplicator {
       return;
     }
     if (message.type === "RemoveSceneNodeMessage") {
-      for (const nodeName of Array.from(renderedTimelineNodes.keys())) {
-        if (nodeName === name || nodeName.startsWith(`${name}/`)) {
-          renderedTimelineNodes.delete(nodeName);
-        }
-      }
+      this.trackRemoval(name, renderedTimelineNodes);
       return;
     }
     if (isCreateSceneNodeMessage(message)) {
       renderedTimelineNodes.set(name, message.type);
     }
   }
+
+  private trackRemoval(
+    name: string,
+    renderedTimelineNodes: RenderedTimelineNodes = this.renderedTimelineNodes,
+  ): void {
+    for (const nodeName of Array.from(renderedTimelineNodes.keys())) {
+      if (isNodeOrDescendant(nodeName, name)) {
+        renderedTimelineNodes.delete(nodeName);
+      }
+    }
+  }
 }
 
 const _NO_PRESERVED_NODES = new Set<string>();
+
+function isNodeOrDescendant(nodeName: string, parentName: string): boolean {
+  return nodeName === parentName || nodeName.startsWith(`${parentName}/`);
+}
 
 function hasAncestorInSet(name: string, names: ReadonlySet<string>): boolean {
   let slash = name.lastIndexOf("/");
