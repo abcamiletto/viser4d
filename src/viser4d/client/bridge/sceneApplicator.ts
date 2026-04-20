@@ -252,28 +252,29 @@ export class SceneApplicator {
     this.liveSceneOverrides.set(key, message);
   }
 
+  // During a cross-block rebuild, per-step patches may carry Remove messages
+  // for nodes that also re-appear in the target state (same type at both
+  // ends). We keep those subtrees mounted to avoid churn; dropping the Remove
+  // here lets the re-create flow through viser's upsert unchanged. Non-Remove
+  // messages always pass through: viser's addSceneNode is already idempotent
+  // for existing nodes, and going through the full create path preserves the
+  // side effects (skinnedMeshState init, nodeRefFromName clear, pose gating)
+  // that a SceneNodeUpdateMessage rewrite would silently skip.
   private normalizeSceneMessage(
     message: RuntimeMessage,
     preservedNodes: ReadonlySet<string>,
   ): RuntimeMessage | null {
+    if (message.type !== "RemoveSceneNodeMessage") {
+      return message;
+    }
     const name = typeof message.name === "string" ? message.name : null;
-    if (!name) {
+    if (name === null) {
       return message;
     }
-    if (message.type === "RemoveSceneNodeMessage") {
-      for (const preservedName of preservedNodes) {
-        if (isNodeOrDescendant(preservedName, name)) {
-          return null;
-        }
+    for (const preservedName of preservedNodes) {
+      if (isNodeOrDescendant(preservedName, name)) {
+        return null;
       }
-      return message;
-    }
-    if (preservedNodes.has(name) && isCreateSceneNodeMessage(message)) {
-      return {
-        type: "SceneNodeUpdateMessage",
-        name,
-        updates: message.props as RuntimeMessage["updates"],
-      };
     }
     return message;
   }
