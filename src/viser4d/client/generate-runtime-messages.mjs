@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 
 const clientDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(clientDir, "..", "..", "..");
-const moduleName = "viser4d._generate_runtime_message_ts";
+const moduleName = "viser4d._codegen";
 
 function hasExecutable(command) {
   const result = spawnSync(command, ["--version"], {
@@ -45,7 +45,7 @@ export function generateRuntimeMessages() {
   });
 
   if (result.status !== 0) {
-    throw new Error("Failed to generate generatedRuntimeMessages.ts.");
+    throw new Error("Failed to generate protocol.gen.ts.");
   }
 }
 

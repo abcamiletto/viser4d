@@ -1,5 +1,4 @@
 include src/viser4d/runtime.js
 recursive-include src/viser4d/client *.ts *.json *.mjs
-exclude src/viser4d/client/bridge/generatedRuntimeMessages.ts
 prune src/viser4d/client/.nodeenv
 prune src/viser4d/client/node_modules

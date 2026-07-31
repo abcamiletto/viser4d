@@ -1,29 +1,27 @@
+"""``Viser4dServer``: a viser server with a recorded, replayable time dimension."""
+
 from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any
 
 import viser
 
-from . import _viser_private as impl
+from . import _viser
+from ._build import runtime_source
+from ._config import StreamingConfig, require_positive_float
 from ._export import ExportBuilder
-from ._runtime import runtime_source
-from ._runtime_messages import (
-    RUNTIME_EVENT_MESSAGE_TYPES,
-    RuntimeEventMessage,
-    RuntimeReadyMessage,
-)
-from ._validation import require_positive_float
-from .timeline._playback import ClientPlaybackHandle
-from .timeline._recording import SceneRecorder, TimelineContext
-from .timeline._store import TimelineStore
-from .timeline._streaming import ChunkStreamingConfig
+from ._playback import ClientSession
+from ._protocol import EVENT_MESSAGE_TYPES, TimelineEventMessage, TimelineReadyMessage
+from ._recorder import Recorder, TimelineContext
+from ._timeline import Timeline
+from ._viser import ClientHandle
 
-if TYPE_CHECKING:
-    from ._viser_private import ClientHandle
+_TimestepCallback = Callable[[ClientHandle, int], None | Coroutine[Any, Any, None]]
+_PlaybackCallback = Callable[[ClientHandle, bool], None | Coroutine[Any, Any, None]]
 
 
 class Viser4dServer(viser.ViserServer):
@@ -34,219 +32,139 @@ class Viser4dServer(viser.ViserServer):
         num_steps: int,
         fps: float = 30.0,
         *,
-        chunk_streaming: ChunkStreamingConfig | None = None,
+        streaming: StreamingConfig | None = None,
         loop: bool = False,
         playback_speed: float = 1.0,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
-        """Initialize the timeline runtime and client playback state.
-
-        ``chunk_streaming`` controls timeline block sizing and client preload budget.
-        ``loop`` controls whether playback wraps at the end by default.
-        ``playback_speed`` controls the default playback speed multiplier.
-        """
         if num_steps < 1:
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
-        timeline_fps = require_positive_float("fps", fps)
-        streaming = (
-            ChunkStreamingConfig.from_env()
-            if chunk_streaming is None
-            else chunk_streaming
-        )
-        default_playback_speed = require_positive_float(
-            "playback_speed",
-            playback_speed,
-        )
+        self._timeline_fps = require_positive_float("fps", fps)
+        self._streaming = StreamingConfig.from_env() if streaming is None else streaming
+        self._default_speed = require_positive_float("playback_speed", playback_speed)
         super().__init__(**kwargs)
 
-        self._timeline_fps = timeline_fps
-        self._chunk_streaming = streaming
-        self._playback_config_lock = threading.Lock()
+        self._config_lock = threading.Lock()
         self._loop = loop
-        self._playback_speed = default_playback_speed
-        self._timeline = TimelineStore(
-            num_steps,
-            block_size=streaming.block_size,
-            flush_executor=impl.server_thread_executor(self),
-        )
-        self._client_playbacks: dict[int, ClientPlaybackHandle] = {}
-        self._pending_runtime_ready_client_ids: set[int] = set()
-        self._client_playbacks_lock = threading.Lock()
-        self._timestep_callbacks: list[
-            Callable[[ClientHandle, int], None | Coroutine[Any, Any, None]]
-        ] = []
-        self._playback_callbacks: list[
-            Callable[[ClientHandle, bool], None | Coroutine[Any, Any, None]]
-        ] = []
+        self._playback_speed = self._default_speed
+        self._timeline = Timeline(num_steps, block_size=self._streaming.block_size)
+        self._sessions: dict[int, ClientSession] = {}
+        self._pending_ready_ids: set[int] = set()
+        self._sessions_lock = threading.Lock()
+        self._timestep_callbacks: list[_TimestepCallback] = []
+        self._playback_callbacks: list[_PlaybackCallback] = []
         self._stop_event = threading.Event()
-        self._recorder = SceneRecorder(self)
-        self._export_builder = ExportBuilder(self)
+        self._recorder = Recorder(self)
+        self._export = ExportBuilder(self)
 
-        impl.queue_server_message(self, impl.run_javascript_message(runtime_source()))
+        _viser.queue_server_message(
+            self, _viser.run_javascript_message(runtime_source())
+        )
+        for message_cls in EVENT_MESSAGE_TYPES:
+            _viser.register_message_handler(self, message_cls, self._handle_event)
 
-        for message_cls in RUNTIME_EVENT_MESSAGE_TYPES:
-            impl.register_message_handler(
-                self,
-                message_cls,
-                self._handle_runtime_event,
-            )
+        self.on_client_connect(self._attach_session)
+        self.on_client_disconnect(self._detach_session)
 
-        @self.on_client_connect
-        def _attach_playback(client: ClientHandle) -> None:
-            playback = ClientPlaybackHandle(
-                self,
-                client,
-                brand_color=impl.playback_brand_color(self),
-            )
-            replay_ready = False
-            with self._client_playbacks_lock:
-                self._client_playbacks[client.client_id] = playback
-                replay_ready = (
-                    client.client_id in self._pending_runtime_ready_client_ids
-                )
-                self._pending_runtime_ready_client_ids.discard(client.client_id)
-            if replay_ready:
-                playback.handle_runtime_event(RuntimeReadyMessage())
-
-        @self.on_client_disconnect
-        def _detach_playback(client: ClientHandle) -> None:
-            with self._client_playbacks_lock:
-                self._client_playbacks.pop(client.client_id, None)
-                self._pending_runtime_ready_client_ids.discard(client.client_id)
+    # -- recording --------------------------------------------------------
 
     def at(self, t: int) -> AbstractContextManager[TimelineContext]:
-        """Return the explicit timeline frame API for timestep ``t``."""
+        """Record scene and audio mutations into timestep ``t`` (non-nestable)."""
         return self._recorder.at(t)
+
+    # -- configuration ----------------------------------------------------
 
     @property
     def num_steps(self) -> int:
-        """Current number of timesteps in the active timeline."""
         return self._timeline.num_steps
 
     @property
     def fps(self) -> float:
-        """Timeline step rate used for recording, audio timing, and export."""
         return self._timeline_fps
 
     @property
-    def chunk_streaming(self) -> ChunkStreamingConfig:
-        """Server-owned chunk streaming policy."""
-        return self._chunk_streaming
+    def streaming(self) -> StreamingConfig:
+        return self._streaming
 
     @property
     def block_size(self) -> int:
-        """Timeline chunk size for storage and runtime block requests."""
-        return self._chunk_streaming.block_size
-
-    @property
-    def client_chunk_cache_bytes(self) -> int:
-        """Per-client chunk cache budget used by the preload planner."""
-        return self._chunk_streaming.client_chunk_cache_bytes
+        return self._streaming.block_size
 
     @property
     def loop(self) -> bool:
-        """Whether playback wraps at the end for connected and future clients."""
-        with self._playback_config_lock:
+        with self._config_lock:
             return self._loop
 
     @property
     def playback_speed(self) -> float:
-        """Default playback speed multiplier for connected and future clients."""
-        with self._playback_config_lock:
+        with self._config_lock:
             return self._playback_speed
 
+    # -- playback controls ------------------------------------------------
+
     def play(self) -> None:
-        """Ask connected clients to play from their own current timesteps."""
-        for playback in self._client_playback_values():
-            playback.play()
+        for session in self._client_session_values():
+            session.play()
 
     def pause(self) -> None:
-        """Ask connected clients to pause at their current timesteps."""
-        for playback in self._client_playback_values():
-            playback.pause()
+        for session in self._client_session_values():
+            session.pause()
 
     def refresh(self) -> None:
-        """Redraw the current timestep on all connected clients."""
-        for playback in self._client_playback_values():
-            playback.refresh()
+        for session in self._client_session_values():
+            session.refresh()
 
     def set_playback_speed(self, speed: float) -> None:
-        """Update connected client playback speed without starting playback."""
         next_speed = require_positive_float("speed", speed)
-        with self._playback_config_lock:
+        with self._config_lock:
             self._playback_speed = next_speed
-        for playback in self._client_playback_values():
-            playback.set_speed(next_speed)
+        for session in self._client_session_values():
+            session.set_speed(next_speed)
 
     def set_loop(self, loop: bool) -> None:
-        """Update the looping policy for connected and future clients."""
-        with self._playback_config_lock:
+        with self._config_lock:
             self._loop = loop
-        for playback in self._client_playback_values():
-            playback.sync_runtime_config()
+        for session in self._client_session_values():
+            session.sync_config()
 
     def set_steps(self, num_steps: int) -> None:
-        """Resize the timeline, preserving retained steps and dropping truncated ones."""
         if num_steps < 1:
             raise ValueError(f"num_steps must be >= 1, got {num_steps}.")
         if num_steps == self.num_steps:
             return
-        old_timeline = self._recorder.resize_timeline(num_steps)
-        try:
-            for playback in self._client_playback_values():
-                playback.sync_steps()
-        finally:
-            old_timeline.close()
+        self._recorder.resize(num_steps)
+        for session in self._client_session_values():
+            session.sync_steps()
 
     def clear(self) -> None:
-        """Reset the timeline, playback state, and shared scene content."""
-        old_timeline = self._recorder.clear_timeline()
-        try:
-            self.scene.reset()
-            for playback in self._client_playback_values():
-                playback.clear()
-        finally:
-            old_timeline.close()
+        self._recorder.clear()
+        self.scene.reset()
+        for session in self._client_session_values():
+            session.clear()
 
-    def on_timestep_change(
-        self,
-        callback: Callable[[ClientHandle, int], None | Coroutine[Any, Any, None]],
-    ) -> None:
-        """Register a callback for any committed client timestep change."""
+    # -- callbacks --------------------------------------------------------
+
+    def on_timestep_change(self, callback: _TimestepCallback) -> None:
         self._timestep_callbacks.append(callback)
 
-    def on_playback_change(
-        self,
-        callback: Callable[[ClientHandle, bool], None | Coroutine[Any, Any, None]],
-    ) -> None:
-        """Register a callback for client play/pause state changes."""
+    def on_playback_change(self, callback: _PlaybackCallback) -> None:
         self._playback_callbacks.append(callback)
 
-    def get_client_playback(self, client_id: int) -> ClientPlaybackHandle | None:
-        """Return one connected client playback handle, if present."""
-        with self._client_playbacks_lock:
-            return self._client_playbacks.get(client_id)
+    def get_client_playback(self, client_id: int) -> ClientSession | None:
+        with self._sessions_lock:
+            return self._sessions.get(client_id)
 
-    def get_client_playbacks(self) -> dict[int, ClientPlaybackHandle]:
-        """Return a copy of the connected client playback handles."""
-        with self._client_playbacks_lock:
-            return self._client_playbacks.copy()
+    def get_client_playbacks(self) -> dict[int, ClientSession]:
+        with self._sessions_lock:
+            return dict(self._sessions)
 
-    def sleep_forever(self) -> None:
-        """Block until the server is stopped."""
-        while not self._stop_event.wait(3600):
-            pass
+    # -- export -----------------------------------------------------------
 
     def serialize(
-        self,
-        *,
-        start_timestep: int = 0,
-        end_timestep: int | None = None,
+        self, *, start_timestep: int = 0, end_timestep: int | None = None
     ) -> bytes:
-        """Serialize the recorded timeline to a native `.viser` file."""
-        return self._export_builder.serialize(
-            start_timestep=start_timestep,
-            end_timestep=end_timestep,
+        return self._export.serialize(
+            start_timestep=start_timestep, end_timestep=end_timestep
         )
 
     def as_html(
@@ -256,39 +174,59 @@ class Viser4dServer(viser.ViserServer):
         start_timestep: int = 0,
         end_timestep: int | None = None,
     ) -> str:
-        """Get a self-contained HTML string for the recorded timeline."""
-        return self._export_builder.as_html(
+        return self._export.as_html(
             dark_mode=dark_mode,
             start_timestep=start_timestep,
             end_timestep=end_timestep,
         )
 
+    # -- lifecycle --------------------------------------------------------
+
+    def sleep_forever(self) -> None:
+        while not self._stop_event.wait(3600):
+            pass
+
     def stop(self) -> None:
-        """Shut down the underlying viser server."""
         self._stop_event.set()
         self._recorder.close()
         self._timeline.close()
         super().stop()
 
-    def _client_playback_values(self) -> list[ClientPlaybackHandle]:
-        with self._client_playbacks_lock:
-            return list(self._client_playbacks.values())
+    # -- internals --------------------------------------------------------
 
-    def _handle_runtime_event(
-        self, client_id: int, message: RuntimeEventMessage
-    ) -> None:
-        with self._client_playbacks_lock:
-            playback = self._client_playbacks.get(client_id)
-            if playback is None:
-                if not isinstance(message, RuntimeReadyMessage):
-                    return
-                self._pending_runtime_ready_client_ids.add(client_id)
+    def _client_session_values(self) -> list[ClientSession]:
+        with self._sessions_lock:
+            return list(self._sessions.values())
+
+    def _attach_session(self, client: ClientHandle) -> None:
+        session = ClientSession(self, client)
+        # Register before the initial sync so overrides recorded concurrently
+        # are forwarded; the session may then receive them twice (idempotent).
+        with self._sessions_lock:
+            self._sessions[client.client_id] = session
+            replay = client.client_id in self._pending_ready_ids
+            self._pending_ready_ids.discard(client.client_id)
+        session.start()
+        if replay:
+            session.handle_event(TimelineReadyMessage())
+
+    def _detach_session(self, client: ClientHandle) -> None:
+        with self._sessions_lock:
+            self._sessions.pop(client.client_id, None)
+            self._pending_ready_ids.discard(client.client_id)
+
+    def _handle_event(self, client_id: int, message: TimelineEventMessage) -> None:
+        with self._sessions_lock:
+            session = self._sessions.get(client_id)
+            if session is None:
+                if isinstance(message, TimelineReadyMessage):
+                    self._pending_ready_ids.add(client_id)
                 return
-        playback.handle_runtime_event(message)
+        session.handle_event(message)
 
-    def _dispatch_timestep_change(self, client: ClientHandle, timestep: int) -> None:
+    def _dispatch_timestep_change(self, client: ClientHandle, step: int) -> None:
         for callback in list(self._timestep_callbacks):
-            result = callback(client, timestep)
+            result = callback(client, step)
             if asyncio.iscoroutine(result):
                 self.get_event_loop().create_task(result)
 

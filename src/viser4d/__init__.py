@@ -1,5 +1,5 @@
-from .audio import AudioHandle
+from ._audio import AudioHandle
+from ._config import StreamingConfig
 from ._server import Viser4dServer
-from .timeline._streaming import ChunkStreamingConfig
 
-__all__ = ["AudioHandle", "ChunkStreamingConfig", "Viser4dServer"]
+__all__ = ["AudioHandle", "StreamingConfig", "Viser4dServer"]

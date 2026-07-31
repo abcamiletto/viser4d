@@ -1,3 +1,13 @@
+"""Export the recorded timeline via viser's native ``StateSerializer``.
+
+We seed the serializer from the live broadcast buffer (which carries the injected
+runtime JS, so exported HTML gets audio sync for free), then walk steps: fold a
+running scene state, append each step's materialized delta plus the overrides for
+nodes that exist at that step, with ``insert_sleep`` between steps. Steps before
+``start_timestep`` land at time 0; their audio events are folded instead of
+emitted, then re-synthesized at the start step with the elapsed portion trimmed.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -5,8 +15,9 @@ from typing import TYPE_CHECKING
 
 from rich.progress import track
 
-from . import _viser_private as impl
-from ._hybrid import stored_message_as_serializable_dict
+from . import _state, _viser
+from ._protocol import AddAudioMessage, ScenePayload
+from ._state import AudioState, SceneEntryRecord, SceneState, StoredMessage
 
 if TYPE_CHECKING:
     import viser.infra
@@ -15,19 +26,13 @@ if TYPE_CHECKING:
 
 
 class ExportBuilder:
-    """Serialize the current timeline with viser's native recording API."""
-
     def __init__(self, server: Viser4dServer) -> None:
         self._server = server
 
     def serialize(
         self, *, start_timestep: int = 0, end_timestep: int | None = None
     ) -> bytes:
-        """Build a native `.viser` recording for the requested timestep range."""
-        return self._build_serializer(
-            start_timestep=start_timestep,
-            end_timestep=end_timestep,
-        ).serialize()
+        return self._build(start_timestep, end_timestep).serialize()
 
     def as_html(
         self,
@@ -36,61 +41,97 @@ class ExportBuilder:
         start_timestep: int = 0,
         end_timestep: int | None = None,
     ) -> str:
-        """Build standalone HTML for the requested timestep range."""
-        return self._build_serializer(
-            start_timestep=start_timestep,
-            end_timestep=end_timestep,
-        ).as_html(dark_mode=dark_mode)
+        return self._build(start_timestep, end_timestep).as_html(dark_mode=dark_mode)
 
-    def _validate_timesteps(
-        self,
-        *,
-        start_timestep: int,
-        end_timestep: int | None,
-    ) -> tuple[int, int]:
-        """Normalize and validate the requested export bounds."""
-        start = start_timestep
-        end = end_timestep if end_timestep is not None else self._server.num_steps - 1
-        if not 0 <= start < self._server.num_steps:
-            raise ValueError(
-                f"start_timestep must be in [0, {self._server.num_steps - 1}], "
-                f"got {start}."
-            )
-        if not 0 <= end < self._server.num_steps:
-            raise ValueError(
-                f"end_timestep must be in [0, {self._server.num_steps - 1}], got {end}."
-            )
-        if start > end:
+    def _validate(self, start: int, end: int | None) -> tuple[int, int]:
+        last = self._server.num_steps - 1
+        stop = last if end is None else end
+        if not 0 <= start <= last:
+            raise ValueError(f"start_timestep must be in [0, {last}], got {start}.")
+        if not 0 <= stop <= last:
+            raise ValueError(f"end_timestep must be in [0, {last}], got {stop}.")
+        if start > stop:
             raise ValueError(
                 "start_timestep must be less than or equal to end_timestep, "
-                f"got {start} > {end}."
+                f"got {start} > {stop}."
             )
-        return start, end
+        return start, stop
 
-    def _build_serializer(
-        self, *, start_timestep: int, end_timestep: int | None
-    ) -> viser.infra.StateSerializer:
-        """Build viser's serializer populated with timeline state for the range."""
-        start, end = self._validate_timesteps(
-            start_timestep=start_timestep,
-            end_timestep=end_timestep,
-        )
+    def _build(self, start: int, end: int | None) -> viser.infra.StateSerializer:
+        start, stop = self._validate(start, end)
+        timeline = self._server._timeline
         serializer = self._server.get_scene_serializer()
-        binary_buffers = impl.serializer_binary_buffers(serializer)
+        binary_buffers = _viser.serializer_binary_buffers(serializer)
+        overrides = timeline.override_items()
+        remapped_overrides: dict[tuple[str, int], ScenePayload] = {}
+        state = SceneState()
+        audio = AudioState()
         for step in track(
-            range(end + 1),
+            range(stop + 1),
             description="Exporting .viser",
             disable=not sys.stdout.isatty(),
             transient=True,
         ):
             if step > start:
                 serializer.insert_sleep(1.0 / self._server.fps)
-            for message in self._server._timeline.messages_for_step(step):
-                impl.append_serializer_message(
-                    serializer,
-                    stored_message_as_serializable_dict(
-                        message,
-                        binary_buffers=binary_buffers,
-                    ),
+            delta = timeline.step_delta(step)
+            state.apply_delta(delta)
+            if step < start:
+                # Pre-roll: fold audio instead of emitting mid-clip events.
+                for event in delta.audio:
+                    audio.apply(event, step)
+                messages = _state.materialize(
+                    delta.puts.values(), delta.delete_nodes, []
                 )
+            else:
+                messages = _state.materialize_delta(delta)
+                if step == start and start > 0:
+                    messages = _preroll_audio(audio, start, self._server.fps) + messages
+            for message in messages:
+                _viser.append_serializer_message(
+                    serializer, message.remap(binary_buffers)
+                )
+            for entry in _visible_overrides(overrides, state):
+                payload = remapped_overrides.get((entry.key, entry.rev))
+                if payload is None:
+                    payload = entry.message.remap(binary_buffers)
+                    remapped_overrides[(entry.key, entry.rev)] = payload
+                _viser.append_serializer_message(serializer, payload)
         return serializer
+
+
+def _preroll_audio(audio: AudioState, start: int, fps: float) -> list[StoredMessage]:
+    """One AddAudio per live track, trimmed by the portion elapsed before start."""
+    out: list[StoredMessage] = []
+    for name, snapshot in sorted(audio.tracks.items()):
+        skip = round((start - snapshot.start_step) / fps * snapshot.sample_rate)
+        frames = len(snapshot.data) // snapshot.num_channels
+        if skip >= frames:
+            continue
+        message = AddAudioMessage(
+            name=name,
+            sampleRate=snapshot.sample_rate,
+            waveform={
+                "numChannels": snapshot.num_channels,
+                "numFrames": frames - skip,
+                "data": snapshot.data[skip * snapshot.num_channels :],
+            },
+            volume=snapshot.volume,
+        )
+        out.append(StoredMessage.capture(message))
+    return out
+
+
+def _visible_overrides(
+    overrides: list[SceneEntryRecord], state: SceneState
+) -> list[SceneEntryRecord]:
+    existing = state.node_names()
+    out: list[SceneEntryRecord] = []
+    for entry in overrides:
+        if _state.is_delete_key(entry.key):
+            name = entry.name or ""
+            if any(_state._covers(name, node) for node in existing):
+                out.append(entry)
+        elif entry.name is None or entry.name in existing:
+            out.append(entry)
+    return out

@@ -8,7 +8,8 @@
   "scripts": {
     "generate-runtime-messages": "node generate-runtime-messages.mjs",
     "build": "node build-runtime.mjs",
-    "typecheck": "node generate-runtime-messages.mjs && tsc -p tsconfig.json --noEmit"
+    "build:no-codegen": "node build-runtime.mjs --no-codegen",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "esbuild": "^0.25.10",

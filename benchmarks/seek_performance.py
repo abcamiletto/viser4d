@@ -1,7 +1,7 @@
-"""Benchmark: seek (block_payload) latency and memory across a heavy timeline.
+"""Benchmark: seek (block_message) latency and memory across a heavy timeline.
 
 Simulates a client seeking to various positions in a large recorded sequence.
-block_payload(N) is what the server calls when a client requests block N.
+block_message(N) is what the server calls when a client requests block N.
 
 Usage:
     uv run --group dev python benchmarks/seek_performance.py
@@ -17,21 +17,11 @@ from dataclasses import dataclass
 import numpy as np
 
 import viser4d
-from viser4d.timeline._store import TimelineStore
-
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
+from viser4d._timeline import Timeline
 
 NUM_OBJECTS = 200  # scene objects per step (frames with position/rotation)
 NUM_STEPS = 512  # total timeline steps
 FPS = 30.0
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -72,94 +62,63 @@ def record_heavy_scene(num_steps: int, num_objects: int) -> viser4d.Viser4dServe
     return server
 
 
-def flush_all_blocks(store: TimelineStore) -> None:
+def flush_all_blocks(timeline: Timeline) -> None:
     """Force all in-memory blocks to disk and clear caches, simulating a cold seek."""
-    with store._lock:
-        for block_index, block in list(store._loaded_blocks.items()):
-            store._flush_block(block_index, block)
-        for block_index in list(store._pending_flushes):
-            store._wait_for_pending_flush(block_index)
-        store._loaded_blocks.clear()
-        store._checkpoint_cache.clear()
+    with timeline._lock:
+        for index, block in list(timeline._loaded.items()):
+            timeline._flush(index, block)
+        timeline._wait_all_flushes()
+        timeline._loaded.clear()
+        timeline._checkpoints.clear()
     gc.collect()
 
 
-def time_seek(store: TimelineStore, block_index: int) -> SeekResult:
-    """Time a single block_payload call with a clean cache."""
-    flush_all_blocks(store)
-    gc.collect()
+def time_seek(timeline: Timeline, block_index: int) -> SeekResult:
+    """Time a single block_message call with a clean cache."""
+    flush_all_blocks(timeline)
 
     tracemalloc.start()
     t0 = time.perf_counter()
-    store.block_payload(block_index)
+    timeline.block_message(block_index)
     elapsed_ms = (time.perf_counter() - t0) * 1000
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
-    step = block_index * store.block_size
     return SeekResult(
         block_index=block_index,
-        step=step,
+        step=block_index * timeline.block_size,
         elapsed_ms=elapsed_ms,
         peak_memory_kb=peak / 1024,
     )
 
 
-def disk_usage_kb(store: TimelineStore) -> tuple[float, float]:
-    """Return (block_files_kb, checkpoint_files_kb) on disk."""
-    block_kb = (
-        sum(p.stat().st_size for p in store._block_dir.glob("????????.msgpack.zst"))
-        / 1024
-    )
-    ckpt_kb = (
-        sum(p.stat().st_size for p in store._block_dir.glob("checkpoint_*.msgpack.zst"))
-        / 1024
-    )
-    return block_kb, ckpt_kb
-
-
-def run_benchmark(
-    num_steps: int = NUM_STEPS, num_objects: int = NUM_OBJECTS
-) -> list[SeekResult]:
-    print(f"Recording {num_steps} steps × {num_objects} objects …", flush=True)
+def run_benchmark(num_steps: int = NUM_STEPS, num_objects: int = NUM_OBJECTS) -> None:
+    print(f"Recording {num_steps} steps x {num_objects} objects ...", flush=True)
     server = record_heavy_scene(num_steps, num_objects)
-    store: TimelineStore = server._timeline
+    timeline = server._timeline
 
-    # Wait for all background flushes to complete.
-    flush_all_blocks(store)
-
-    block_count = store.block_count
-    block_kb, ckpt_kb = disk_usage_kb(store)
+    flush_all_blocks(timeline)
+    block_count = timeline.block_count
+    disk_kb = sum(p.stat().st_size for p in timeline._dir.glob("*.msgpack.zst")) / 1024
     print(
-        f"Timeline: {num_steps} steps, {block_count} blocks of {store.block_size} steps each"
+        f"Timeline: {num_steps} steps, {block_count} blocks "
+        f"of {timeline.block_size} steps each"
     )
-    print(f"Disk: {block_kb:.0f} KB blocks  +  {ckpt_kb:.0f} KB checkpoints")
+    print(f"Disk: {disk_kb:.0f} KB block files")
 
-    # Sample: first, quarter, half, three-quarters, last block
     sample_indices = sorted(
-        set(
-            [
-                0,
-                block_count // 4,
-                block_count // 2,
-                3 * block_count // 4,
-                block_count - 1,
-            ]
-        )
+        {0, block_count // 4, block_count // 2, 3 * block_count // 4, block_count - 1}
     )
     print(f"Seeking to blocks: {sample_indices}\n")
 
-    results = []
     for block_index in sample_indices:
-        result = time_seek(store, block_index)
-        results.append(result)
+        result = time_seek(timeline, block_index)
         print(
-            f"  block {block_index:3d} (step {result.step:4d}): "
+            f"  block {result.block_index:3d} (step {result.step:4d}): "
             f"{result.elapsed_ms:7.1f} ms   peak {result.peak_memory_kb:8.1f} KB"
         )
 
     server.stop()
-    return results
 
 
 if __name__ == "__main__":

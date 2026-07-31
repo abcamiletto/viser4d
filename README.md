@@ -15,11 +15,16 @@ Features include:
 The goal is to keep viser's live scene API while adding a separate recorded
 timeline API for playback and export.
 
-Chunking is controlled by `viser4d.ChunkStreamingConfig`. By default,
+Chunking is controlled by `viser4d.StreamingConfig`. By default,
 `Viser4dServer` populates it from `VISER4D_BLOCK_SIZE` and
 `VISER4D_CLIENT_CHUNK_CACHE_SIZE`, falling back to `32` steps per block and a
 `1GB` per-client preload budget. You can also pass
-`chunk_streaming=viser4d.ChunkStreamingConfig(...)` for one server instance.
+`streaming=viser4d.StreamingConfig(...)` for one server instance.
+
+Playback controls are drawn by the viser4d runtime as an overlay bar at the
+bottom of the viewer (play/pause, scrubbing, stepping, speed, loop); playback
+state is client-local, so each browser tab explores the recording
+independently. The design is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Installation
 

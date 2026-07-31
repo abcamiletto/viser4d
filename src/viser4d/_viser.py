@@ -1,7 +1,8 @@
 """Single-point adapter for viser's private APIs.
 
-Every underscore-prefixed import from viser is concentrated here so that
-upstream internal changes only require updating this one file.
+viser has no extension API, so viser4d necessarily reaches into a few of its
+internals. Every such access is concentrated here; the rest of the package
+imports only this module. See ARCHITECTURE.md for the full coupling inventory.
 """
 
 from __future__ import annotations
@@ -17,13 +18,15 @@ from viser._scene_api import SceneApi
 from viser._viser import ClientHandle as ClientHandle
 from viser.infra import WebsockMessageHandler as WebsockMessageHandler
 
-# Re-exported types – other modules import these instead of reaching into
-# viser internals directly.
 Message = _messages.Message
 
 
 def run_javascript_message(source: str) -> Message:
     return _messages.RunJavascriptMessage(source)
+
+
+def is_create_scene_node_message(message: object) -> bool:
+    return isinstance(message, _messages._CreateSceneNodeMessage)
 
 
 def create_scene_api(
@@ -39,10 +42,6 @@ def create_scene_api(
     )
 
 
-def gui_uuid(handle: Any) -> str:
-    return handle._impl.uuid
-
-
 def set_scene_owner(scene: SceneApi, owner: object) -> None:
     scene._owner = owner
 
@@ -51,43 +50,12 @@ def scene_has_node(scene: SceneApi, name: str) -> bool:
     return name in scene._handle_from_node_name
 
 
-def broadcast_messages(server: viser.ViserServer) -> list[Message]:
-    return [
-        message
-        for message in server._websock_server._broadcast_buffer.message_from_id.values()
-        if isinstance(message, _messages.Message)
-    ]
-
-
-_THEME_PRIMARY_COLOR_INDEX = 8
-
-
-def playback_brand_color(
-    server: viser.ViserServer,
-) -> tuple[int, int, int] | None:
-    for message in reversed(broadcast_messages(server)):
-        if isinstance(message, _messages.ThemeConfigurationMessage):
-            colors = message.colors
-            if colors is None or len(colors) <= _THEME_PRIMARY_COLOR_INDEX:
-                return None
-            return _hex_to_rgb(colors[_THEME_PRIMARY_COLOR_INDEX])
-    return None
-
-
 def queue_server_message(server: viser.ViserServer, message: Message) -> None:
     server._websock_server.queue_message(message)
 
 
-def queue_client_message(client: Any, message: Message) -> None:
+def queue_client_message(client: ClientHandle, message: Message) -> None:
     client._websock_connection.queue_message(message)
-
-
-def serializer_binary_buffers(serializer: Any) -> list[memoryview]:
-    return serializer._binary_buffers
-
-
-def append_serializer_message(serializer: Any, message: object) -> None:
-    serializer._messages.append((serializer._time, message))
 
 
 def register_message_handler(
@@ -110,10 +78,9 @@ def server_thread_executor(server: viser.ViserServer) -> ThreadPoolExecutor:
     return server._thread_executor
 
 
-def is_create_scene_node_message(message: object) -> bool:
-    return isinstance(message, _messages._CreateSceneNodeMessage)
+def serializer_binary_buffers(serializer: Any) -> list[memoryview]:
+    return serializer._binary_buffers
 
 
-def _hex_to_rgb(color: str) -> tuple[int, int, int]:
-    color = color.removeprefix("#")
-    return (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16))
+def append_serializer_message(serializer: Any, message: object) -> None:
+    serializer._messages.append((serializer._time, message))
