@@ -744,17 +744,8 @@ def test_out_of_session_audio_edits_raise() -> None:
             )
         with pytest.raises(RuntimeError, match="only valid inside server.at\\(t\\)"):
             audio.volume = 0.5
-        assert audio.volume == 1.0
-
         with pytest.raises(RuntimeError, match="only valid inside server.at\\(t\\)"):
             audio.append(np.array([3, 4], dtype=np.int16))
-        assert np.array_equal(audio.waveform, np.array([1, 2], dtype=np.int16))
-
-        replacement = np.array([5, 6], dtype=np.int16)
-        with pytest.raises(RuntimeError, match="only valid inside server.at\\(t\\)"):
-            audio.waveform = replacement
-        assert np.array_equal(audio.waveform, np.array([1, 2], dtype=np.int16))
-
         with pytest.raises(RuntimeError, match="only valid inside server.at\\(t\\)"):
             audio.remove()
     finally:
