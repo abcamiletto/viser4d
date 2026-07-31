@@ -13,12 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import viser
-from viser import _messages
+from viser import _messages, infra
 from viser._scene_api import SceneApi
-from viser._viser import ClientHandle as ClientHandle
-from viser.infra import WebsockMessageHandler as WebsockMessageHandler
+from viser._viser import ClientHandle
 
 Message = _messages.Message
+WebsockMessageHandler = infra.WebsockMessageHandler
 
 
 def run_javascript_message(source: str) -> Message:

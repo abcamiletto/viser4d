@@ -33,6 +33,7 @@ Issues = "https://github.com/abcamiletto/viser4d/issues"
 [dependency-groups]
 dev = [
     "pytest>=8.3.4",
+    "ruff>=0.16,<0.17",
     "ty>=0.0.1a7",
 ]
 

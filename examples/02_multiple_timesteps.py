@@ -1,6 +1,7 @@
 import argparse
 
 import numpy as np
+
 import viser4d
 
 parser = argparse.ArgumentParser()

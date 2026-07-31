@@ -14,7 +14,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7.6.0
         with:
           enable-cache: false
-      - run: uvx ruff check .
+      - run: uv run --group dev ruff check .
 
   format:
     runs-on: ubuntu-latest
@@ -23,7 +23,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7.6.0
         with:
           enable-cache: false
-      - run: uvx ruff format --check .
+      - run: uv run --group dev ruff format --check .
 
   typecheck:
     runs-on: ubuntu-latest

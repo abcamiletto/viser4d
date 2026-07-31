@@ -12,8 +12,8 @@ import pytest
 import zstandard
 
 import viser4d
-from viser4d import _server as server_module
 from viser4d import _build as build_module
+from viser4d import _server as server_module
 from viser4d import _viser
 from viser4d._playback import ClientSession
 from viser4d._protocol import (
@@ -220,17 +220,15 @@ def test_server_playback_config_propagates_to_clients(
 
 
 def _fake_session_server(**overrides: Any) -> Any:
-    base = dict(
-        loop=True,
-        playback_speed=2.0,
-        num_steps=2,
-        block_size=32,
-        fps=1.0,
-        streaming=SimpleNamespace(client_cache_bytes=1000),
-        _timeline=SimpleNamespace(
-            block_manifests=lambda: [], override_items=lambda: []
-        ),
-    )
+    base = {
+        "loop": True,
+        "playback_speed": 2.0,
+        "num_steps": 2,
+        "block_size": 32,
+        "fps": 1.0,
+        "streaming": SimpleNamespace(client_cache_bytes=1000),
+        "_timeline": SimpleNamespace(block_manifests=list, override_items=list),
+    }
     base.update(overrides)
     return cast(Any, SimpleNamespace(**base))
 
@@ -269,9 +267,7 @@ def test_client_session_syncs_existing_overrides_on_start(
     messages: list[Any] = []
     monkeypatch.setattr(ClientSession, "_send", lambda self, m: messages.append(m))
     server = _fake_session_server(
-        _timeline=SimpleNamespace(
-            block_manifests=lambda: [], override_items=lambda: [entry]
-        )
+        _timeline=SimpleNamespace(block_manifests=list, override_items=lambda: [entry])
     )
     ClientSession(server, cast(Any, SimpleNamespace(client_id=1))).start()
 
@@ -287,7 +283,7 @@ def test_block_request_sends_fresh_manifests(monkeypatch: pytest.MonkeyPatch) ->
     manifests = [{"index": 0, "stepStart": 0, "stepStop": 2, "byteSize": 123}]
     server = _fake_session_server(
         _timeline=SimpleNamespace(
-            block_manifests=lambda: manifests, override_items=lambda: []
+            block_manifests=lambda: manifests, override_items=list
         )
     )
     session = ClientSession(server, cast(Any, SimpleNamespace(client_id=1)))
@@ -477,9 +473,8 @@ def test_set_steps_can_shrink_timeline() -> None:
         with server.at(3):
             joint.position = (3.0, 0.0, 0.0)
         server.set_steps(2)
-        with pytest.raises(IndexError, match="out of range"):
-            with server.at(3):
-                pass
+        with pytest.raises(IndexError, match="out of range"), server.at(3):
+            pass
         with pytest.raises(ValueError, match="start_timestep must be in \\[0, 1\\]"):
             server.serialize(start_timestep=2, end_timestep=2)
     finally:
@@ -489,11 +484,13 @@ def test_set_steps_can_shrink_timeline() -> None:
 def test_set_steps_rejects_active_recording() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with pytest.raises(
-            RuntimeError, match="cannot run while inside server.at\\(t\\)"
+        with (
+            pytest.raises(
+                RuntimeError, match="cannot run while inside server.at\\(t\\)"
+            ),
+            server.at(0),
         ):
-            with server.at(0):
-                server.set_steps(3)
+            server.set_steps(3)
     finally:
         server.stop()
 
@@ -501,10 +498,12 @@ def test_set_steps_rejects_active_recording() -> None:
 def test_at_rejects_nested_sessions() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with pytest.raises(RuntimeError, match="cannot be nested"):
-            with server.at(0):
-                with server.at(1):
-                    pass
+        with (
+            pytest.raises(RuntimeError, match="cannot be nested"),
+            server.at(0),
+            server.at(1),
+        ):
+            pass
     finally:
         server.stop()
 
@@ -540,11 +539,13 @@ def test_clear_resets_timeline_and_shared_scene() -> None:
 def test_clear_rejects_active_recording() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with pytest.raises(
-            RuntimeError, match="cannot run while inside server.at\\(t\\)"
+        with (
+            pytest.raises(
+                RuntimeError, match="cannot run while inside server.at\\(t\\)"
+            ),
+            server.at(0),
         ):
-            with server.at(0):
-                server.clear()
+            server.clear()
     finally:
         server.stop()
 
@@ -564,9 +565,8 @@ def test_at_rejects_static_name_collisions() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
         server.scene.add_icosphere("/joint", position=(0.0, 0.0, 0.0))
-        with pytest.raises(RuntimeError, match="static scene node"):
-            with server.at(0) as tl:
-                tl.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
+        with pytest.raises(RuntimeError, match="static scene node"), server.at(0) as tl:
+            tl.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
     finally:
         server.stop()
 
@@ -764,13 +764,13 @@ def test_out_of_session_audio_edits_raise() -> None:
 def test_audio_rejects_non_positive_sample_rate() -> None:
     server = viser4d.Viser4dServer(num_steps=2, port=0, verbose=False)
     try:
-        with server.at(0) as tl:
-            with pytest.raises(
-                ValueError, match="sample_rate must be a positive integer"
-            ):
-                tl.audio.add_track(
-                    "/audio", data=np.array([1, 2], dtype=np.int16), sample_rate=0
-                )
+        with (
+            server.at(0) as tl,
+            pytest.raises(ValueError, match="sample_rate must be a positive integer"),
+        ):
+            tl.audio.add_track(
+                "/audio", data=np.array([1, 2], dtype=np.int16), sample_rate=0
+            )
     finally:
         server.stop()
 

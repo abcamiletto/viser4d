@@ -11,10 +11,10 @@ import dataclasses
 import types
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Union, cast
+from typing import Any, Union, cast, get_args, get_origin
 
 import numpy as np
-from typing_extensions import get_args, get_origin, get_type_hints, is_typeddict
+from typing_extensions import get_type_hints, is_typeddict
 
 from . import _protocol
 

@@ -24,12 +24,14 @@ from ._protocol import (
     Payload,
     SceneEntry,
     ScenePayload,
-    StepDelta as StepDeltaWire,
     TimelineOverrideMessage,
     Waveform,
 )
+from ._protocol import (
+    StepDelta as StepDeltaWire,
+)
 
-__all__ = ["StepDelta", "SceneState", "AudioState"]
+__all__ = ["AudioState", "SceneState", "StepDelta"]
 
 _BINARY_INDEX = "__binary_index"
 _DTYPE = "dtype"

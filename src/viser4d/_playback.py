@@ -17,8 +17,8 @@ from . import _state, _viser
 from ._config import require_positive_float
 from ._protocol import (
     BlockManifest,
-    TimelineBlockMessage,
     TimelineBlockDiscardMessage,
+    TimelineBlockMessage,
     TimelineBlockRequestMessage,
     TimelineClearMessage,
     TimelineConfigureMessage,

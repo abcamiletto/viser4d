@@ -1,8 +1,9 @@
 import argparse
 
 import numpy as np
-import viser4d
 from viser import transforms as tf
+
+import viser4d
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
