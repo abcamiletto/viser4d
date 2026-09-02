@@ -2,32 +2,13 @@
 // target-state fold, and the rev-diff that turns a target map into the minimal
 // list of viser messages. Pure data — no viser coupling, no audio scheduling.
 
-import type { ScenePayload, WaveformPayload } from "./binary";
+import type { ScenePayload } from "./binary";
 import type { TimelineBlockMessage } from "./protocol.gen";
 
-export type SceneEntry = {
-  key: string;
-  rev: number;
-  name: string | null;
-  message: ScenePayload;
-};
-
-export type AudioEvent = { rev: number; message: ScenePayload };
-
-export type StepDelta = {
-  puts: SceneEntry[];
-  deleteNodes: string[];
-  audio: AudioEvent[];
-};
-
-export type AudioTrackSnapshot = {
-  name: string;
-  rev: number;
-  sampleRate: number;
-  startStep: number;
-  volume: number;
-  waveform: WaveformPayload;
-};
+// Named aliases for the generated (structural) block payload pieces.
+export type SceneEntry = TimelineBlockMessage["checkpointScene"][number];
+export type StepDelta = TimelineBlockMessage["deltas"][number];
+export type AudioTrackSnapshot = TimelineBlockMessage["checkpointAudio"][number];
 
 export type LoadedBlock = {
   index: number;
@@ -42,7 +23,7 @@ function isCreateKey(key: string): boolean {
   return key.startsWith(CREATE_PREFIX);
 }
 
-export function isDescendant(name: string | null, ancestor: string): boolean {
+function isDescendant(name: string | null, ancestor: string): boolean {
   return name === ancestor || (name !== null && name.startsWith(ancestor + "/"));
 }
 
@@ -115,25 +96,15 @@ export function decodeBlock(message: TimelineBlockMessage): LoadedBlock {
   return {
     index: message.index,
     checkpointScene,
-    checkpointAudio: message.checkpointAudio.map((track) => ({
-      name: track.name,
-      rev: track.rev,
-      sampleRate: track.sampleRate,
-      startStep: track.startStep,
-      volume: track.volume,
-      waveform: track.waveform,
-    })),
-    deltas: message.deltas.map((delta) => ({
-      puts: delta.puts,
-      deleteNodes: delta.deleteNodes,
-      audio: delta.audio,
-    })),
+    checkpointAudio: message.checkpointAudio,
+    deltas: message.deltas,
   };
 }
 
 // --- fold -------------------------------------------------------------------
 
-function deleteNodeFromState(state: Map<string, SceneEntry>, name: string): void {
+/** Drop `name` and its descendants (the fold rule for a node delete). */
+function deleteSubtree(state: Map<string, SceneEntry>, name: string): void {
   for (const [key, entry] of state) {
     if (isDescendant(entry.name, name)) {
       state.delete(key);
@@ -141,10 +112,10 @@ function deleteNodeFromState(state: Map<string, SceneEntry>, name: string): void
   }
 }
 
-function putEntryIntoState(state: Map<string, SceneEntry>, entry: SceneEntry): void {
+/** Store one entry; a create first resets the node's own non-create keys. */
+function putEntry(state: Map<string, SceneEntry>, entry: SceneEntry): void {
   if (isCreateKey(entry.key) && entry.name !== null) {
-    // Re-creating a node resets its own (non-create) properties; descendants
-    // keep their keys (they carry different names).
+    // Descendants keep their keys (they carry different names).
     for (const [key, existing] of state) {
       if (key !== entry.key && existing.name === entry.name) {
         state.delete(key);
@@ -156,14 +127,14 @@ function putEntryIntoState(state: Map<string, SceneEntry>, entry: SceneEntry): v
 
 function applyDelta(state: Map<string, SceneEntry>, delta: StepDelta): void {
   for (const name of delta.deleteNodes) {
-    deleteNodeFromState(state, name);
+    deleteSubtree(state, name);
   }
   for (const put of delta.puts) {
-    putEntryIntoState(state, put);
+    putEntry(state, put);
   }
 }
 
-export function isTombstone(entry: SceneEntry): boolean {
+function isTombstone(entry: SceneEntry): boolean {
   return entry.message.type === "RemoveSceneNodeMessage" && entry.name !== null;
 }
 
@@ -193,7 +164,7 @@ function applyOverlay(
   // Insertion order matters: a tombstone shadows earlier puts for its subtree.
   for (const entry of overlay.values()) {
     if (isTombstone(entry)) {
-      deleteNodeFromState(state, entry.name!);
+      deleteSubtree(state, entry.name!);
       continue;
     }
     // A put override applies only where its node exists (globals apply always).
@@ -226,15 +197,13 @@ export function foldTarget(
 
 // --- applied mirror + rev-diff ----------------------------------------------
 
-type AppliedEntry = { rev: number; name: string | null; isCreate: boolean };
-
 const removeMessage = (name: string): ScenePayload => ({
   type: "RemoveSceneNodeMessage",
   name,
 });
 
 export class SceneMirror {
-  private applied = new Map<string, AppliedEntry>();
+  private applied = new Map<string, SceneEntry>();
 
   reset(): void {
     this.applied.clear();
@@ -242,39 +211,12 @@ export class SceneMirror {
 
   private existingNodes(): Set<string> {
     const names = new Set<string>();
-    for (const entry of this.applied.values()) {
-      if (entry.isCreate && entry.name !== null) {
+    for (const [key, entry] of this.applied) {
+      if (isCreateKey(key) && entry.name !== null) {
         names.add(entry.name);
       }
     }
     return names;
-  }
-
-  private dropSubtree(name: string): void {
-    for (const [key, entry] of this.applied) {
-      if (isDescendant(entry.name, name)) {
-        this.applied.delete(key);
-      }
-    }
-  }
-
-  private setApplied(entry: SceneEntry): void {
-    this.applied.set(entry.key, {
-      rev: entry.rev,
-      name: entry.name,
-      isCreate: isCreateKey(entry.key),
-    });
-  }
-
-  private applyCreateToApplied(entry: SceneEntry): void {
-    if (entry.name !== null) {
-      for (const [key, existing] of this.applied) {
-        if (key !== entry.key && existing.name === entry.name) {
-          this.applied.delete(key);
-        }
-      }
-    }
-    this.applied.set(entry.key, { rev: entry.rev, name: entry.name, isCreate: true });
   }
 
   /** Fast path: apply one forward delta directly (the delta *is* the diff). */
@@ -283,19 +225,16 @@ export class SceneMirror {
       this.applied.has(CREATE_PREFIX + name),
     );
     const out: ScenePayload[] = topmost(doomed).map(removeMessage);
+    // Only `doomed` names are dropped: the applied map mirrors what viser holds,
+    // and no remove is emitted for a node we never created.
     for (const name of doomed) {
-      this.dropSubtree(name);
+      deleteSubtree(this.applied, name);
     }
+    // orderEntries emits create-before-props, so folding the puts in wire order
+    // (one pass, same helper as the fold) matches what viser applies.
     out.push(...orderEntries(delta.puts));
     for (const put of delta.puts) {
-      if (isCreateKey(put.key)) {
-        this.applyCreateToApplied(put);
-      }
-    }
-    for (const put of delta.puts) {
-      if (!isCreateKey(put.key)) {
-        this.setApplied(put);
-      }
+      putEntry(this.applied, put);
     }
     return out;
   }
@@ -319,14 +258,14 @@ export class SceneMirror {
       const applied = this.applied.get(entry.key);
       if (!applied || applied.rev !== entry.rev) {
         pushes.push(entry);
-        this.setApplied(entry);
+        this.applied.set(entry.key, entry);
       }
     }
     return [...removes, ...orderEntries(pushes)];
   }
 
   /** An override RemoveSceneNodeMessage: delete the node from the applied scene. */
-  removeNode(name: string): ScenePayload[] {
+  private removeNode(name: string): ScenePayload[] {
     let held = false;
     for (const entry of this.applied.values()) {
       if (isDescendant(entry.name, name)) {
@@ -334,11 +273,11 @@ export class SceneMirror {
         break;
       }
     }
-    this.dropSubtree(name);
+    deleteSubtree(this.applied, name);
     return held ? [removeMessage(name)] : [];
   }
 
-  /** Full rev-diff from the applied state to `target` (ARCHITECTURE "Client diff"). */
+  /** Full rev-diff from the applied state to `target`. */
   rebuild(target: ReadonlyMap<string, SceneEntry>): ScenePayload[] {
     const targetNodes = new Set<string>();
     const targetByNode = new Map<string, SceneEntry[]>();
@@ -418,10 +357,7 @@ export class SceneMirror {
     }
 
     // Applied becomes the target, retaining un-settable vanished globals.
-    const next = new Map<string, AppliedEntry>();
-    for (const [key, entry] of target) {
-      next.set(key, { rev: entry.rev, name: entry.name, isCreate: isCreateKey(key) });
-    }
+    const next = new Map(target);
     for (const [key, entry] of this.applied) {
       if (entry.name === null && !target.has(key)) {
         next.set(key, entry);

@@ -7,13 +7,6 @@ const clientDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(clientDir, "..", "..", "..");
 const moduleName = "viser4d._codegen";
 
-function hasExecutable(command) {
-  const result = spawnSync(command, ["--version"], {
-    stdio: "ignore",
-  });
-  return result.status === 0;
-}
-
 export function generateRuntimeMessages() {
   const env = {
     ...process.env,
@@ -22,23 +15,13 @@ export function generateRuntimeMessages() {
       .join(path.delimiter),
   };
 
-  const command =
-    process.env.VISER4D_PYTHON != null
-      ? {
-          executable: process.env.VISER4D_PYTHON,
-          args: ["-m", moduleName],
-        }
-      : hasExecutable("uv")
-        ? {
-            executable: "uv",
-            args: ["run", "python", "-m", moduleName],
-          }
-        : {
-            executable: process.env.PYTHON ?? "python3",
-            args: ["-m", moduleName],
-          };
+  // The Python autobuild always sets VISER4D_PYTHON; a bare `npm run build`
+  // falls back to the project's uv environment.
+  const [executable, args] = process.env.VISER4D_PYTHON
+    ? [process.env.VISER4D_PYTHON, ["-m", moduleName]]
+    : ["uv", ["run", "python", "-m", moduleName]];
 
-  const result = spawnSync(command.executable, command.args, {
+  const result = spawnSync(executable, args, {
     cwd: repoRoot,
     env,
     stdio: "inherit",

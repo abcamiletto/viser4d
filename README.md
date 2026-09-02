@@ -16,15 +16,16 @@ The goal is to keep viser's live scene API while adding a separate recorded
 timeline API for playback and export.
 
 Chunking is controlled by `viser4d.StreamingConfig`. By default,
-`Viser4dServer` populates it from `VISER4D_BLOCK_SIZE` and
-`VISER4D_CLIENT_CHUNK_CACHE_SIZE`, falling back to `32` steps per block and a
-`1GB` per-client preload budget. You can also pass
-`streaming=viser4d.StreamingConfig(...)` for one server instance.
+`Viser4dServer` populates it from two environment variables, both plain
+integers: `VISER4D_BLOCK_SIZE` (steps per block, default `32`) and
+`VISER4D_CLIENT_CHUNK_CACHE_SIZE` (per-client preload budget in bytes, default
+`1000000000`). You can also pass `streaming=viser4d.StreamingConfig(...)` for
+one server instance.
 
 Playback controls are drawn by the viser4d runtime as an overlay bar at the
 bottom of the viewer (play/pause, scrubbing, stepping, speed, loop); playback
 state is client-local, so each browser tab explores the recording
-independently. The design is documented in [ARCHITECTURE.md](ARCHITECTURE.md).
+independently.
 
 ## Installation
 
@@ -85,3 +86,46 @@ html = server.as_html()
 
 Use `server.serialize()` to export a `.viser` recording and `server.as_html()`
 to export a self-contained HTML viewer.
+
+## Design
+
+Every scene-mutating viser message reduces to a keyed *put* or a *node delete*,
+so the scene at any timestep is a map `key -> entry` and each entry carries a
+monotonic `rev`. Two entries are identical iff their revs match, so nothing ever
+deep-compares payloads.
+
+Each recorded timestep stores only its delta. Deltas are grouped into blocks of
+`block_size` steps, spilled to disk as zstd+msgpack, and served to the browser
+with a checkpoint: the folded state just before the block's first delta. The
+browser folds `checkpoint + deltas[0..offset]`, diffs by rev against what it has
+already pushed into viser, and drives playback from its own clock — the server
+sends data, not frames.
+
+Writes made outside `server.at(t)` become *overrides*: a keyed overlay applied
+on top of every step, where the node exists. Audio is a per-step event stream
+folded into per-track waveform snapshots and scheduled against the same
+transport clock, in live playback and in exported HTML alike.
+
+Each module's docstring documents its own part in detail; `_state.py` holds the
+key derivation table and the fold rules.
+
+## Development
+
+```bash
+uv sync --group dev
+
+# Build the browser runtime (only needed for a non-editable checkout).
+npm --prefix src/viser4d/client ci
+npm --prefix src/viser4d/client run build
+
+uv run --group dev ruff check . && uv run --group dev ruff format --check .
+uv run --group dev ty check
+uv run --group dev pytest -q
+npm --prefix src/viser4d/client run typecheck
+```
+
+An editable install rebuilds the runtime automatically when the client sources
+or the wire protocol change, using a nodeenv-sandboxed Node. Both
+`src/viser4d/runtime.js` and `src/viser4d/client/protocol.gen.ts` are generated
+and gitignored; `protocol.gen.ts` comes from `src/viser4d/_protocol.py` via
+`uv run python -m viser4d._codegen`.

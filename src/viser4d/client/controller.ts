@@ -42,6 +42,7 @@ export class Controller {
   private appliedBlock = -1;
   private reportedStep = -1;
   private focusBlock = -1;
+  private pendingStep: number | null = null; // step whose block we are waiting for
 
   constructor(private readonly io: ControllerIO) {
     this.cache = new BlockCache({
@@ -97,8 +98,8 @@ export class Controller {
     switch (message.type) {
       case "TimelineConfigureMessage":
         return this.configure(message);
-      case "TimelineManifestsMessage":
-        this.cache.setManifests(message.manifests);
+      case "TimelineBlockBytesMessage":
+        this.cache.setBlockBytes(message.blockBytes);
         return this.refocusPreload(this.player.currentStep, true);
       case "TimelineBlockMessage":
         return this.loadBlock(message);
@@ -124,7 +125,7 @@ export class Controller {
     this.timelineFps = message.timelineFps;
     this.cache.blockSize = message.blockSize;
     this.cache.setBudgetBytes(message.cacheBytes);
-    this.cache.setManifests(message.manifests);
+    this.cache.setBlockBytes(message.blockBytes);
     this.audio.setStepRate(message.timelineFps);
     this.player.configure(message.numSteps, message.timelineFps, message.speed, message.loop);
     this.updateUi();
@@ -135,26 +136,18 @@ export class Controller {
   private loadBlock(message: TimelineBlockMessage): void {
     this.cache.loadBlock(decodeBlock(message));
     const step = this.player.currentStep;
-    const activeBlock = this.cache.blockIndexOf(step);
-    if (message.index === activeBlock) {
-      // First load or full-block replacement of the active block: re-derive.
-      this.cache.pendingStep = null;
-      this.applyStep(step, false);
-    } else if (this.cache.pendingStep !== null && this.cache.getBlock(this.cache.pendingStep)) {
-      const pending = this.cache.pendingStep;
-      this.cache.pendingStep = null;
-      this.applyStep(pending, false);
+    // Re-derive if this block holds the current step (first load or a full-block
+    // replacement); otherwise resume the step that was waiting on it.
+    const target = this.cache.blockIndexOf(step) === message.index ? step : this.pendingStep;
+    if (target !== null && this.cache.blockIndexOf(target) === message.index) {
+      this.pendingStep = null;
+      this.applyStep(target, false);
     }
     this.refocusPreload(step, true);
   }
 
   private applyOverride(message: TimelineOverrideMessage): void {
-    applyOverrideEntry(this.overlay, {
-      key: message.key,
-      rev: message.rev,
-      name: message.name,
-      message: message.message,
-    });
+    applyOverrideEntry(this.overlay, message.entry);
     // reapplyOverrides removes tombstoned nodes from the applied scene and
     // pushes rev-changed puts, so receipt takes effect immediately.
     this.io.pushMessages(this.scene.reapplyOverrides(this.overlay));
@@ -171,29 +164,34 @@ export class Controller {
     this.appliedBlock = -1;
     this.reportedStep = -1;
     this.focusBlock = -1;
+    this.pendingStep = null;
     this.updateUi();
   }
 
   private applyStep(step: number, continuous: boolean): void {
     const block = this.cache.getBlock(step);
     if (!block) {
+      this.pendingStep = step;
       this.cache.ensureStepLoaded(step); // resumes from loadBlock()
       return;
     }
     const offset = step - this.cache.blockStartStep(block.index);
     const delta = block.deltas[offset];
-    const sameBlockForward = block.index === this.appliedBlock && step === this.appliedStep + 1;
-    const crossForward =
-      offset === 0 && this.appliedBlock === block.index - 1 && step === this.appliedStep + 1;
-    const forward = continuous && this.appliedStep >= 0 && !!delta && (sameBlockForward || crossForward);
+    // The delta path needs the step right after the applied one, reached by
+    // playback, within the applied block or at the start of the next one.
+    const forward =
+      continuous &&
+      this.appliedStep >= 0 &&
+      step === this.appliedStep + 1 &&
+      !!delta &&
+      (block.index === this.appliedBlock ||
+        (offset === 0 && block.index === this.appliedBlock + 1));
 
     if (forward) {
       const messages = this.scene.advance(delta);
       messages.push(...this.scene.reapplyOverrides(this.overlay));
       this.io.pushMessages(messages);
-      if (delta.audio.length) {
-        this.audio.applyEvents(step, delta.audio);
-      }
+      this.audio.applyEvents(step, delta.audio);
     } else {
       this.io.pushMessages(this.scene.rebuild(foldTarget(block, offset, this.overlay)));
       this.loadAudioThrough(block, offset);
@@ -214,7 +212,7 @@ export class Controller {
     const start = this.cache.blockStartStep(block.index);
     for (let i = 0; i <= offset; i += 1) {
       const delta = block.deltas[i];
-      if (delta && delta.audio.length) {
+      if (delta) {
         this.audio.applyEvents(start + i, delta.audio);
       }
     }

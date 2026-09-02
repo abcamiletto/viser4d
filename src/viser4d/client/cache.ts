@@ -4,13 +4,6 @@
 
 import type { LoadedBlock } from "./state";
 
-export type BlockManifest = {
-  index: number;
-  stepStart: number;
-  stepStop: number;
-  byteSize: number | null;
-};
-
 export type CacheIO = {
   requestBlock(index: number): void;
   discardBlock(index: number): void;
@@ -24,25 +17,25 @@ type PreloadPlan = {
 
 /**
  * Which blocks to hold for a given focus block. Required = focus + predecessor;
- * speculative = forward fill under budget (an unknown-size manifest claims one
+ * speculative = forward fill under budget (a block of unknown size claims one
  * slot so its first fetch can populate its size); everything else is evictable.
  */
 function planPreload(
   focusBlock: number,
-  manifests: readonly BlockManifest[],
+  blockBytes: readonly (number | null)[],
   budgetBytes: number,
   loaded: ReadonlyMap<number, unknown>,
 ): PreloadPlan {
-  const count = manifests.length;
+  const count = blockBytes.length;
   if (count === 0) {
     return { required: [], speculative: [], evictions: [] };
   }
   const focus = Math.max(0, Math.min(count - 1, focusBlock));
   const required = [focus];
-  let used = manifests[focus].byteSize ?? 0;
+  let used = blockBytes[focus] ?? 0;
   if (focus > 0) {
     required.push(focus - 1);
-    used += manifests[focus - 1].byteSize ?? 0;
+    used += blockBytes[focus - 1] ?? 0;
   }
 
   const desired = new Set<number>(required);
@@ -55,7 +48,7 @@ function planPreload(
     if (desired.has(index)) {
       continue;
     }
-    const size = manifests[index].byteSize;
+    const size = blockBytes[index];
     if (size === null) {
       speculative.push(index);
       desired.add(index);
@@ -81,9 +74,8 @@ function planPreload(
 
 export class BlockCache {
   blockSize = 1;
-  pendingStep: number | null = null;
   private budgetBytes = 0;
-  private manifests: readonly BlockManifest[] = [];
+  private blockBytes: readonly (number | null)[] = [];
   private blocks = new Map<number, LoadedBlock>();
   private pending = new Set<number>();
 
@@ -97,20 +89,12 @@ export class BlockCache {
     return index * this.blockSize;
   }
 
-  getBlockByIndex(index: number): LoadedBlock | null {
-    return this.blocks.get(index) ?? null;
-  }
-
   getBlock(step: number): LoadedBlock | null {
-    return this.getBlockByIndex(this.blockIndexOf(step));
+    return this.blocks.get(this.blockIndexOf(step)) ?? null;
   }
 
-  hasBlock(index: number): boolean {
-    return this.blocks.has(index);
-  }
-
-  setManifests(manifests: readonly BlockManifest[]): void {
-    this.manifests = manifests;
+  setBlockBytes(blockBytes: readonly (number | null)[]): void {
+    this.blockBytes = blockBytes;
   }
 
   setBudgetBytes(bytes: number): void {
@@ -123,28 +107,24 @@ export class BlockCache {
   }
 
   reset(): void {
-    this.pendingStep = null;
     this.blocks.clear();
     this.pending.clear();
   }
 
-  /** Request the block for `step` if missing; remember the step to resume it. */
-  ensureStepLoaded(step: number): boolean {
+  /** Request the block holding `step` unless it is already resident. */
+  ensureStepLoaded(step: number): void {
     const index = this.blockIndexOf(step);
-    if (this.blocks.has(index)) {
-      return true;
+    if (!this.blocks.has(index)) {
+      this.issue(index);
     }
-    this.pendingStep = step;
-    this.issue(index);
-    return false;
   }
 
   /** Re-plan the resident set around `focusBlock`, pinning the applied block. */
   syncFocus(focusBlock: number, appliedBlock: number): void {
-    if (this.manifests.length === 0 || this.budgetBytes <= 0) {
+    if (this.blockBytes.length === 0 || this.budgetBytes <= 0) {
       return;
     }
-    const plan = planPreload(focusBlock, this.manifests, this.budgetBytes, this.blocks);
+    const plan = planPreload(focusBlock, this.blockBytes, this.budgetBytes, this.blocks);
     const desired = new Set<number>([...plan.required, ...plan.speculative]);
 
     for (const index of [...this.pending]) {

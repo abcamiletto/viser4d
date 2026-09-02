@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  lint:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -15,56 +15,8 @@ jobs:
         with:
           enable-cache: false
       - run: uv run --group dev ruff check .
-
-  format:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7.6.0
-        with:
-          enable-cache: false
       - run: uv run --group dev ruff format --check .
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7.6.0
-        with:
-          enable-cache: false
       - run: uv run --group dev ty check
-
-  runtime:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7.6.0
-        with:
-          enable-cache: false
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: src/viser4d/client/package-lock.json
-      - run: npm ci --prefix src/viser4d/client
-      - run: npm --prefix src/viser4d/client run typecheck
-      - run: npm --prefix src/viser4d/client run build
-
-  package:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7.6.0
-        with:
-          enable-cache: false
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: src/viser4d/client/package-lock.json
-      - run: npm ci --prefix src/viser4d/client
-      - run: npm --prefix src/viser4d/client run build
-      - run: uv build
 
   test:
     runs-on: ubuntu-latest
@@ -79,11 +31,15 @@ jobs:
           cache: npm
           cache-dependency-path: src/viser4d/client/package-lock.json
       - run: npm ci --prefix src/viser4d/client
+      - run: npm --prefix src/viser4d/client run typecheck
       - run: npm --prefix src/viser4d/client run build
+      - run: uv build
       - run: uv run --group dev pytest -q
 
+  # Deliberately ignores the <1.1 viser pin, so failures here are advisory.
   test-viser-latest:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7.6.0
@@ -96,5 +52,6 @@ jobs:
           cache-dependency-path: src/viser4d/client/package-lock.json
       - run: npm ci --prefix src/viser4d/client
       - run: npm --prefix src/viser4d/client run build
+      - run: uv build
       - run: uv pip install --python .venv/bin/python --upgrade viser
       - run: uv run --group dev pytest -q

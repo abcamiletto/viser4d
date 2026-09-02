@@ -5,7 +5,7 @@
 import { isAudioMessage, isTimelineControlMessage } from "./protocol.gen";
 import { Controller } from "./controller";
 import { FilePlayback } from "./filePlayback";
-import { Viser, runtimeWindow } from "./viser";
+import { Viser } from "./viser";
 
 class Runtime {
   private readonly viser: Viser;
@@ -57,6 +57,6 @@ class Runtime {
 }
 
 type RuntimeHandle = { dispose(): void; debug: unknown };
-const win = runtimeWindow() as Window & { __VISER4D__?: RuntimeHandle };
+const win = window as Window & { __VISER4D__?: RuntimeHandle };
 win.__VISER4D__?.dispose();
 win.__VISER4D__ = new Runtime();

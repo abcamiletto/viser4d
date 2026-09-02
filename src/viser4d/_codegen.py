@@ -11,10 +11,9 @@ import dataclasses
 import types
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Union, cast, get_args, get_origin
+from typing import Any, Union, cast, get_args, get_origin, get_type_hints, is_typeddict
 
 import numpy as np
-from typing_extensions import get_type_hints, is_typeddict
 
 from . import _protocol
 
@@ -29,9 +28,10 @@ _TYPE_MAPPING: dict[object, str] = {
     int: "number",
     str: "string",
     np.ndarray: "Uint8Array<ArrayBuffer>",
-    Any: "any",
     type(None): "null",
     _protocol.ScenePayload: 'import("./binary").ScenePayload',
+    # Generated in this same file, below the interfaces (type aliases hoist).
+    _protocol.AudioPayload: "AudioMessage",
 }
 
 
@@ -87,12 +87,11 @@ def _docstring(cls: type[Any]) -> str | None:
 def _ts_type(typ: Any) -> str:
     origin = get_origin(typ)
     if origin is list:
-        return _ts_type(get_args(typ)[0]) + "[]"
-    if origin is dict:
-        key_type, value_type = get_args(typ)
-        return f"{{ [key: {_ts_type(key_type)}]: {_ts_type(value_type)} }}"
-    if origin is tuple:
-        return "[" + ", ".join(_ts_type(arg) for arg in get_args(typ)) + "]"
+        (arg,) = get_args(typ)
+        inner = _ts_type(arg)
+        if get_origin(arg) in (Union, types.UnionType):
+            inner = f"({inner})"
+        return f"{inner}[]"
     if origin in (Union, types.UnionType):
         return " | ".join(dict.fromkeys(_ts_type(arg) for arg in get_args(typ)))
     if is_typeddict(typ):

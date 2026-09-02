@@ -42,7 +42,7 @@ export class Player {
 
   configure(numSteps: number, fps: number, speed: number, loop: boolean): void {
     this.numSteps = Math.max(1, numSteps);
-    this.fps = fps > 0 ? fps : this.fps;
+    this.fps = fps;
     this._speed = speed;
     this._loop = loop;
     this.position = Math.min(this.position, this.numSteps - 1);

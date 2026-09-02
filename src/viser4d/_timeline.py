@@ -1,10 +1,19 @@
 """Block-backed timeline storage: per-step deltas, disk spill, checkpoints.
 
-The timeline is split into blocks of ``block_size`` steps. Each block is a list
-of ``StepDelta``. Blocks are LRU-cached in memory and spilled to a temporary
+The timeline is split into blocks of ``block_size`` steps, each a list of
+``StepDelta``. Blocks are LRU-cached in memory and spilled to a temporary
 directory (zstd + msgpack) through a dedicated single-worker executor, so writes
-per block stay ordered. Block-boundary checkpoints (the folded state at a
-block's first step) are cached in memory and invalidated purely by revision.
+per block stay ordered.
+
+Checkpoints are memory-only: a checkpoint for block ``k`` is the folded scene and
+audio state of every delta *before* ``k`` (exclusive), so the state at block
+offset ``o`` is ``fold(checkpoint, deltas[0..o])``. Staleness has one rule: a
+checkpoint built at rev ``r`` is valid iff no earlier block was written after
+``r``. A cold seek re-folds the blocks before it; sequential access extends the
+previous checkpoint and populates the cache along the way.
+
+Everything here runs under a single ``RLock``: the user thread records while
+viser's websocket and event-loop threads read blocks.
 """
 
 from __future__ import annotations
@@ -21,7 +30,7 @@ import msgspec
 import zstandard
 
 from . import _state, _viser
-from ._protocol import BlockManifest, TimelineBlockMessage
+from ._protocol import TimelineBlockMessage
 from ._state import (
     AudioEventRecord,
     AudioState,
@@ -32,38 +41,15 @@ from ._state import (
     StoredMessage,
 )
 
-
-class _WireMsg(msgspec.Struct):
-    payload: dict
-    buffers: list[bytes]
-
-
-class _WireEntry(msgspec.Struct):
-    key: str
-    rev: int
-    name: str | None
-    message: _WireMsg
-
-
-class _WireAudio(msgspec.Struct):
-    rev: int
-    message: _WireMsg
-
-
-class _WireDelta(msgspec.Struct):
-    puts: list[_WireEntry]
-    deleteNodes: list[str]
-    audio: list[_WireAudio]
-
-
-class _WireBlock(msgspec.Struct):
-    deltas: list[_WireDelta]
+_MAX_LOADED_BLOCKS = 4
+_MAX_CHECKPOINTS = 4
 
 
 @dataclasses.dataclass
 class _Block:
     deltas: list[StepDelta]
     dirty: bool = False
+    encoded_size: int | None = None
 
 
 @dataclasses.dataclass
@@ -76,18 +62,9 @@ class _Checkpoint:
 class Timeline:
     """Canonical per-step storage plus the live override overlay."""
 
-    def __init__(
-        self,
-        num_steps: int,
-        *,
-        block_size: int,
-        max_loaded_blocks: int = 4,
-        max_checkpoints: int = 4,
-    ) -> None:
+    def __init__(self, num_steps: int, *, block_size: int) -> None:
         self.num_steps = num_steps
         self.block_size = block_size
-        self._max_loaded_blocks = max_loaded_blocks
-        self._max_checkpoints = max_checkpoints
         self._lock = threading.RLock()
         self._rev = 0
         self._loaded: OrderedDict[int, _Block] = OrderedDict()
@@ -98,7 +75,7 @@ class Timeline:
         self._dir_root = tempfile.TemporaryDirectory(prefix="viser4d-timeline-")
         self._dir = Path(self._dir_root.name)
         self._block_write_rev = [0] * self.block_count
-        self._manifest_bytes: list[int | None] = [None] * self.block_count
+        self._block_bytes: list[int | None] = [None] * self.block_count
 
     # -- geometry ---------------------------------------------------------
 
@@ -113,15 +90,15 @@ class Timeline:
             )
         return step
 
-    def block_index_for_step(self, step: int) -> int:
-        return self.validate_step(step) // self.block_size
-
-    def _validate_block(self, index: int) -> int:
+    def validate_block(self, index: int) -> int:
         if index < 0 or index >= self.block_count:
             raise IndexError(
                 f"Block {index} is out of range for {self.block_count} blocks."
             )
         return index
+
+    def block_index_for_step(self, step: int) -> int:
+        return self.validate_step(step) // self.block_size
 
     def _next_rev(self) -> int:
         self._rev += 1
@@ -138,10 +115,11 @@ class Timeline:
             for message in messages:
                 self._record_message(delta, StoredMessage.capture(message))
             block.dirty = True
+            block.encoded_size = None
             # Stamp a fresh rev unconditionally: delete-only edits consume no
             # rev during folding but must still invalidate later checkpoints.
             self._block_write_rev[index] = self._next_rev()
-            self._invalidate_manifests_from(index)
+            self._invalidate_block_bytes_from(index)
 
     def _record_message(self, delta: StepDelta, stored: StoredMessage) -> None:
         if _state.is_audio(stored):
@@ -150,8 +128,10 @@ class Timeline:
         puts, deletes = _state.scene_puts_deletes(stored)
         for name in deletes:
             delta.fold_delete(name)
-        for key, name, message in puts:
-            delta.fold_put(SceneEntryRecord(key, self._next_rev(), name, message))
+        for put in puts:
+            delta.fold_put(
+                SceneEntryRecord(put.key, self._next_rev(), put.name, put.message)
+            )
 
     def record_override(self, message: _viser.Message) -> list[SceneEntryRecord]:
         with self._lock:
@@ -169,26 +149,18 @@ class Timeline:
             index, offset = divmod(step, self.block_size)
             return self._load_block(index).deltas[offset]
 
-    def block_manifests(self) -> list[BlockManifest]:
+    def block_bytes(self) -> list[int | None]:
+        """Encoded size of every block, by index; ``None`` until first served."""
         with self._lock:
-            return [self._manifest(index) for index in range(self.block_count)]
-
-    def _manifest(self, index: int) -> BlockManifest:
-        start = index * self.block_size
-        return {
-            "index": index,
-            "stepStart": start,
-            "stepStop": min(start + self.block_size, self.num_steps),
-            "byteSize": self._manifest_bytes[index],
-        }
+            return list(self._block_bytes)
 
     def block_message(self, index: int) -> TimelineBlockMessage:
         with self._lock:
-            index = self._validate_block(index)
+            index = self.validate_block(index)
             checkpoint = self._checkpoint_for(index)
             block = self._load_block(index)
-            if self._manifest_bytes[index] is None:
-                self._manifest_bytes[index] = self._byte_size(checkpoint, block)
+            if self._block_bytes[index] is None:
+                self._block_bytes[index] = self._byte_size(checkpoint, block)
             return TimelineBlockMessage(
                 index=index,
                 checkpointScene=[
@@ -240,11 +212,13 @@ class Timeline:
     ) -> None:
         self._checkpoints[index] = _Checkpoint(scene.copy(), audio.copy(), self._rev)
         self._checkpoints.move_to_end(index)
-        while len(self._checkpoints) > self._max_checkpoints:
+        while len(self._checkpoints) > _MAX_CHECKPOINTS:
             self._checkpoints.popitem(last=False)
 
     def _byte_size(self, checkpoint: _Checkpoint, block: _Block) -> int:
-        size = len(_encode_deltas(block.deltas))
+        if block.encoded_size is None:
+            block.encoded_size = len(msgspec.msgpack.encode(block.deltas))
+        size = block.encoded_size
         for entry in checkpoint.scene.entries.values():
             size += len(msgspec.msgpack.encode(entry.message.payload))
             size += sum(len(b) for b in entry.message.buffers)
@@ -255,7 +229,7 @@ class Timeline:
     # -- block cache / disk ----------------------------------------------
 
     def _load_block(self, index: int) -> _Block:
-        index = self._validate_block(index)
+        index = self.validate_block(index)
         block = self._loaded.get(index)
         if block is not None:
             self._loaded.move_to_end(index)
@@ -264,12 +238,13 @@ class Timeline:
         path = self._block_path(index)
         if path.exists():
             raw = zstandard.ZstdDecompressor().decompress(path.read_bytes())
-            block = _Block(_decode_deltas(raw))
+            deltas = msgspec.msgpack.decode(raw, type=list[StepDelta])
+            block = _Block(deltas, encoded_size=len(raw))
         else:
             count = min(self.block_size, self.num_steps - index * self.block_size)
             block = _Block([StepDelta() for _ in range(count)])
         self._loaded[index] = block
-        while len(self._loaded) > self._max_loaded_blocks:
+        while len(self._loaded) > _MAX_LOADED_BLOCKS:
             evicted_index, evicted = self._loaded.popitem(last=False)
             self._flush(evicted_index, evicted)
         return block
@@ -290,9 +265,9 @@ class Timeline:
     def _block_path(self, index: int) -> Path:
         return self._dir / f"{index:08d}.msgpack.zst"
 
-    def _invalidate_manifests_from(self, index: int) -> None:
+    def _invalidate_block_bytes_from(self, index: int) -> None:
         for i in range(index, self.block_count):
-            self._manifest_bytes[i] = None
+            self._block_bytes[i] = None
 
     # -- resize / clear / close ------------------------------------------
 
@@ -303,7 +278,7 @@ class Timeline:
             self._reset_storage()
             self.num_steps = num_steps
             self._block_write_rev = [0] * self.block_count
-            self._manifest_bytes = [None] * self.block_count
+            self._block_bytes = [None] * self.block_count
             for step, delta in retained.items():
                 if delta.is_empty():
                     continue
@@ -311,6 +286,7 @@ class Timeline:
                 block = self._load_block(index)
                 block.deltas[offset] = delta
                 block.dirty = True
+                block.encoded_size = None
                 self._block_write_rev[index] = self._rev
 
     def clear(self) -> None:
@@ -319,7 +295,7 @@ class Timeline:
             self._overrides.clear()
             self._rev = 0
             self._block_write_rev = [0] * self.block_count
-            self._manifest_bytes = [None] * self.block_count
+            self._block_bytes = [None] * self.block_count
 
     def _reset_storage(self) -> None:
         self._wait_all_flushes()
@@ -342,55 +318,6 @@ class Timeline:
         self._dir_root.cleanup()
 
 
-# ---------------------------------------------------------------------------
-# msgpack (de)serialization for disk spill
-# ---------------------------------------------------------------------------
-
-
-def _encode_msg(message: StoredMessage) -> _WireMsg:
-    return _WireMsg(payload=message.payload, buffers=list(message.buffers))
-
-
-def _decode_msg(wire: _WireMsg) -> StoredMessage:
-    return StoredMessage(wire.payload, tuple(wire.buffers))
-
-
-def _encode_deltas(deltas: list[StepDelta]) -> bytes:
-    return msgspec.msgpack.encode(
-        _WireBlock(
-            deltas=[
-                _WireDelta(
-                    puts=[
-                        _WireEntry(e.key, e.rev, e.name, _encode_msg(e.message))
-                        for e in delta.puts.values()
-                    ],
-                    deleteNodes=list(delta.delete_nodes),
-                    audio=[
-                        _WireAudio(a.rev, _encode_msg(a.message)) for a in delta.audio
-                    ],
-                )
-                for delta in deltas
-            ]
-        )
-    )
-
-
-def _decode_deltas(raw: bytes) -> list[StepDelta]:
-    block = msgspec.msgpack.decode(raw, type=_WireBlock)
-    deltas: list[StepDelta] = []
-    for wire in block.deltas:
-        delta = StepDelta(
-            puts=OrderedDict(
-                (e.key, SceneEntryRecord(e.key, e.rev, e.name, _decode_msg(e.message)))
-                for e in wire.puts
-            ),
-            delete_nodes=list(wire.deleteNodes),
-            audio=[AudioEventRecord(a.rev, _decode_msg(a.message)) for a in wire.audio],
-        )
-        deltas.append(delta)
-    return deltas
-
-
 def _write_block(path: Path, deltas: list[StepDelta]) -> None:
-    compressed = zstandard.ZstdCompressor(level=6).compress(_encode_deltas(deltas))
-    path.write_bytes(compressed)
+    raw = msgspec.msgpack.encode(deltas)
+    path.write_bytes(zstandard.ZstdCompressor(level=6).compress(raw))

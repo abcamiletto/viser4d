@@ -2,7 +2,25 @@
 
 viser has no extension API, so viser4d necessarily reaches into a few of its
 internals. Every such access is concentrated here; the rest of the package
-imports only this module. See ARCHITECTURE.md for the full coupling inventory.
+imports only this module. Target viser: ``>=1.0.30,<1.1``.
+
+Python-side coupling inventory (everything below is private viser API):
+
+- ``viser._messages``: ``Message``, ``RunJavascriptMessage``,
+  ``_CreateSceneNodeMessage`` (isinstance),
+  ``Message.as_serializable_dict(binary_buffers=...)``
+- ``viser._scene_api.SceneApi(owner, thread_executor=, event_loop=)``,
+  ``SceneApi._owner``, ``SceneApi._handle_from_node_name``
+- ``server._websock_server``: ``queue_message``, ``register_handler``,
+  ``unregister_handler``; ``client._websock_connection.queue_message``
+- ``viser.infra.WebsockMessageHandler`` as the shadow-transport base
+- ``StateSerializer._messages`` / ``._binary_buffers`` / ``._time`` (no public
+  equivalent for appending pre-serialized messages at chosen timestamps)
+
+The browser side has its own inventory, confined to ``client/viser.ts``.
+Every wire ``Message`` subclass must declare
+``include_in_scene_serialization=False`` so viser does not replay control
+traffic into exported recordings.
 """
 
 from __future__ import annotations

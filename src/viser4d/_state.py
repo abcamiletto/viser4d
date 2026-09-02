@@ -1,25 +1,47 @@
 """The canonical keyed scene/audio model: capture, keys, fold, materialize, wire.
 
-Every scene-mutating viser message reduces to a keyed *put* or a *node delete*.
-The scene at any timestep is a map ``key -> SceneEntryRecord``. This module owns
-message capture, key derivation, the fold rules, materialize ordering, and the
-conversion of stored placeholders into wire (numpy) or export (remapped) form.
-See ARCHITECTURE.md for the binding rules.
+Every scene-mutating viser message reduces to keyed *puts* or *node deletes*, so
+the scene at any timestep is a map ``key -> SceneEntryRecord``. Clients receive
+``name`` explicitly and never parse keys.
+
+Key derivation:
+
+| message shape                 | key                                        |
+|-------------------------------|--------------------------------------------|
+| has ``props`` (node creation) | ``create:{name}``                          |
+| ``SceneNodeUpdateMessage``    | one put per prop, ``update:{name}:{prop}`` |
+| other message with a name     | ``{type}:{name}`` (+ ``:{bone_index}``)    |
+| message without a name        | ``{type}`` (global state)                  |
+
+Fold rules live in ``put_entry`` / ``delete_node_entries`` and nowhere else:
+
+- delete node ``n``: drop every entry whose node is ``n`` or a descendant.
+- put a create for ``n``: first drop ``n``'s own non-create entries (re-creating
+  a node resets its properties, descendants survive, which matches viser's
+  client-side upsert), then store the entry.
+- any other put: last write wins per key.
+
+A node exists iff its ``create:{name}`` key is present. Every entry carries a
+globally monotonic ``rev``; two entries are equal iff their revs are equal.
+
+Materialize ordering: node removals (topmost ancestors only), then global
+(nameless) entries, then nodes parent-before-child, each node's create first.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from collections import OrderedDict, defaultdict
-from collections.abc import Iterable
-from typing import Any, cast
+from collections import defaultdict
+from collections.abc import Callable, Iterable
+from typing import Any, NamedTuple, cast
 
+import msgspec
 import numpy as np
 
 from . import _viser
 from ._protocol import (
     AUDIO_MESSAGE_TYPES,
-    AudioEvent,
+    AudioPayload,
     AudioTrack,
     Payload,
     SceneEntry,
@@ -36,6 +58,7 @@ __all__ = ["AudioState", "SceneState", "StepDelta"]
 _BINARY_INDEX = "__binary_index"
 _DTYPE = "dtype"
 _CREATE_PREFIX = "create:"
+_DELETE_PREFIX = "RemoveSceneNodeMessage:"
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +66,7 @@ _CREATE_PREFIX = "create:"
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass(frozen=True)
-class StoredMessage:
+class StoredMessage(msgspec.Struct, frozen=True):
     """One viser message captured as a placeholder payload plus its buffers."""
 
     payload: Payload
@@ -72,89 +94,54 @@ class StoredMessage:
 
     @property
     def name(self) -> str | None:
-        value = self.payload.get("name")
-        return value if isinstance(value, str) and value else None
+        return self.payload.get("name")
 
 
-def _byte_view(value: bytes) -> memoryview:
-    view = memoryview(value)
-    return view if view.format == "B" else view.cast("B")
+class SceneEntryRecord(msgspec.Struct, frozen=True):
+    """One keyed put, stamped with the rev it was recorded at."""
 
-
-def _inflate(value: Any, buffers: tuple[bytes, ...]) -> Any:
-    if isinstance(value, dict):
-        idx, dtype = value.get(_BINARY_INDEX), value.get(_DTYPE)
-        if isinstance(idx, int) and isinstance(dtype, str):
-            return np.frombuffer(buffers[idx], dtype=np.dtype(dtype))
-        return {str(k): _inflate(v, buffers) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_inflate(v, buffers) for v in value]
-    return value
-
-
-def _remap(value: Any, offset: int, count: int) -> Any:
-    if isinstance(value, dict):
-        idx, dtype = value.get(_BINARY_INDEX), value.get(_DTYPE)
-        if isinstance(idx, int) and isinstance(dtype, str):
-            if not 0 <= idx < count:
-                raise ValueError(f"Binary buffer index {idx} is out of range.")
-            return {_BINARY_INDEX: offset + idx, _DTYPE: dtype}
-        return {str(k): _remap(v, offset, count) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_remap(v, offset, count) for v in value]
-    return value
-
-
-# ---------------------------------------------------------------------------
-# Keyed entries
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class SceneEntryRecord:
     key: str
     rev: int
     name: str | None
     message: StoredMessage
 
 
-@dataclasses.dataclass(frozen=True)
-class AudioEventRecord:
+class AudioEventRecord(msgspec.Struct, frozen=True):
     rev: int
     message: StoredMessage
+
+
+class Put(NamedTuple):
+    """One keyed put derived from a message, before a rev is stamped."""
+
+    key: str
+    name: str | None
+    message: StoredMessage
+
+
+# ---------------------------------------------------------------------------
+# Keys and fold rules
+# ---------------------------------------------------------------------------
 
 
 def is_create_key(key: str) -> bool:
     return key.startswith(_CREATE_PREFIX)
 
 
+def is_delete_key(key: str) -> bool:
+    return key.startswith(_DELETE_PREFIX)
+
+
 def is_audio(stored: StoredMessage) -> bool:
     return stored.type in AUDIO_MESSAGE_TYPES
 
 
-def _covers(root: str, node: str) -> bool:
+def covers(root: str, node: str) -> bool:
+    """True if ``node`` is ``root`` or a descendant of it."""
     return node == root or node.startswith(f"{root}/")
 
 
-def _drop_covered_entries(entries: dict[str, SceneEntryRecord], name: str) -> None:
-    """Remove every entry whose node is ``name`` or a descendant of it."""
-    for key in [k for k, e in entries.items() if e.name and _covers(name, e.name)]:
-        del entries[key]
-
-
-def _drop_own_non_create_entries(
-    entries: dict[str, SceneEntryRecord], name: str | None
-) -> None:
-    """Re-creating a node resets its own properties; descendants survive."""
-    for key in [
-        k for k, e in entries.items() if e.name == name and not is_create_key(k)
-    ]:
-        del entries[key]
-
-
-def scene_puts_deletes(
-    stored: StoredMessage,
-) -> tuple[list[tuple[str, str | None, StoredMessage]], list[str]]:
+def scene_puts_deletes(stored: StoredMessage) -> tuple[list[Put], list[str]]:
     """Reduce one scene message to keyed puts and node-delete names."""
     mtype = stored.type
     if mtype == "RemoveSceneNodeMessage":
@@ -164,8 +151,8 @@ def scene_puts_deletes(
         if name is None:
             return [], []
         updates = cast(dict[str, Any], stored.payload.get("updates", {}))
-        puts = [
-            (
+        return [
+            Put(
                 f"update:{name}:{prop}",
                 name,
                 StoredMessage(
@@ -173,46 +160,60 @@ def scene_puts_deletes(
                 ),
             )
             for prop, value in updates.items()
-        ]
-        return puts, []
+        ], []
     if "props" in stored.payload:
-        return [(f"{_CREATE_PREFIX}{stored.name}", stored.name, stored)], []
+        return [Put(f"{_CREATE_PREFIX}{stored.name}", stored.name, stored)], []
     if stored.name is not None:
         key = f"{mtype}:{stored.name}"
         if "bone_index" in stored.payload:
             key = f"{key}:{stored.payload['bone_index']}"
-        return [(key, stored.name, stored)], []
-    return [(mtype, None, stored)], []
+        return [Put(key, stored.name, stored)], []
+    return [Put(mtype, None, stored)], []
+
+
+def put_entry(entries: dict[str, SceneEntryRecord], entry: SceneEntryRecord) -> None:
+    """Store one keyed put, resetting the node's own props on re-creation."""
+    if is_create_key(entry.key):
+        for key in [
+            k
+            for k, e in entries.items()
+            if e.name == entry.name and not is_create_key(k)
+        ]:
+            del entries[key]
+    entries.pop(entry.key, None)
+    entries[entry.key] = entry
+
+
+def delete_node_entries(entries: dict[str, SceneEntryRecord], name: str) -> None:
+    """Drop every entry whose node is ``name`` or a descendant of it."""
+    for key in [k for k, e in entries.items() if e.name and covers(name, e.name)]:
+        del entries[key]
 
 
 # ---------------------------------------------------------------------------
-# Step delta
+# Step delta: a scene state fragment plus the nodes the step deletes
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass
-class StepDelta:
-    puts: OrderedDict[str, SceneEntryRecord] = dataclasses.field(
-        default_factory=OrderedDict
-    )
-    delete_nodes: list[str] = dataclasses.field(default_factory=list)
-    audio: list[AudioEventRecord] = dataclasses.field(default_factory=list)
+class StepDelta(msgspec.Struct):
+    """Everything one recorded timestep applies on top of the previous state."""
+
+    puts: dict[str, SceneEntryRecord] = {}
+    delete_nodes: list[str] = []
+    audio: list[AudioEventRecord] = []
 
     def is_empty(self) -> bool:
         return not self.puts and not self.delete_nodes and not self.audio
 
     def fold_delete(self, name: str) -> None:
-        if any(_covers(existing, name) for existing in self.delete_nodes):
+        if any(covers(existing, name) for existing in self.delete_nodes):
             return
-        self.delete_nodes = [d for d in self.delete_nodes if not _covers(name, d)]
+        self.delete_nodes = [d for d in self.delete_nodes if not covers(name, d)]
         self.delete_nodes.append(name)
-        _drop_covered_entries(self.puts, name)
+        delete_node_entries(self.puts, name)
 
     def fold_put(self, entry: SceneEntryRecord) -> None:
-        if is_create_key(entry.key):
-            _drop_own_non_create_entries(self.puts, entry.name)
-        self.puts.pop(entry.key, None)
-        self.puts[entry.key] = entry
+        put_entry(self.puts, entry)
 
 
 # ---------------------------------------------------------------------------
@@ -235,12 +236,10 @@ class SceneState:
         }
 
     def delete_node(self, name: str) -> None:
-        _drop_covered_entries(self.entries, name)
+        delete_node_entries(self.entries, name)
 
     def put(self, entry: SceneEntryRecord) -> None:
-        if is_create_key(entry.key):
-            _drop_own_non_create_entries(self.entries, entry.name)
-        self.entries[entry.key] = entry
+        put_entry(self.entries, entry)
 
     def apply_delta(self, delta: StepDelta) -> None:
         for name in delta.delete_nodes:
@@ -255,10 +254,15 @@ class SceneState:
 
 
 class OverrideState:
-    """Keyed overlay applied on top of every step. Deletes are kept as entries."""
+    """Keyed overlay applied on top of every step.
+
+    An override for node ``n`` applies wherever ``n`` exists. Deletes are kept
+    as tombstone entries so the node stays deleted at every step; a tombstone
+    also prunes the overlay entries it covers.
+    """
 
     def __init__(self) -> None:
-        self.entries: OrderedDict[str, SceneEntryRecord] = OrderedDict()
+        self.entries: dict[str, SceneEntryRecord] = {}
 
     def clear(self) -> None:
         self.entries.clear()
@@ -266,34 +270,31 @@ class OverrideState:
     def items(self) -> list[SceneEntryRecord]:
         return list(self.entries.values())
 
-    def apply(self, stored: StoredMessage, next_rev: Any) -> list[SceneEntryRecord]:
+    def apply(
+        self, stored: StoredMessage, next_rev: Callable[[], int]
+    ) -> list[SceneEntryRecord]:
         puts, deletes = scene_puts_deletes(stored)
         changed: list[SceneEntryRecord] = []
         for name in deletes:
             if any(
-                is_delete_key(k) and e.name and _covers(e.name, name)
+                is_delete_key(k) and e.name and covers(e.name, name)
                 for k, e in self.entries.items()
             ):
                 continue
-            _drop_covered_entries(self.entries, name)
+            delete_node_entries(self.entries, name)
             record = SceneEntryRecord(
-                key=f"RemoveSceneNodeMessage:{name}",
+                key=f"{_DELETE_PREFIX}{name}",
                 rev=next_rev(),
                 name=name,
                 message=StoredMessage({"type": "RemoveSceneNodeMessage", "name": name}),
             )
-            self.entries[record.key] = record
+            put_entry(self.entries, record)
             changed.append(record)
-        for key, name, message in puts:
-            record = SceneEntryRecord(key, next_rev(), name, message)
-            self.entries.pop(key, None)
-            self.entries[key] = record
+        for put in puts:
+            record = SceneEntryRecord(put.key, next_rev(), put.name, put.message)
+            put_entry(self.entries, record)
             changed.append(record)
         return changed
-
-
-def is_delete_key(key: str) -> bool:
-    return key.startswith("RemoveSceneNodeMessage:")
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +313,12 @@ class AudioTrackSnapshot:
 
 
 class AudioState:
+    """Audio events folded into per-track snapshots.
+
+    A track occupies steps ``[start_step, start_step + frames / rate * fps)``;
+    ``AddAudioMessage`` anchors ``start_step``, later events never move it.
+    """
+
     def __init__(self) -> None:
         self.tracks: dict[str, AudioTrackSnapshot] = {}
 
@@ -356,19 +363,9 @@ class AudioState:
             track.data = np.concatenate((track.data, tail))
 
 
-def _waveform_samples(waveform: Any) -> tuple[int, np.ndarray]:
-    data = np.ascontiguousarray(waveform["data"], dtype=np.float32).reshape(-1)
-    return int(waveform["numChannels"]), data
-
-
 # ---------------------------------------------------------------------------
 # Materialize ordering (delta / state -> ordered viser messages)
 # ---------------------------------------------------------------------------
-
-
-def _topmost(delete_nodes: Iterable[str]) -> list[str]:
-    nodes = list(delete_nodes)
-    return [n for n in nodes if not any(o != n and _covers(o, n) for o in nodes)]
 
 
 def materialize(
@@ -402,6 +399,11 @@ def materialize_delta(delta: StepDelta) -> list[StoredMessage]:
     )
 
 
+def _topmost(delete_nodes: Iterable[str]) -> list[str]:
+    nodes = list(delete_nodes)
+    return [n for n in nodes if not any(o != n and covers(o, n) for o in nodes)]
+
+
 # ---------------------------------------------------------------------------
 # Wire conversion
 # ---------------------------------------------------------------------------
@@ -416,8 +418,8 @@ def entry_to_wire(entry: SceneEntryRecord) -> SceneEntry:
     }
 
 
-def audio_event_to_wire(event: AudioEventRecord) -> AudioEvent:
-    return {"rev": event.rev, "message": event.message.inflate()}
+def audio_event_to_wire(event: AudioEventRecord) -> AudioPayload:
+    return AudioPayload(event.message.inflate())
 
 
 def delta_to_wire(delta: StepDelta) -> StepDeltaWire:
@@ -437,7 +439,6 @@ def audio_track_to_wire(name: str, track: AudioTrackSnapshot) -> AudioTrack:
     }
     return {
         "name": name,
-        "rev": track.rev,
         "sampleRate": track.sample_rate,
         "startStep": track.start_step,
         "volume": track.volume,
@@ -446,9 +447,43 @@ def audio_track_to_wire(name: str, track: AudioTrackSnapshot) -> AudioTrack:
 
 
 def override_message(entry: SceneEntryRecord) -> TimelineOverrideMessage:
-    return TimelineOverrideMessage(
-        key=entry.key,
-        rev=entry.rev,
-        name=entry.name,
-        message=entry.message.inflate(),
-    )
+    return TimelineOverrideMessage(entry=entry_to_wire(entry))
+
+
+# ---------------------------------------------------------------------------
+# Binary placeholder helpers
+# ---------------------------------------------------------------------------
+
+
+def _byte_view(value: bytes) -> memoryview:
+    view = memoryview(value)
+    return view if view.format == "B" else view.cast("B")
+
+
+def _inflate(value: Any, buffers: tuple[bytes, ...]) -> Any:
+    if isinstance(value, dict):
+        idx, dtype = value.get(_BINARY_INDEX), value.get(_DTYPE)
+        if isinstance(idx, int) and isinstance(dtype, str):
+            return np.frombuffer(buffers[idx], dtype=np.dtype(dtype))
+        return {str(k): _inflate(v, buffers) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_inflate(v, buffers) for v in value]
+    return value
+
+
+def _remap(value: Any, offset: int, count: int) -> Any:
+    if isinstance(value, dict):
+        idx, dtype = value.get(_BINARY_INDEX), value.get(_DTYPE)
+        if isinstance(idx, int) and isinstance(dtype, str):
+            if not 0 <= idx < count:
+                raise ValueError(f"Binary buffer index {idx} is out of range.")
+            return {_BINARY_INDEX: offset + idx, _DTYPE: dtype}
+        return {str(k): _remap(v, offset, count) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_remap(v, offset, count) for v in value]
+    return value
+
+
+def _waveform_samples(waveform: Any) -> tuple[int, np.ndarray]:
+    data = np.ascontiguousarray(waveform["data"], dtype=np.float32).reshape(-1)
+    return int(waveform["numChannels"]), data

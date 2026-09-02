@@ -2,28 +2,31 @@
 
 One ``ClientSession`` exists per connected browser. It buffers outbound control
 messages until the runtime signals ``TimelineReadyMessage``, serves block
-payloads on request, and mirrors the client's transport state back to server
-callbacks.
+payloads on request, and mirrors the client's transport state back to the
+server-provided callbacks.
+
+Threading: viser's event loop delivers inbound events and owns the outbound
+queue; block payloads are built on viser's thread executor (folding a checkpoint
+is slow) and sent from the event loop. One lock guards this session's state.
 """
 
 from __future__ import annotations
 
+import asyncio
 import threading
-import warnings
-from concurrent.futures import Future
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from . import _state, _viser
-from ._config import require_positive_float
+from ._config import PlaybackConfig
 from ._protocol import (
-    BlockManifest,
+    TimelineBlockBytesMessage,
     TimelineBlockDiscardMessage,
     TimelineBlockMessage,
     TimelineBlockRequestMessage,
     TimelineClearMessage,
     TimelineConfigureMessage,
     TimelineEventMessage,
-    TimelineManifestsMessage,
     TimelinePauseMessage,
     TimelinePlaybackStateMessage,
     TimelinePlayMessage,
@@ -34,20 +37,33 @@ from ._protocol import (
     TimelineSpeedMessage,
     TimelineTimestepMessage,
 )
-
-if TYPE_CHECKING:
-    from ._server import Viser4dServer
-    from ._viser import ClientHandle
+from ._timeline import Timeline
+from ._viser import ClientHandle
 
 
 class ClientSession:
     """Playback controls and block serving for one connected client."""
 
-    def __init__(self, server: Viser4dServer, client: ClientHandle) -> None:
-        self._server = server
+    def __init__(
+        self,
+        client: ClientHandle,
+        timeline: Timeline,
+        config: PlaybackConfig,
+        *,
+        executor: ThreadPoolExecutor,
+        event_loop: asyncio.AbstractEventLoop,
+        on_timestep: Callable[[ClientHandle, int], None],
+        on_playback: Callable[[ClientHandle, bool], None],
+    ) -> None:
         self._client = client
+        self._timeline = timeline
+        self._config = config
+        self._executor = executor
+        self._event_loop = event_loop
+        self._on_timestep = on_timestep
+        self._on_playback = on_playback
         self._lock = threading.RLock()
-        self._speed = server.playback_speed
+        self._speed = config.speed
         self._is_playing = False
         self._current_timestep = 0
         self._loaded_blocks: set[int] = set()
@@ -84,13 +100,13 @@ class ClientSession:
     def play(self) -> None:
         with self._lock:
             speed = self._speed
-        self._send(TimelinePlayMessage(speed=speed, loop=self._server.loop))
+        self._send(TimelinePlayMessage(speed=speed, loop=self._config.loop))
 
     def pause(self) -> None:
         self._send(TimelinePauseMessage())
 
     def seek(self, t: int) -> None:
-        t = self._require_timestep(t)
+        t = self._timeline.validate_step(t)
         with self._lock:
             self._current_timestep = t
         self._send(TimelineSeekMessage(step=t))
@@ -99,10 +115,9 @@ class ClientSession:
         self._send(TimelineRefreshMessage())
 
     def set_speed(self, speed: float) -> None:
-        next_speed = require_positive_float("speed", speed)
         with self._lock:
-            self._speed = next_speed
-        self._send(TimelineSetSpeedMessage(speed=next_speed, loop=self._server.loop))
+            self._speed = speed
+        self._send(TimelineSetSpeedMessage(speed=speed, loop=self._config.loop))
 
     # -- server-driven syncs ----------------------------------------------
 
@@ -110,7 +125,7 @@ class ClientSession:
         self._send_configure()
 
     def sync_steps(self) -> None:
-        max_step = self._server.num_steps - 1
+        max_step = self._timeline.num_steps - 1
         with self._lock:
             self._current_timestep = min(self._current_timestep, max_step)
             target = self._current_timestep
@@ -118,7 +133,7 @@ class ClientSession:
 
     def clear(self) -> None:
         with self._lock:
-            self._speed = self._server.playback_speed
+            self._speed = self._config.speed
             self._is_playing = False
             self._current_timestep = 0
             if not self._ready:
@@ -130,8 +145,8 @@ class ClientSession:
             if index in self._loaded_blocks:
                 self._send(message)
 
-    def send_manifests(self, manifests: list[BlockManifest]) -> None:
-        self._send(TimelineManifestsMessage(manifests=manifests))
+    def send_block_bytes(self, block_bytes: list[int | None]) -> None:
+        self._send(TimelineBlockBytesMessage(blockBytes=block_bytes))
 
     def apply_override(self, entry: _state.SceneEntryRecord) -> None:
         self._send(_state.override_message(entry))
@@ -150,47 +165,35 @@ class ClientSession:
         elif isinstance(message, TimelineTimestepMessage):
             self._handle_timestep(message.step)
         elif isinstance(message, TimelineSpeedMessage):
+            if message.speed <= 0.0:
+                raise ValueError(f"Client sent invalid speed {message.speed!r}.")
             with self._lock:
-                self._speed = require_positive_float("speed", message.speed)
+                self._speed = message.speed
         elif isinstance(message, TimelinePlaybackStateMessage):
             self._handle_playback_state(message.isPlaying)
 
     def _handle_timestep(self, step: int) -> None:
-        if not 0 <= step < self._server.num_steps:
-            warnings.warn(
-                f"Ignoring timeline event with invalid step={step}.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-            return
+        self._timeline.validate_step(step)
         with self._lock:
             self._current_timestep = step
-        self._server._dispatch_timestep_change(self._client, step)
+        self._on_timestep(self._client, step)
 
     def _handle_playback_state(self, is_playing: bool) -> None:
         with self._lock:
             if is_playing == self._is_playing:
                 return
             self._is_playing = is_playing
-        self._server._dispatch_playback_change(self._client, is_playing)
+        self._on_playback(self._client, is_playing)
 
     def _handle_block_request(self, index: int) -> None:
-        if not 0 <= index < self._server._timeline.block_count:
-            warnings.warn(
-                f"Ignoring timeline block request with invalid index={index}.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-            return
+        self._timeline.validate_block(index)
         with self._lock:
             if index in self._pending_requests:
                 return
             self._pending_requests.add(index)
-        future = _viser.server_thread_executor(self._server).submit(
-            self._server._timeline.block_message, index
-        )
+        future = self._executor.submit(self._timeline.block_message, index)
         future.add_done_callback(
-            lambda f: self._server.get_event_loop().call_soon_threadsafe(
+            lambda f: self._event_loop.call_soon_threadsafe(
                 self._finish_block_request, index, f
             )
         )
@@ -198,19 +201,16 @@ class ClientSession:
     def _finish_block_request(
         self, index: int, future: Future[TimelineBlockMessage]
     ) -> None:
-        if future.exception() is not None:
-            with self._lock:
-                self._pending_requests.discard(index)
-            return
+        message = future.result()
         with self._lock:
             if index not in self._pending_requests:
                 return
             self._pending_requests.discard(index)
             self._loaded_blocks.add(index)
-            self._send(future.result())
-            # block_message() filled in this block's byteSize; refresh the
-            # client's manifests so its preload planner can use its budget.
-            self.send_manifests(self._server._timeline.block_manifests())
+            self._send(message)
+            # block_message() filled in this block's encoded size; refresh the
+            # client's sizes so its preload planner can use its budget.
+            self.send_block_bytes(self._timeline.block_bytes())
 
     # -- reset / send primitives -----------------------------------------
 
@@ -228,26 +228,19 @@ class ClientSession:
             speed = self._speed
         self._send(
             TimelineConfigureMessage(
-                numSteps=self._server.num_steps,
-                blockSize=self._server.block_size,
-                timelineFps=self._server.fps,
+                numSteps=self._timeline.num_steps,
+                blockSize=self._config.streaming.block_size,
+                timelineFps=self._config.fps,
                 speed=speed,
-                loop=self._server.loop,
-                cacheBytes=self._server.streaming.client_cache_bytes,
-                manifests=self._server._timeline.block_manifests(),
+                loop=self._config.loop,
+                cacheBytes=self._config.streaming.client_cache_bytes,
+                blockBytes=self._timeline.block_bytes(),
             )
         )
 
     def _sync_overrides(self) -> None:
-        for entry in self._server._timeline.override_items():
+        for entry in self._timeline.override_items():
             self.apply_override(entry)
-
-    def _require_timestep(self, t: int) -> int:
-        if 0 <= t < self._server.num_steps:
-            return t
-        raise ValueError(
-            f"timestep must be in [0, {self._server.num_steps - 1}], got {t}."
-        )
 
     def _flush_pending(self) -> None:
         # Drain under the lock so a concurrent _send cannot jump the queue.

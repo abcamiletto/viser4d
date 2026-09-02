@@ -3,6 +3,7 @@
 // the single DOM scrape in the runtime, deliberately isolated to this module.
 
 import { AudioEngine, type AudioTransport } from "./audio";
+import type { AudioMessage } from "./protocol.gen";
 
 const JUMP_STEPS = 0.2;
 const EPSILON = 1e-4;
@@ -14,7 +15,7 @@ export class FilePlayback implements AudioTransport {
   private playbackTime = 0;
   private playing = false;
   private observed = false;
-  private pending: { message: unknown }[] = [];
+  private pending: AudioMessage[] = [];
   private syncScheduled = false;
   private disposed = false;
 
@@ -28,15 +29,11 @@ export class FilePlayback implements AudioTransport {
     return 1;
   }
 
-  install(): void {
-    this.attach();
-  }
-
-  enqueue(message: unknown): void {
+  enqueue(message: AudioMessage): void {
     if (this.disposed) {
       return;
     }
-    this.pending.push({ message });
+    this.pending.push(message);
     this.scheduleSync();
   }
 
@@ -49,13 +46,13 @@ export class FilePlayback implements AudioTransport {
     this.pending = [];
   }
 
-  private attach(): void {
+  install(): void {
     if (this.disposed || this.observer) {
       return;
     }
     const slider = this.findSlider();
     if (!slider) {
-      requestAnimationFrame(() => this.attach());
+      requestAnimationFrame(() => this.install());
       return;
     }
     this.observer = new MutationObserver(() => this.sync());

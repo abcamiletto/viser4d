@@ -6,7 +6,8 @@ travel server -> client over viser's websocket and are intercepted by the
 runtime before viser processes them; event messages travel client -> server
 through viser's normal message path.
 
-Scene message payloads (`ScenePayload`) are plain viser messages in dict form.
+Scene message payloads (`ScenePayload`) are plain viser messages in dict form;
+audio payloads (`AudioPayload`) are one of the `AudioMessage` subclasses below.
 Numpy arrays inside payloads arrive in the browser as raw bytes, so any array
 that needs interpretation carries explicit metadata (see `Waveform`).
 """
@@ -19,13 +20,15 @@ from typing import Any, NewType, TypeAlias, TypedDict
 
 import numpy as np
 import numpy.typing as npt
-from typing_extensions import override
 
 from . import _viser
 
 Payload: TypeAlias = dict[str, Any]
 ScenePayload = NewType("ScenePayload", Payload)
 """A viser scene message as plain data, possibly containing numpy arrays."""
+
+AudioPayload = NewType("AudioPayload", Payload)
+"""One of the ``AudioMessage`` subclasses below, as plain data."""
 
 
 class SceneEntry(TypedDict):
@@ -37,17 +40,12 @@ class SceneEntry(TypedDict):
     message: ScenePayload
 
 
-class AudioEvent(TypedDict):
-    rev: int
-    message: ScenePayload
-
-
 class StepDelta(TypedDict):
     """Changes one timestep applies on top of the previous timestep's state."""
 
     puts: list[SceneEntry]
     deleteNodes: list[str]
-    audio: list[AudioEvent]
+    audio: list[AudioPayload]
 
 
 class Waveform(TypedDict):
@@ -62,24 +60,15 @@ class AudioTrack(TypedDict):
     """Folded audio track state at a block boundary."""
 
     name: str
-    rev: int
     sampleRate: int
     startStep: int
     volume: float
     waveform: Waveform
 
 
-class BlockManifest(TypedDict):
-    index: int
-    stepStart: int
-    stepStop: int
-    byteSize: int | None
-
-
 class _TimelineMessage(_viser.Message, include_in_scene_serialization=False):
     """Base for all viser4d wire messages. Never deduplicated in queues."""
 
-    @override
     def redundancy_key(self) -> str:
         return str(uuid.uuid4())
 
@@ -105,12 +94,14 @@ class TimelineConfigureMessage(TimelineControlMessage):
     speed: float
     loop: bool
     cacheBytes: int
-    manifests: list[BlockManifest]
+    blockBytes: list[int | None]
 
 
 @dataclasses.dataclass
-class TimelineManifestsMessage(TimelineControlMessage):
-    manifests: list[BlockManifest]
+class TimelineBlockBytesMessage(TimelineControlMessage):
+    """Encoded size of every block, by index; ``None`` where not yet known."""
+
+    blockBytes: list[int | None]
 
 
 @dataclasses.dataclass
@@ -127,10 +118,7 @@ class TimelineBlockMessage(TimelineControlMessage):
 class TimelineOverrideMessage(TimelineControlMessage):
     """One keyed entry of the live override overlay."""
 
-    key: str
-    rev: int
-    name: str | None
-    message: ScenePayload
+    entry: SceneEntry
 
 
 @dataclasses.dataclass
@@ -251,12 +239,4 @@ class RemoveAudioMessage(AudioMessage):
     name: str
 
 
-AUDIO_MESSAGE_TYPES = frozenset(
-    {
-        "AddAudioMessage",
-        "SetAudioVolumeMessage",
-        "SetAudioWaveformMessage",
-        "AppendAudioMessage",
-        "RemoveAudioMessage",
-    }
-)
+AUDIO_MESSAGE_TYPES = frozenset(cls.__name__ for cls in AudioMessage.get_subclasses())

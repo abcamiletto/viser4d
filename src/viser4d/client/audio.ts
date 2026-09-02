@@ -2,19 +2,15 @@
 // audio events into per-track states, reconciles scheduled buffer sources by
 // content, and is driven entirely by an injected transport clock.
 
-import { waveformFloats } from "./binary";
+import { waveformFloats, type WaveformPayload } from "./binary";
+import type { AudioMessage } from "./protocol.gen";
 import type { AudioTrackSnapshot } from "./state";
-import { runtimeWindow } from "./viser";
 
 export type AudioTransport = {
   getStep(): number;
   isPlaying(): boolean;
   speed(): number;
 };
-
-type RawWaveform = { numChannels: number; numFrames: number; data: Uint8Array };
-
-type AudioEventLike = { type: string; name: string; [key: string]: unknown };
 
 type TrackState = {
   sampleRate: number;
@@ -34,15 +30,20 @@ type RuntimeTrack = {
   token: number;
 };
 
-function readWaveform(raw: RawWaveform): {
-  samples: Float32Array;
-  numChannels: number;
-  numFrames: number;
-} {
+function makeTrack(
+  sampleRate: number,
+  startStep: number,
+  volume: number,
+  waveform: WaveformPayload,
+): TrackState {
   return {
-    samples: waveformFloats(raw.data),
-    numChannels: raw.numChannels,
-    numFrames: raw.numFrames,
+    sampleRate,
+    startStep,
+    volume,
+    numChannels: waveform.numChannels,
+    numFrames: waveform.numFrames,
+    samples: waveformFloats(waveform.data),
+    removed: false,
   };
 }
 
@@ -58,30 +59,24 @@ export class AudioEngine {
   ) {}
 
   setStepRate(rate: number): void {
-    this.stepRate = rate > 0 ? rate : this.stepRate;
+    this.stepRate = rate;
   }
 
   /** Replace the timeline track states from a block checkpoint. */
   loadCheckpoint(tracks: AudioTrackSnapshot[]): void {
     this.tracks.clear();
     for (const track of tracks) {
-      const { samples, numChannels, numFrames } = readWaveform(track.waveform);
-      this.tracks.set(track.name, {
-        sampleRate: track.sampleRate,
-        startStep: track.startStep,
-        volume: track.volume,
-        numChannels,
-        numFrames,
-        samples,
-        removed: false,
-      });
+      this.tracks.set(
+        track.name,
+        makeTrack(track.sampleRate, track.startStep, track.volume, track.waveform),
+      );
     }
   }
 
   /** Fold audio events recorded at `step` into the track states. */
-  applyEvents(step: number, events: { message: unknown }[]): void {
+  applyEvents(step: number, events: readonly AudioMessage[]): void {
     for (const event of events) {
-      this.foldEvent(step, event.message as AudioEventLike);
+      this.foldEvent(step, event);
     }
   }
 
@@ -106,23 +101,15 @@ export class AudioEngine {
     this.nextToken = 1;
   }
 
-  private foldEvent(step: number, message: AudioEventLike): void {
+  private foldEvent(step: number, message: AudioMessage): void {
     const name = message.name;
     const existing = this.tracks.get(name);
     switch (message.type) {
       case "AddAudioMessage": {
-        const { samples, numChannels, numFrames } = readWaveform(
-          message.waveform as RawWaveform,
+        this.tracks.set(
+          name,
+          makeTrack(message.sampleRate, step, message.volume, message.waveform),
         );
-        this.tracks.set(name, {
-          sampleRate: message.sampleRate as number,
-          startStep: step,
-          volume: message.volume as number,
-          numChannels,
-          numFrames,
-          samples,
-          removed: false,
-        });
         this.reconcileTrack(name);
         break;
       }
@@ -130,12 +117,9 @@ export class AudioEngine {
         if (!existing) {
           break;
         }
-        const { samples, numChannels, numFrames } = readWaveform(
-          message.waveform as RawWaveform,
-        );
-        existing.samples = samples;
-        existing.numChannels = numChannels;
-        existing.numFrames = numFrames;
+        existing.samples = waveformFloats(message.waveform.data);
+        existing.numChannels = message.waveform.numChannels;
+        existing.numFrames = message.waveform.numFrames;
         existing.removed = false;
         this.reconcileTrack(name);
         break;
@@ -144,12 +128,12 @@ export class AudioEngine {
         if (!existing) {
           break;
         }
-        const { samples, numFrames } = readWaveform(message.waveform as RawWaveform);
+        const samples = waveformFloats(message.waveform.data);
         const merged = new Float32Array(existing.samples.length + samples.length);
         merged.set(existing.samples, 0);
         merged.set(samples, existing.samples.length);
         existing.samples = merged;
-        existing.numFrames += numFrames;
+        existing.numFrames += message.waveform.numFrames;
         this.reconcileTrack(name);
         break;
       }
@@ -157,7 +141,7 @@ export class AudioEngine {
         if (!existing) {
           break;
         }
-        existing.volume = message.volume as number;
+        existing.volume = message.volume;
         this.updateGain(name);
         break;
       }
@@ -172,10 +156,9 @@ export class AudioEngine {
     }
   }
 
-  private context(): AudioContext | null {
+  private context(): AudioContext {
     if (!this.ctx) {
-      const Ctor = runtimeWindow().AudioContext || runtimeWindow().webkitAudioContext;
-      this.ctx = Ctor ? new Ctor() : null;
+      this.ctx = new AudioContext();
     }
     return this.ctx;
   }
@@ -234,9 +217,6 @@ export class AudioEngine {
 
   private reconcileTrack(name: string): void {
     const ctx = this.context();
-    if (!ctx) {
-      return;
-    }
     const runtime = this.getRuntime(name);
     this.stopRuntime(runtime);
     if (!this.transport.isPlaying()) {

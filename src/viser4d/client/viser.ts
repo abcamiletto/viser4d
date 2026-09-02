@@ -1,6 +1,17 @@
-// The only module that touches the viser frontend. Everything viser-specific —
-// the React fiber walk, the message-queue seam, the outbound send — is confined
-// here, and it is the only place `any` is permitted (the viewer is untyped).
+// The only module that touches the viser frontend, and the only place `any` is
+// permitted (the viewer is untyped). Browser-side coupling inventory:
+//
+// - React fiber walk from `#root` / `__reactContainer$*` to the viewer context,
+//   duck-typed on `mutable` + `useGuiConfig` + `guiActions` + `useSceneTree`.
+// - `viewer.mutable.current.messageQueue.push` is wrapped: the single inbound
+//   seam, intercepting `Timeline*` control messages and forwarding the rest.
+// - `viewer.mutable.current.sendMessage(message)` for outbound events.
+// - `viewer.messageSource` distinguishes websocket from file playback.
+// - `filePlayback.ts` additionally scrapes `[role='slider'][aria-valuenow]`,
+//   viser's native player position.
+//
+// Discovery failures retry on animation frames and then log loudly; there is no
+// silent degradation.
 
 import type { ScenePayload } from "./binary";
 
@@ -10,12 +21,6 @@ type QueueMessage = { type: string };
 
 /** Returns true if the runtime consumed the message (viser must not see it). */
 export type InboundHandler = (message: QueueMessage) => boolean;
-
-type RuntimeWindow = Window & {
-  __VISER4D__?: unknown;
-  AudioContext?: typeof AudioContext;
-  webkitAudioContext?: typeof AudioContext;
-};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
@@ -74,9 +79,7 @@ export class Viser {
   private viewer: Record<string, any> | null = null;
   private queue: QueueMessage[] | null = null;
   private originalPush: ((...messages: QueueMessage[]) => number) | null = null;
-  private wrappedPush: ((...messages: QueueMessage[]) => number) | null = null;
   private disposed = false;
-  private failed = false;
   private deadline = 0;
 
   constructor(
@@ -91,21 +94,16 @@ export class Viser {
 
   dispose(): void {
     this.disposed = true;
-    if (this.queue && this.originalPush && this.queue.push === this.wrappedPush) {
+    if (this.queue && this.originalPush) {
       this.queue.push = this.originalPush;
     }
     this.viewer = null;
     this.queue = null;
     this.originalPush = null;
-    this.wrappedPush = null;
-  }
-
-  get messageSource(): string | undefined {
-    return this.viewer?.messageSource;
   }
 
   get isWebsocket(): boolean {
-    return this.messageSource === "websocket";
+    return this.viewer?.messageSource === "websocket";
   }
 
   /** Push scene payloads into viser, bypassing our own interception. */
@@ -133,13 +131,10 @@ export class Viser {
       return;
     }
     if (performance.now() >= this.deadline) {
-      if (!this.failed) {
-        this.failed = true;
-        console.error(
-          "[viser4d] Could not locate the viewer in the React fiber tree after " +
-            "5s of retries; the timeline runtime is inactive.",
-        );
-      }
+      console.error(
+        "[viser4d] Could not locate the viewer in the React fiber tree after " +
+          "5s of retries; the timeline runtime is inactive.",
+      );
       return;
     }
     requestAnimationFrame(() => this.tryInstall());
@@ -148,7 +143,7 @@ export class Viser {
   private wrapQueue(viewer: Record<string, any>): void {
     const queue = viewer.mutable.current.messageQueue as QueueMessage[];
     const original = queue.push.bind(queue) as (...m: QueueMessage[]) => number;
-    const wrapped = (...messages: QueueMessage[]): number => {
+    queue.push = (...messages: QueueMessage[]): number => {
       const forwarded: QueueMessage[] = [];
       for (const message of messages) {
         if (!this.onMessage(message)) {
@@ -157,13 +152,7 @@ export class Viser {
       }
       return forwarded.length ? original(...forwarded) : queue.length;
     };
-    queue.push = wrapped;
     this.queue = queue;
     this.originalPush = original;
-    this.wrappedPush = wrapped;
   }
-}
-
-export function runtimeWindow(): RuntimeWindow {
-  return window as RuntimeWindow;
 }
