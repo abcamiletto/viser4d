@@ -5,7 +5,6 @@ from viser4d._state import (
     SceneState,
     StepDelta,
     StoredMessage,
-    materialize,
     scene_puts_deletes,
 )
 
@@ -97,33 +96,4 @@ def test_scene_state_delete_drops_descendants() -> None:
         )
     )
     state.delete_node("/a")
-    assert state.node_names() == {"/c"}
-
-
-def test_materialize_orders_parents_before_children() -> None:
-    entries = [
-        SceneEntryRecord(
-            "SetPositionMessage:/root/child",
-            1,
-            "/root/child",
-            _stored(type="SetPositionMessage", name="/root/child"),
-        ),
-        SceneEntryRecord(
-            "create:/root/child",
-            2,
-            "/root/child",
-            _stored(type="FrameMessage", name="/root/child", props={}),
-        ),
-        SceneEntryRecord(
-            "create:/root",
-            3,
-            "/root",
-            _stored(type="FrameMessage", name="/root", props={}),
-        ),
-    ]
-    result = materialize(entries, [], [])
-    assert [(m.payload["type"], m.payload.get("name")) for m in result] == [
-        ("FrameMessage", "/root"),
-        ("FrameMessage", "/root/child"),
-        ("SetPositionMessage", "/root/child"),
-    ]
+    assert set(state.entries) == {"create:/c"}

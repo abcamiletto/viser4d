@@ -2,15 +2,14 @@
 // small handle on window.__VISER4D__. A page can outlive a websocket session,
 // so each injected bundle gets a fresh runtime tied to the current connection.
 
-import { isAudioMessage, isTimelineControlMessage } from "./protocol.gen";
+import { isTimelineControlMessage } from "./protocol.gen";
 import { Controller } from "./controller";
-import { FilePlayback } from "./filePlayback";
+import { decodeRecording } from "./binary";
 import { Viser } from "./viser";
 
 class Runtime {
   private readonly viser: Viser;
   private readonly controller: Controller;
-  private readonly filePlayback = new FilePlayback();
 
   constructor() {
     this.viser = new Viser(
@@ -19,7 +18,9 @@ class Runtime {
     );
     this.controller = new Controller({
       pushMessages: (messages) => this.viser.pushMessages(messages),
-      sendEvent: (message) => this.viser.sendMessage(message),
+      sendEvent: (message) => {
+        if (this.viser.isWebsocket) this.viser.sendMessage(message);
+      },
       isWebsocket: () => this.viser.isWebsocket,
     });
     this.viser.install();
@@ -32,7 +33,6 @@ class Runtime {
   dispose(): void {
     this.viser.dispose();
     this.controller.dispose();
-    this.filePlayback.dispose();
   }
 
   private route(message: { type: string }): boolean {
@@ -40,23 +40,19 @@ class Runtime {
       this.controller.handleControl(message);
       return true;
     }
-    if (!this.viser.isWebsocket && isAudioMessage(message)) {
-      this.filePlayback.enqueue(message);
-      return true;
-    }
     return false;
   }
 
+  loadRecording(payload: string): void {
+    this.controller.loadRecording(decodeRecording(payload));
+  }
+
   private onReady(): void {
-    if (this.viser.isWebsocket) {
-      this.controller.start();
-    } else {
-      this.filePlayback.install();
-    }
+    this.controller.start();
   }
 }
 
-type RuntimeHandle = { dispose(): void; debug: unknown };
+type RuntimeHandle = { dispose(): void; debug: unknown; loadRecording(payload: string): void };
 const win = window as Window & { __VISER4D__?: RuntimeHandle };
 win.__VISER4D__?.dispose();
 win.__VISER4D__ = new Runtime();

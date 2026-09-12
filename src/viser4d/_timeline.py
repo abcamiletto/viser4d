@@ -28,12 +28,12 @@ from pathlib import Path
 
 import msgspec
 import zstandard
+from viser_audio import AudioState
+from viser_audio import messages as audio_messages
 
 from . import _state, _viser
-from ._protocol import TimelineBlockMessage
+from ._protocol import AudioTrack, TimelineBlockMessage
 from ._state import (
-    AudioEventRecord,
-    AudioState,
     OverrideState,
     SceneEntryRecord,
     SceneState,
@@ -122,8 +122,8 @@ class Timeline:
             self._invalidate_block_bytes_from(index)
 
     def _record_message(self, delta: StepDelta, stored: StoredMessage) -> None:
-        if _state.is_audio(stored):
-            delta.audio.append(AudioEventRecord(self._next_rev(), stored))
+        if stored.type in audio_messages.MESSAGE_TYPES:
+            delta.audio.append(stored)
             return
         puts, deletes = _state.scene_puts_deletes(stored)
         for name in deletes:
@@ -167,8 +167,8 @@ class Timeline:
                     _state.entry_to_wire(e) for e in checkpoint.scene.entries.values()
                 ],
                 checkpointAudio=[
-                    _state.audio_track_to_wire(name, track)
-                    for name, track in sorted(checkpoint.audio.tracks.items())
+                    AudioTrack(track.as_payload())
+                    for track in checkpoint.audio.snapshot()
                 ],
                 deltas=[_state.delta_to_wire(d) for d in block.deltas],
             )
@@ -199,11 +199,10 @@ class Timeline:
 
         for idx in range(base, index):
             block = self._load_block(idx)
-            base_step = idx * self.block_size
-            for offset, delta in enumerate(block.deltas):
+            for delta in block.deltas:
                 scene.apply_delta(delta)
                 for event in delta.audio:
-                    audio.apply(event, base_step + offset)
+                    audio.apply(audio_messages.from_payload(event.inflate()))
             self._cache_checkpoint(idx + 1, scene, audio)
         return self._checkpoints[index]
 
@@ -222,8 +221,8 @@ class Timeline:
         for entry in checkpoint.scene.entries.values():
             size += len(msgspec.msgpack.encode(entry.message.payload))
             size += sum(len(b) for b in entry.message.buffers)
-        for track in checkpoint.audio.tracks.values():
-            size += track.data.nbytes + 64
+        for track in checkpoint.audio.snapshot():
+            size += track.samples.nbytes + 96
         return size
 
     # -- block cache / disk ----------------------------------------------

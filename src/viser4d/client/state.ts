@@ -200,6 +200,7 @@ export function foldTarget(
 const removeMessage = (name: string): ScenePayload => ({
   type: "RemoveSceneNodeMessage",
   name,
+  owner: "",
 });
 
 export class SceneMirror {

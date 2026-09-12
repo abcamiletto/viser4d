@@ -1,21 +1,24 @@
-"""Export the recorded timeline via viser's native ``StateSerializer``.
+"""Export one offline timeline, driven by the same player as live sessions.
 
-The caller seeds the serializer from the live broadcast buffer (which carries
-the injected runtime JS, so exported HTML gets audio sync for free), then we
-walk steps: fold a running scene state, append each step's materialized delta
-plus the overrides for nodes that exist at that step, with ``insert_sleep``
-between steps. Steps before ``start`` land at time 0; their audio events are
-folded instead of emitted, then re-synthesized at the start step with the
-elapsed portion trimmed.
+The native viser recording holds the static scene and a single timeline command.
+Its duration is zero, so only the viser4d playback bar owns time. No audio clock
+is inferred from native player controls.
 """
 
 from __future__ import annotations
 
+import base64
+import dataclasses
+import json
+from typing import Any
+
+import numpy as np
 import viser.infra
+from viser_audio import AudioState
+from viser_audio import messages as audio_messages
 
 from . import _state, _viser
-from ._protocol import AddAudioMessage, ScenePayload
-from ._state import AudioState, SceneEntryRecord, SceneState, StoredMessage
+from ._state import SceneState
 from ._timeline import Timeline
 
 
@@ -26,35 +29,52 @@ def build(
     start: int,
     end: int | None,
 ) -> viser.infra.StateSerializer:
-    """Append every step in ``[start, end]`` to ``serializer`` and return it."""
+    """Append an offline timeline for the inclusive range [start, end]."""
     start, stop = _validate(timeline, start, end)
-    binary_buffers = _viser.serializer_binary_buffers(serializer)
-    overrides = timeline.override_items()
-    remapped_overrides: dict[tuple[str, int], ScenePayload] = {}
-    state = SceneState()
+    scene = SceneState()
     audio = AudioState()
-    for step in range(stop + 1):
-        if step > start:
-            serializer.insert_sleep(1.0 / fps)
+    for step in range(start):
         delta = timeline.step_delta(step)
-        state.apply_delta(delta)
-        if step < start:
-            # Pre-roll: fold audio instead of emitting mid-clip events.
-            for event in delta.audio:
-                audio.apply(event, step)
-            messages = _state.materialize(delta.puts.values(), delta.delete_nodes, [])
-        else:
-            messages = _state.materialize_delta(delta)
-            if step == start and start > 0:
-                messages = _preroll_audio(audio, start, fps) + messages
-        for message in messages:
-            _viser.append_serializer_message(serializer, message.remap(binary_buffers))
-        for entry in _visible_overrides(overrides, state):
-            payload = remapped_overrides.get((entry.key, entry.rev))
-            if payload is None:
-                payload = entry.message.remap(binary_buffers)
-                remapped_overrides[(entry.key, entry.rev)] = payload
-            _viser.append_serializer_message(serializer, payload)
+        scene.apply_delta(delta)
+        for event in delta.audio:
+            audio.apply(audio_messages.from_payload(event.inflate()))
+
+    # Preserve complete samples so later replacement and append events still
+    # address the original track. Negative anchors account for elapsed pre-roll.
+    time_origin = start / fps
+    tracks = []
+    for track in audio.snapshot():
+        assert track.start_time is not None
+        shifted = dataclasses.replace(track, start_time=track.start_time - time_origin)
+        tracks.append(shifted.as_payload())
+    deltas = [
+        _state.delta_to_wire(timeline.step_delta(step))
+        for step in range(start, stop + 1)
+    ]
+    for delta in deltas:
+        for event in delta["audio"]:
+            if event["type"] == "AudioAddMessage":
+                event["start_time"] -= time_origin
+    recording = {
+        "numSteps": stop - start + 1,
+        "fps": fps,
+        "block": {
+            "type": "TimelineBlockMessage",
+            "index": 0,
+            "checkpointScene": [
+                _state.entry_to_wire(entry) for entry in scene.entries.values()
+            ],
+            "checkpointAudio": tracks,
+            "deltas": deltas,
+        },
+        "overrides": [
+            _state.entry_to_wire(entry) for entry in timeline.override_items()
+        ],
+    }
+    payload = json.dumps(recording, default=_encode_array, allow_nan=False)
+    source = f"window.__VISER4D__.loadRecording({json.dumps(payload)});"
+    command = _viser.run_javascript_message(source).as_serializable_dict()
+    _viser.append_serializer_message(serializer, command)
     return serializer
 
 
@@ -73,38 +93,14 @@ def _validate(timeline: Timeline, start: int, end: int | None) -> tuple[int, int
     return start, stop
 
 
-def _preroll_audio(audio: AudioState, start: int, fps: float) -> list[StoredMessage]:
-    """One AddAudio per live track, trimmed by the portion elapsed before start."""
-    out: list[StoredMessage] = []
-    for name, snapshot in sorted(audio.tracks.items()):
-        skip = round((start - snapshot.start_step) / fps * snapshot.sample_rate)
-        frames = len(snapshot.data) // snapshot.num_channels
-        if skip >= frames:
-            continue
-        message = AddAudioMessage(
-            name=name,
-            sampleRate=snapshot.sample_rate,
-            waveform={
-                "numChannels": snapshot.num_channels,
-                "numFrames": frames - skip,
-                "data": snapshot.data[skip * snapshot.num_channels :],
-            },
-            volume=snapshot.volume,
-        )
-        out.append(StoredMessage.capture(message))
-    return out
-
-
-def _visible_overrides(
-    overrides: list[SceneEntryRecord], state: SceneState
-) -> list[SceneEntryRecord]:
-    existing = state.node_names()
-    out: list[SceneEntryRecord] = []
-    for entry in overrides:
-        if _state.is_delete_key(entry.key):
-            assert entry.name is not None, "delete-key overrides always carry a name"
-            if any(_state.covers(entry.name, node) for node in existing):
-                out.append(entry)
-        elif entry.name is None or entry.name in existing:
-            out.append(entry)
-    return out
+def _encode_array(value: Any) -> dict[str, str]:
+    # Audio payloads contain memoryviews; scene payloads contain numpy arrays.
+    if not isinstance(value, (np.ndarray, memoryview)):
+        raise TypeError(f"Cannot encode timeline value: {type(value).__name__}")
+    array = np.asarray(value)
+    dtype = array.dtype.newbyteorder("<")
+    data = np.ascontiguousarray(array, dtype=dtype)
+    return {
+        "__typed_array": dtype.str,
+        "base64": base64.b64encode(data.data).decode("ascii"),
+    }

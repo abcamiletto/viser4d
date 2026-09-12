@@ -2,7 +2,7 @@
 
 viser has no extension API, so viser4d necessarily reaches into a few of its
 internals. Every such access is concentrated here; the rest of the package
-imports only this module. Target viser: ``>=1.0.30,<1.1``.
+imports only this module. Target viser: ``>=1.1.0,<1.2``.
 
 Python-side coupling inventory (everything below is private viser API):
 
@@ -14,7 +14,7 @@ Python-side coupling inventory (everything below is private viser API):
 - ``server._websock_server``: ``queue_message``, ``register_handler``,
   ``unregister_handler``; ``client._websock_connection.queue_message``
 - ``viser.infra.WebsockMessageHandler`` as the shadow-transport base
-- ``StateSerializer._messages`` / ``._binary_buffers`` / ``._time`` (no public
+- ``StateSerializer._messages`` / ``._time`` (no public
   equivalent for appending pre-serialized messages at chosen timestamps)
 
 The browser side has its own inventory, confined to ``client/viser.ts``.
@@ -25,7 +25,8 @@ traffic into exported recordings.
 
 from __future__ import annotations
 
-import asyncio
+import types
+import typing
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -48,20 +49,19 @@ def is_create_scene_node_message(message: object) -> bool:
 
 
 def create_scene_api(
-    owner: object,
-    *,
-    thread_executor: ThreadPoolExecutor,
-    event_loop: asyncio.AbstractEventLoop,
+    server: viser.ViserServer, transport: WebsockMessageHandler
 ) -> SceneApi:
-    return SceneApi(
-        owner,  # type: ignore[arg-type]
-        thread_executor=thread_executor,
-        event_loop=event_loop,
+    """Give the recording scene broadcast ownership and a separate transport."""
+    owner = types.SimpleNamespace(
+        _websock_connection=transport, client_id="", _viser_server=server
     )
-
-
-def set_scene_owner(scene: SceneApi, owner: object) -> None:
-    scene._owner = owner
+    scene = SceneApi(
+        typing.cast(Any, owner),
+        thread_executor=server._thread_executor,
+        event_loop=server.get_event_loop(),
+    )
+    scene._owner = server
+    return scene
 
 
 def scene_has_node(scene: SceneApi, name: str) -> bool:
@@ -94,10 +94,6 @@ def unregister_message_handler(
 
 def server_thread_executor(server: viser.ViserServer) -> ThreadPoolExecutor:
     return server._thread_executor
-
-
-def serializer_binary_buffers(serializer: Any) -> list[memoryview]:
-    return serializer._binary_buffers
 
 
 def append_serializer_message(serializer: Any, message: object) -> None:

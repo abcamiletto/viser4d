@@ -8,10 +8,5 @@ dist/
 .pytest_cache/
 .ruff_cache/
 
-# Generated client bundle and wire types
-src/viser4d/runtime.js
-src/viser4d/client/protocol.gen.ts
-
 # Node
 src/viser4d/client/node_modules/
-src/viser4d/client/.nodeenv/

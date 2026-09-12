@@ -1,8 +1,8 @@
 // Orchestration: dispatch timeline control messages, own state/cache/player/
 // audio/ui, and send events back. Full-block replacement + rev-diff live here.
 
-import type { ScenePayload } from "./binary";
-import { AudioEngine, type AudioTransport } from "./audio";
+import type { Recording, ScenePayload } from "./binary";
+import { AudioEngine } from "viser-audio/audio";
 import { BlockCache } from "./cache";
 import { Player } from "./player";
 import {
@@ -53,12 +53,12 @@ export class Controller {
       step: (step, continuous) => this.applyStep(step, continuous),
       transport: () => this.onTransport(),
     });
-    const transport: AudioTransport = {
-      getStep: () => this.player.getTransportStep(),
-      isPlaying: () => this.player.playing,
-      speed: () => this.player.speed,
-    };
-    this.audio = new AudioEngine(transport, this.timelineFps);
+    this.audio = new AudioEngine();
+    this.audio.setTransport(() => ({
+      position: this.player.getTransportStep() / this.timelineFps,
+      playing: this.player.playing && this.pendingStep === null,
+      rate: this.player.speed,
+    }));
   }
 
   /** Called once the viewer is located, in websocket mode. */
@@ -74,12 +74,12 @@ export class Controller {
     });
     this.ui.mount();
     this.updateUi();
-    this.io.sendEvent({ type: "TimelineReadyMessage" });
+    if (this.io.isWebsocket()) this.io.sendEvent({ type: "TimelineReadyMessage" });
   }
 
   dispose(): void {
     this.player.dispose();
-    this.audio.reset();
+    this.audio.dispose();
     this.ui?.dispose();
     this.ui = null;
   }
@@ -91,6 +91,7 @@ export class Controller {
       appliedStep: this.appliedStep,
       appliedBlock: this.appliedBlock,
       playing: this.player.playing,
+      audio: this.audio.debug(),
     };
   }
 
@@ -120,13 +121,28 @@ export class Controller {
     }
   }
 
+  loadRecording(recording: Recording): void {
+    this.configure({
+      type: "TimelineConfigureMessage",
+      numSteps: recording.numSteps,
+      blockSize: recording.numSteps,
+      timelineFps: recording.fps,
+      speed: 1,
+      loop: true,
+      cacheBytes: Number.MAX_SAFE_INTEGER,
+      blockBytes: [0],
+    });
+    for (const entry of recording.overrides) applyOverrideEntry(this.overlay, entry);
+    this.loadBlock(recording.block);
+    this.player.play();
+  }
+
   private configure(message: TimelineConfigureMessage): void {
     this.numSteps = message.numSteps;
     this.timelineFps = message.timelineFps;
     this.cache.blockSize = message.blockSize;
     this.cache.setBudgetBytes(message.cacheBytes);
     this.cache.setBlockBytes(message.blockBytes);
-    this.audio.setStepRate(message.timelineFps);
     this.player.configure(message.numSteps, message.timelineFps, message.speed, message.loop);
     this.updateUi();
     this.refocusPreload(this.player.currentStep, true);
@@ -172,6 +188,7 @@ export class Controller {
     const block = this.cache.getBlock(step);
     if (!block) {
       this.pendingStep = step;
+      this.audio.sync();
       this.cache.ensureStepLoaded(step); // resumes from loadBlock()
       return;
     }
@@ -191,11 +208,11 @@ export class Controller {
       const messages = this.scene.advance(delta);
       messages.push(...this.scene.reapplyOverrides(this.overlay));
       this.io.pushMessages(messages);
-      this.audio.applyEvents(step, delta.audio);
+      for (const event of delta.audio) this.audio.handle(event);
     } else {
       this.io.pushMessages(this.scene.rebuild(foldTarget(block, offset, this.overlay)));
       this.loadAudioThrough(block, offset);
-      this.audio.reschedule();
+      this.audio.sync();
     }
 
     this.appliedStep = step;
@@ -209,17 +226,16 @@ export class Controller {
     // The checkpoint is the state before the block's first delta, so fold
     // audio events from deltas[0..offset] inclusive.
     this.audio.loadCheckpoint(block.checkpointAudio);
-    const start = this.cache.blockStartStep(block.index);
     for (let i = 0; i <= offset; i += 1) {
       const delta = block.deltas[i];
       if (delta) {
-        this.audio.applyEvents(start + i, delta.audio);
+        for (const event of delta.audio) this.audio.handle(event);
       }
     }
   }
 
   private onTransport(): void {
-    this.audio.reschedule();
+    this.audio.sync();
     this.updateUi();
     if (this.io.isWebsocket()) {
       this.io.sendEvent({ type: "TimelinePlaybackStateMessage", isPlaying: this.player.playing });

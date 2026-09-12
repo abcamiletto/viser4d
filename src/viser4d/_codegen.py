@@ -30,8 +30,8 @@ _TYPE_MAPPING: dict[object, str] = {
     np.ndarray: "Uint8Array<ArrayBuffer>",
     type(None): "null",
     _protocol.ScenePayload: 'import("./binary").ScenePayload',
-    # Generated in this same file, below the interfaces (type aliases hoist).
-    _protocol.AudioPayload: "AudioMessage",
+    _protocol.AudioPayload: 'import("viser-audio/protocol").AudioMessage',
+    _protocol.AudioTrack: 'import("viser-audio/protocol").AudioAddMessage',
 }
 
 
