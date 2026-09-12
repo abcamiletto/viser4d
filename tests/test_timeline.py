@@ -1,7 +1,7 @@
 from typing import Any, cast
 
 import pytest
-from helpers import deserialize_recording
+from helpers import scene_events
 
 import viser4d
 from viser4d._recorder import Recorder
@@ -15,7 +15,7 @@ def test_at_keeps_server_scene_live() -> None:
             joint = tl.scene.add_frame("/joint")
             server.scene.add_frame("/static")
             joint.position = (2.0, 0.0, 0.0)
-        recording = deserialize_recording(server.serialize())
+        recording = {"messages": scene_events(server.serialize())}
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
         creation = [
             t
@@ -48,7 +48,7 @@ def test_same_step_scene_updates_serialize_latest_value_once() -> None:
             joint.position = (1.0, 0.0, 0.0)
         with server.at(0):
             joint.position = (2.0, 0.0, 0.0)
-        recording = deserialize_recording(server.serialize())
+        recording = {"messages": scene_events(server.serialize())}
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
         positions = [
             tuple(cast(list[float], m["position"]))
@@ -91,7 +91,7 @@ def test_at_allows_recreating_timeline_nodes() -> None:
         with server.at(1) as tl:
             joint = tl.scene.add_icosphere("/joint", position=(1.0, 0.0, 0.0))
             joint.position = (2.0, 0.0, 0.0)
-        recording = deserialize_recording(server.serialize())
+        recording = {"messages": scene_events(server.serialize())}
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
         creation = [
             t
@@ -128,7 +128,7 @@ def test_late_created_nodes_keep_creation_step() -> None:
         with server.at(5) as tl:
             joint = tl.scene.add_frame("/joint")
             joint.position = (2.0, 0.0, 0.0)
-        recording = deserialize_recording(server.serialize())
+        recording = {"messages": scene_events(server.serialize())}
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
         creation = [
             t
@@ -153,6 +153,7 @@ def test_live_scene_removals_forwarded_without_block_refresh() -> None:
     recorder = Recorder(
         server,
         server._timeline,
+        fps=server.fps,
         on_override=overrides.extend,
         on_block_change=refreshed_blocks.append,
     )
@@ -180,7 +181,7 @@ def test_set_steps_can_grow_timeline() -> None:
         server.set_steps(4)
         with server.at(3):
             joint.position = (3.0, 0.0, 0.0)
-        recording = deserialize_recording(server.serialize())
+        recording = {"messages": scene_events(server.serialize())}
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
         positions = [
             tuple(cast(list[float], m["position"]))
@@ -230,15 +231,14 @@ def test_clear_resets_timeline_and_shared_scene() -> None:
             tl.scene.add_frame("/joint")
         server.clear()
         assert server.scene.get_handle_by_name("/static") is None
-        recording = deserialize_recording(server.serialize())
+        recording = {"messages": scene_events(server.serialize())}
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
         assert all(m.get("name") != "/joint" for _, m in messages)
 
         with server.at(1) as tl:
             tl.scene.add_frame("/joint")
-        recording = deserialize_recording(
-            server.serialize(start_timestep=1, end_timestep=1)
-        )
+        blob = server.serialize(start_timestep=1, end_timestep=1)
+        recording = {"messages": scene_events(blob)}
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
         creations = [
             m
@@ -272,7 +272,7 @@ def test_serialization_survives_block_eviction_to_disk() -> None:
         for step in (1, 64, 128, 192, 256):
             with server.at(step):
                 joint.position = (float(step), 0.0, 0.0)
-        recording = deserialize_recording(server.serialize())
+        recording = {"messages": scene_events(server.serialize())}
         messages = cast(list[tuple[float, dict[str, object]]], recording["messages"])
         position_times = [
             t for t, m in messages if m.get("type") == "SetPositionMessage"

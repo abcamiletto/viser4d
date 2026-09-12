@@ -73,6 +73,7 @@ class Viser4dServer(viser.ViserServer):
         self._recorder = Recorder(
             self,
             self._timeline,
+            fps=self.fps,
             on_override=self._broadcast_overrides,
             on_block_change=self._queue_block_refresh,
         )

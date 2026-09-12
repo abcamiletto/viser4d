@@ -7,9 +7,7 @@ runtime before viser processes them; event messages travel client -> server
 through viser's normal message path.
 
 Scene message payloads (`ScenePayload`) are plain viser messages in dict form;
-audio payloads (`AudioPayload`) are one of the `AudioMessage` subclasses below.
-Numpy arrays inside payloads arrive in the browser as raw bytes, so any array
-that needs interpretation carries explicit metadata (see `Waveform`).
+audio payloads use the public viser_audio.messages protocol.
 """
 
 from __future__ import annotations
@@ -18,9 +16,6 @@ import dataclasses
 import uuid
 from typing import Any, NewType, TypeAlias, TypedDict
 
-import numpy as np
-import numpy.typing as npt
-
 from . import _viser
 
 Payload: TypeAlias = dict[str, Any]
@@ -28,7 +23,10 @@ ScenePayload = NewType("ScenePayload", Payload)
 """A viser scene message as plain data, possibly containing numpy arrays."""
 
 AudioPayload = NewType("AudioPayload", Payload)
-"""One of the ``AudioMessage`` subclasses below, as plain data."""
+"""A viser_audio.messages.AudioMessage as plain data."""
+
+AudioTrack = NewType("AudioTrack", Payload)
+"""A complete viser_audio.messages.AudioAddMessage checkpoint."""
 
 
 class SceneEntry(TypedDict):
@@ -46,24 +44,6 @@ class StepDelta(TypedDict):
     puts: list[SceneEntry]
     deleteNodes: list[str]
     audio: list[AudioPayload]
-
-
-class Waveform(TypedDict):
-    """Flat float32 samples, frame-major: ``data[frame * numChannels + ch]``."""
-
-    numChannels: int
-    numFrames: int
-    data: npt.NDArray[np.float32]
-
-
-class AudioTrack(TypedDict):
-    """Folded audio track state at a block boundary."""
-
-    name: str
-    sampleRate: int
-    startStep: int
-    volume: float
-    waveform: Waveform
 
 
 class _TimelineMessage(_viser.Message, include_in_scene_serialization=False):
@@ -196,47 +176,3 @@ EVENT_MESSAGE_TYPES: tuple[type[TimelineEventMessage], ...] = (
     TimelinePlaybackStateMessage,
     TimelineSpeedMessage,
 )
-
-
-# ---------------------------------------------------------------------------
-# Recorded audio messages. These are captured into timeline storage (and
-# replayed inside block payloads / audio events), never sent standalone.
-# ---------------------------------------------------------------------------
-
-
-class AudioMessage(_TimelineMessage, tag="AudioMessage"):  # type: ignore[invalid-argument-type]
-    name: str
-
-
-@dataclasses.dataclass
-class AddAudioMessage(AudioMessage):
-    name: str
-    sampleRate: int
-    waveform: Waveform
-    volume: float
-
-
-@dataclasses.dataclass
-class SetAudioVolumeMessage(AudioMessage):
-    name: str
-    volume: float
-
-
-@dataclasses.dataclass
-class SetAudioWaveformMessage(AudioMessage):
-    name: str
-    waveform: Waveform
-
-
-@dataclasses.dataclass
-class AppendAudioMessage(AudioMessage):
-    name: str
-    waveform: Waveform
-
-
-@dataclasses.dataclass
-class RemoveAudioMessage(AudioMessage):
-    name: str
-
-
-AUDIO_MESSAGE_TYPES = frozenset(cls.__name__ for cls in AudioMessage.get_subclasses())

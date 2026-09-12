@@ -85,7 +85,12 @@ html = server.as_html()
 ```
 
 Use `server.serialize()` to export a `.viser` recording and `server.as_html()`
-to export a self-contained HTML viewer.
+to export a self-contained HTML viewer. Both use the same viser4d playback bar
+and clock as live sessions, including speed, looping, and synchronized audio.
+The native viser container holds the static scene and one offline timeline;
+its own clock stays idle. Exported arrays are encoded as base64 with their dtype
+inside that timeline command. A cropped export shifts track anchors while
+retaining full samples so later append and replacement events remain valid.
 
 ## Design
 
@@ -103,8 +108,23 @@ sends data, not frames.
 
 Writes made outside `server.at(t)` become *overrides*: a keyed overlay applied
 on top of every step, where the node exists. Audio is a per-step event stream
-folded into per-track waveform snapshots and scheduled against the same
-transport clock, in live playback and in exported HTML alike.
+folded by `viser_audio.AudioState` and played by `viser_audio.AudioEngine` against
+the same transport clock in live and exported playback. The Python recording
+context exposes `viser_audio.AudioApi` directly:
+
+```python
+with server.at(step) as timeline:
+    track = timeline.audio.add("/speech", samples, sample_rate)
+    track.volume = 0.8
+
+with server.at(next_step):
+    track.append(more_samples)
+    track.samples = replacement_samples
+```
+
+Tracks default to the current step's time; explicit `start_time` values are in
+seconds. `samples` reads normalized float32 PCM. Import handle types from
+`viser_audio`. No older audio API or wire-protocol aliases are retained.
 
 Each module's docstring documents its own part in detail; `_state.py` holds the
 key derivation table and the fold rules.
@@ -114,7 +134,7 @@ key derivation table and the fold rules.
 ```bash
 uv sync --group dev
 
-# Build the browser runtime (only needed for a non-editable checkout).
+# Rebuild after changing TypeScript, protocol definitions, or viser-audio.
 npm --prefix src/viser4d/client ci
 npm --prefix src/viser4d/client run build
 
@@ -124,8 +144,11 @@ uv run --group dev pytest -q
 npm --prefix src/viser4d/client run typecheck
 ```
 
-An editable install rebuilds the runtime automatically when the client sources
-or the wire protocol change, using a nodeenv-sandboxed Node. Both
-`src/viser4d/runtime.js` and `src/viser4d/client/protocol.gen.ts` are generated
-and gitignored; `protocol.gen.ts` comes from `src/viser4d/_protocol.py` via
-`uv run python -m viser4d._codegen`.
+`src/viser4d/runtime.js` and `src/viser4d/client/protocol.gen.ts` are generated and
+checked in. Rebuild and commit them when their inputs change. Builds resolve the
+TypeScript engine and protocol directly from the installed `viser-audio` Python
+package; they do not keep a separate copy of its source. `prepare-client.mjs`
+creates a local module link under the ignored `node_modules` directory.
+
+The supported viser series is 1.1. There is no runtime Node bootstrap, stale-bundle
+fallback, or separate compatibility job for older viser versions.

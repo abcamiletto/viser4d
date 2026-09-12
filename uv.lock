@@ -198,15 +198,6 @@ wheels = [
 ]
 
 [[package]]
-name = "nodeenv"
-version = "1.10.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/24/bf/d1bda4f6168e0b2e9e5958945e01910052158313224ada5ce1fb2e1113b8/nodeenv-1.10.0.tar.gz", hash = "sha256:996c191ad80897d076bdfba80a41994c2b47c68e224c542b48feba42ba00f8bb", size = 55611, upload-time = "2025-12-20T14:08:54.006Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/b2/d0896bdcdc8d28a7fc5717c305f1a861c26e18c05047949fb371034d98bd/nodeenv-1.10.0-py2.py3-none-any.whl", hash = "sha256:5bb13e3eed2923615535339b3c620e76779af4cb4c6a90deccc9e36b274d3827", size = 23438, upload-time = "2025-12-20T14:08:52.782Z" },
-]
-
-[[package]]
 name = "numpy"
 version = "2.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -536,7 +527,7 @@ wheels = [
 
 [[package]]
 name = "viser"
-version = "1.0.30"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "imageio" },
@@ -550,20 +541,33 @@ dependencies = [
     { name = "websockets" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/83/9a/85f9a82eac4e067fb1bc34cf4f7865b0d914a3ce91f5b0da47dcef549930/viser-1.0.30.tar.gz", hash = "sha256:6a849a9ef141c97d4ac7bd7d970b81265e6d0130ee8ef1c2e18c0b46aa6b6283", size = 4924612, upload-time = "2026-06-03T16:02:38.552Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f1/4d/e3d9bb3cb71a3f5de21b9f35fb4db09c6f873885c02e9d9ace20d221aae1/viser-1.1.0.tar.gz", hash = "sha256:28c27da73f391fdc7a1ffc3e3d122fd8eede9d15508128bc53c7e02904169412", size = 5310056, upload-time = "2026-08-16T21:15:10.628Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/c9/9a4ca25b505303d5557c98786ac0bf7081c76a7262e1b6c87b899bccc7b8/viser-1.0.30-py3-none-any.whl", hash = "sha256:43089f50acdd45c19b23101c9a2cf8edcc52d052bf7f53ed0b2b6a932c71b5d1", size = 5027789, upload-time = "2026-06-03T16:02:40.331Z" },
+    { url = "https://files.pythonhosted.org/packages/73/b1/37b6fefb2f2fe5f11ae305d0a428e1cdb4f5868112c42ab29c1ce1629f06/viser-1.1.0-py3-none-any.whl", hash = "sha256:d683accd18d457d3971e107d6269b5a9e2dcc93d2a8661544ac433542e4550e8", size = 5464160, upload-time = "2026-08-16T21:15:08.786Z" },
+]
+
+[[package]]
+name = "viser-audio"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "viser" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b1/9d/3e0ba0bf0143f98c7c78b1802eac82984aedce61e8d967d41f68f0d51582/viser_audio-0.1.0.tar.gz", hash = "sha256:3b178c76d03df42799d8f6fb041673d5a962f9d11fd51299e31024e4a2e8a293", size = 34290, upload-time = "2026-09-12T06:21:54.747Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0d/48/aea171bdec27afa7bc9d763051264b87358ef5ef1ce376d25a0d687d4130/viser_audio-0.1.0-py3-none-any.whl", hash = "sha256:20b67e441d36c3c5b6ef6c03a25061de9979d89f700748114058b125b1b77f20", size = 36997, upload-time = "2026-09-12T06:21:53.698Z" },
 ]
 
 [[package]]
 name = "viser4d"
-version = "0.19.0"
+version = "0.20.0"
 source = { editable = "." }
 dependencies = [
     { name = "msgspec" },
-    { name = "nodeenv" },
     { name = "numpy" },
     { name = "viser" },
+    { name = "viser-audio" },
     { name = "zstandard" },
 ]
 
@@ -577,9 +581,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "msgspec", specifier = ">=0.18" },
-    { name = "nodeenv", specifier = ">=1.9.1" },
     { name = "numpy", specifier = ">=2.4.1" },
-    { name = "viser", specifier = ">=1.0.30,<1.1" },
+    { name = "viser", specifier = ">=1.1.0,<1.2" },
+    { name = "viser-audio", specifier = ">=0.1.0,<0.2" },
     { name = "zstandard", specifier = ">=0.23" },
 ]
 

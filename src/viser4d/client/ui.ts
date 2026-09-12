@@ -1,5 +1,5 @@
 // The runtime-owned playback bar: a self-contained DOM overlay (no external
-// CSS) shown only in websocket mode. It reports intent through callbacks and
+// CSS) shared by live and exported playback. It reports intent through callbacks and
 // reflects transport state each tick without fighting an active slider drag.
 
 export type UiCallbacks = {
@@ -74,6 +74,8 @@ export class PlaybackBar {
   setState(state: UiState): void {
     this.state = state;
     this.playBtn.innerHTML = state.playing ? ICON.pause : ICON.play;
+    this.playBtn.setAttribute("aria-label", state.playing ? "Pause" : "Play");
+    this.loopBtn.setAttribute("aria-pressed", String(state.loop));
     this.slider.max = String(Math.max(0, state.total - 1));
     if (!this.dragging) {
       this.slider.value = String(state.step);
@@ -85,6 +87,14 @@ export class PlaybackBar {
 
   private build(): void {
     this.root.tabIndex = 0;
+    this.root.dataset.viser4dPlayback = "";
+    this.root.setAttribute("role", "group");
+    this.root.setAttribute("aria-label", "Timeline playback");
+    this.prevBtn.setAttribute("aria-label", "Previous step");
+    this.nextBtn.setAttribute("aria-label", "Next step");
+    this.loopBtn.setAttribute("aria-label", "Loop");
+    this.slider.setAttribute("aria-label", "Timeline step");
+    this.speed.setAttribute("aria-label", "Playback speed");
     this.root.style.cssText =
       "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483000;" +
       "display:flex;align-items:center;gap:8px;padding:8px 14px;box-sizing:border-box;" +
@@ -138,9 +148,7 @@ export class PlaybackBar {
       option.textContent = `${value}x`;
       this.speed.appendChild(option);
     }
-    this.speed.addEventListener("change", () =>
-      this.callbacks.setSpeed(Number(this.speed.value)),
-    );
+    this.speed.addEventListener("change", () => this.callbacks.setSpeed(Number(this.speed.value)));
 
     this.root.addEventListener("keydown", (event) => {
       if (event.code === "Space") {

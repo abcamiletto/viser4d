@@ -16,10 +16,11 @@ import threading
 from collections.abc import Callable, Iterator
 from typing import Any
 
-import numpy as np
 import viser
+import viser_audio
+from viser_audio import messages as audio_messages
 
-from . import _audio, _viser
+from . import _viser
 from ._state import SceneEntryRecord
 from ._timeline import Timeline
 
@@ -29,7 +30,7 @@ class TimelineContext:
     """Scene and audio APIs exposed inside ``server.at(t)``."""
 
     scene: _viser.SceneApi
-    audio: _audio.AudioApi
+    audio: viser_audio.AudioApi
 
 
 @dataclasses.dataclass
@@ -46,10 +47,12 @@ class Recorder:
         server: viser.ViserServer,
         timeline: Timeline,
         *,
+        fps: float,
         on_override: Callable[[list[SceneEntryRecord]], None],
         on_block_change: Callable[[int], None],
     ) -> None:
         self._timeline = timeline
+        self._fps = fps
         self._on_override = on_override
         self._on_block_change = on_block_change
         self._live_scene = server.scene
@@ -57,13 +60,8 @@ class Recorder:
         self._active: _WriteSession | None = None
 
         transport = _TimelineTransport(server)
-        self.scene = _viser.create_scene_api(
-            _TimelineSceneOwner(transport),
-            thread_executor=_viser.server_thread_executor(server),
-            event_loop=server.get_event_loop(),
-        )
-        _viser.set_scene_owner(self.scene, server)
-        self.audio = _audio.AudioApi(self)
+        self.scene = _viser.create_scene_api(server, transport)
+        self.audio = viser_audio.AudioApi(self.dispatch_audio)
         # SceneApi.__init__ pushes its own /WorldAxes frame through the
         # transport; attaching the recorder last discards that message.
         transport.recorder = self
@@ -93,17 +91,6 @@ class Recorder:
         if self._active is not None:
             raise RuntimeError(message)
 
-    def add_audio(
-        self, name: str, *, data: np.ndarray, sample_rate: int
-    ) -> _audio.AudioHandle:
-        if self._active is None:
-            raise RuntimeError(
-                "timeline.audio.add_track() is only valid inside server.at(t)."
-            )
-        buffer = _audio._TrackBuffer(name, sample_rate, data)
-        self._active.messages.append(_audio.add_audio_message(buffer))
-        return _audio.AudioHandle(self.dispatch_audio, buffer)
-
     # -- message routing --------------------------------------------------
 
     def route_message(self, message: _viser.Message) -> None:
@@ -116,11 +103,16 @@ class Recorder:
             )
         self._on_override(self._timeline.record_override(message))
 
-    def dispatch_audio(self, message: _viser.Message) -> None:
+    def dispatch_audio(self, message: audio_messages.AudioMessage) -> None:
         if self._active is None:
             raise RuntimeError(
                 "Timeline audio edits are only valid inside server.at(t)."
             )
+        if (
+            isinstance(message, audio_messages.AudioAddMessage)
+            and message.start_time is None
+        ):
+            message.start_time = self._active.step / self._fps
         self._active.messages.append(message)
 
     def _reject_static_collisions(self, messages: list[_viser.Message]) -> None:
@@ -162,9 +154,9 @@ class _TimelineTransport(_viser.WebsockMessageHandler):
     def unregister_handler(self, message_cls: type[Any], callback: Any = None) -> None:
         _viser.unregister_message_handler(self._server, message_cls, callback)
 
+    def remove_entity_state_from_buffer(self, entity_type: str, entity_id: str) -> None:
+        # Recorded state is folded by Timeline, not retained in a websocket buffer.
+        pass
 
-class _TimelineSceneOwner:
-    """Minimal client-like owner required by ``SceneApi``."""
-
-    def __init__(self, transport: _TimelineTransport) -> None:
-        self._websock_connection = transport
+    def sanctioned_dead_writes(self) -> contextlib.AbstractContextManager[None]:
+        return contextlib.nullcontext()

@@ -7,8 +7,6 @@
 //   seam, intercepting `Timeline*` control messages and forwarding the rest.
 // - `viewer.mutable.current.sendMessage(message)` for outbound events.
 // - `viewer.messageSource` distinguishes websocket from file playback.
-// - `filePlayback.ts` additionally scrapes `[role='slider'][aria-valuenow]`,
-//   viser's native player position.
 //
 // Discovery failures retry on animation frames and then log loudly; there is no
 // silent degradation.
